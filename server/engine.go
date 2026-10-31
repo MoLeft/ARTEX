@@ -945,7 +945,12 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		}
 		e.stampFirstRun(t) // 首次真正规划 → 盖 first_run_at + 算 deadline(仅带 timeout 的任务)
 		e.touch(t.ID)
-		emit := func(r db.Activity) { e.emitActivity(t, r) }
+		emit := func(r db.Activity) {
+			if r.Kind == "tool_result" && r.IsError && e.proxyFailure != nil && isGlobalProxyDialFailure(errors.New(r.Detail+" "+r.Summary)) {
+				e.proxyFailure(t.ID, errors.New(r.Detail+" "+r.Summary))
+			}
+			e.emitActivity(t, r)
+		}
 		ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
 		if ectx.Err() != nil || e.IsDeleting(t.ID) {
 			return
@@ -1087,7 +1092,12 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	hasChatMessage := message != ""
 	e.stampFirstRun(t) // 首次真正执行 → 盖 first_run_at + 算 deadline(仅带 timeout 的任务)
 	e.touch(t.ID)
-	emit := func(r db.Activity) { e.emitActivity(t, r) }
+	emit := func(r db.Activity) {
+		if r.Kind == "tool_result" && r.IsError && e.proxyFailure != nil && isGlobalProxyDialFailure(errors.New(r.Detail+" "+r.Summary)) {
+			e.proxyFailure(t.ID, errors.New(r.Detail+" "+r.Summary))
+		}
+		e.emitActivity(t, r)
+	}
 	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
 	if ectx.Err() != nil || e.IsDeleting(t.ID) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {

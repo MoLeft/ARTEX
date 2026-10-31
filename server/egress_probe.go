@@ -417,6 +417,12 @@ func (s *Server) testEgressProxy(w http.ResponseWriter, r *http.Request) {
 
 	rep.OK = judgeEgress(rep)
 	rep.Warnings = egressWarnings(rep, pending, savedProxy)
+	if rep.OK && !pending {
+		// The settings page uses this endpoint for its manual "测试代理" action.
+		// A successful probe is the same signal as an automatic reconnect success,
+		// but it must never consume an automatic attempt.
+		s.proxyReconnectSuccess()
+	}
 	writeJSON(w, 200, rep)
 }
 

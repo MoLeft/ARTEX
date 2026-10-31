@@ -164,6 +164,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), credentialWake: make(chan struct{}, 1)}
+	m.SetTaskControlMutex(&s.concMu)
 	s.initSideQuestions()
 	if m.pg != nil {
 		if err := s.basicAuth.load(m.pg); err != nil {
@@ -194,6 +195,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		return s.llmOn
 	})
 	s.engine.SetProxyFailureHandler(s.handleProxyFailure)
+	if m.traffic != nil {
+		m.traffic.SetUpstreamFailureHandler(s.handleProxyTrafficFailure)
+	}
 	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {

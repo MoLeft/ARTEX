@@ -761,7 +761,7 @@ export default function SystemSettingsPage() {
                   </Button>
                   {/* 测表单里当前的值，不要求先保存。 */}
                   <Button type="button" variant="outline" onClick={testEgress} disabled={!loaded || egressTesting}>
-                    {egressTesting ? "测试中…" : "测试"}
+                    {egressTesting ? "测试中…" : "测试代理"}
                   </Button>
                 </div>
                 <p className="text-muted-foreground text-xs">

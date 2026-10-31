@@ -150,7 +150,11 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 			reason = "paused_by_proxy"
 		}
 		if err := s.m.ApplyTaskPauseOriginReason(t.ID, reason, pauseCause == agent.AbortPausedBySchedule); err != nil {
-			if !wasEnginePaused && !wasQueued {
+			// Do not compensate over a proxy pause that may have committed while
+			// this control request was failing. The persisted reason is the source
+			// of truth for which Engine barrier must remain installed.
+			stillProxyPaused := t.lifecycleSnapshot().PauseReason == "paused_by_proxy"
+			if !stillProxyPaused && !wasEnginePaused && !wasQueued {
 				s.engine.Resume(t)
 			}
 			return out, err

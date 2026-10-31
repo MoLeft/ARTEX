@@ -104,7 +104,9 @@ func (s *Server) beginTaskDelete(taskID string) bool {
 	ok := s.engine.BeginDelete(taskID)
 	if ok {
 		// A user delete/archive action is an explicit override of proxy recovery.
-		_ = s.m.ClearPauseReason(taskID)
+		if s.m != nil && s.m.pg != nil {
+			_ = s.m.ClearPauseReason(taskID)
+		}
 	}
 	return ok
 }

@@ -20,15 +20,32 @@ const (
 	defaultProxyReconnectInterval = 30
 )
 
-// isProxyFailure deliberately requires a configured proxy at the call site and
-// only matches transport failures. Provider quota/auth errors must keep their
-// existing retry/failover behavior.
+// isProxyFailure is used for LLM/planner errors, where the error has no trusted
+// indication that it came from the global target proxy. Keep this deliberately
+// narrow: generic EOF/reset/refused errors belong to the model_error retry path.
 func isProxyFailure(err error) bool {
 	if err == nil {
 		return false
 	}
 	s := strings.ToLower(err.Error())
-	for _, part := range []string{"proxyconnect", "proxy connection", "proxy error", "connection refused", "connection reset", "network is unreachable", "broken pipe", "unexpected eof", "eof"} {
+	for _, part := range []string{"proxyconnect", "proxy connection", "proxy error", "proxy handshake", "socks handshake", "failed to connect to proxy", "connect to proxy"} {
+		if strings.Contains(s, part) {
+			return true
+		}
+	}
+	return false
+}
+
+// isGlobalProxyDialFailure is only used by the MITM upstream callback. That
+// callback is on the actual configured global-proxy path; the saved proxy is
+// still probed before any task is paused, so a target-side RequestError cannot
+// pause tasks while the proxy itself remains healthy.
+func isGlobalProxyDialFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, part := range []string{"proxyconnect", "proxy connection", "proxy error", "proxy handshake", "socks", "connect to proxy", "upstream proxy", "connection refused", "connection reset", "network is unreachable", "broken pipe", "unexpected eof", "eof"} {
 		if strings.Contains(s, part) {
 			return true
 		}
@@ -81,7 +98,18 @@ func (s *Server) handleProxyFailure(taskID string, cause error) {
 	if strings.TrimSpace(s.m.GlobalProxy()) == "" {
 		return
 	}
-	if err := s.m.ApplyProxyPause(taskID); err != nil {
+	if probe := probeEgress(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second); probe.OK {
+		return
+	}
+	s.pauseProxyTask(taskID, cause)
+}
+
+func (s *Server) pauseProxyTask(taskID string, cause error) {
+	if strings.TrimSpace(s.m.GlobalProxy()) == "" {
+		return
+	}
+	err := s.m.ApplyProxyPause(taskID)
+	if err != nil {
 		log.Printf("[proxy] pause task %s: %v", taskID, err)
 		return
 	}
@@ -106,6 +134,36 @@ func (s *Server) handleProxyFailure(taskID string, cause error) {
 	}
 	s.ensureProxySupervisor()
 	s.signalProxySupervisor()
+}
+
+func (s *Server) handleProxyTrafficFailure(cause error) {
+	if !isGlobalProxyDialFailure(cause) || strings.TrimSpace(s.m.GlobalProxy()) == "" {
+		return
+	}
+	// Confirm the saved global proxy itself before pausing. MITM RequestError can
+	// also represent a target-side failure, and those must not pause a task.
+	if probe := probeEgress(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second); probe.OK {
+		return
+	}
+	for _, t := range s.m.List() {
+		st := t.lifecycleSnapshot()
+		if isTerminalStatus(st.Status) || st.Paused || s.engine.IsDeleting(t.ID) {
+			continue
+		}
+		s.pauseProxyTask(t.ID, cause)
+	}
+}
+
+func (s *Server) handleProxyToolFailure(ctx context.Context, cause error) {
+	if !isGlobalProxyDialFailure(cause) || strings.TrimSpace(s.m.GlobalProxy()) == "" {
+		return
+	}
+	if probe := probeEgress(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second); probe.OK {
+		return
+	}
+	if info := agent.RunInfoFrom(ctx); info.TaskID > 0 {
+		s.pauseProxyTask(fmt.Sprint(info.TaskID), cause)
+	}
 }
 
 func truncateProxyError(err error) string {
@@ -142,6 +200,16 @@ func (s *Server) proxyReconnectTick() {
 	max, interval := s.proxyReconnectConfig()
 	for _, t := range s.m.List() {
 		st := t.lifecycleSnapshot()
+		if isTerminalStatus(st.Status) {
+			t.updateLifecycle(func(v *taskLifecycleState) {
+				if v.PauseReason == "paused_by_proxy" {
+					v.PauseReason = ""
+				}
+				v.ReconnectAttempt, v.ReconnectMax, v.ReconnectNextAt = 0, 0, 0
+				v.ReconnectExhausted, v.ReconnectLastError = false, ""
+			})
+			continue
+		}
 		if st.PauseReason != "paused_by_proxy" || st.ReconnectExhausted || (st.ReconnectNextAt > 0 && st.ReconnectNextAt > now) {
 			continue
 		}
@@ -170,22 +238,50 @@ func (s *Server) proxyReconnectTick() {
 }
 
 func (s *Server) proxyReconnectSuccess() {
+	max, interval := s.proxyReconnectConfig()
+	s.scheduleMu.Lock()
+	defer s.scheduleMu.Unlock()
 	for _, t := range s.m.List() {
-		st := t.lifecycleSnapshot()
-		if st.PauseReason != "paused_by_proxy" {
+		if st := t.lifecycleSnapshot(); st.PauseReason != "paused_by_proxy" {
 			continue
 		}
-		var err error
+		if s.m.pg != nil {
+			inside, scheduleErr := s.proxyResumeInsideSchedule(t.ID, time.Now())
+			if scheduleErr != nil {
+				log.Printf("[proxy] schedule gate for task %s: %v", t.ID, scheduleErr)
+				continue
+			}
+			if !inside {
+				if err := s.m.ConvertProxyPauseToSchedule(t.ID); err != nil {
+					log.Printf("[proxy] schedule pause task %s: %v", t.ID, err)
+				}
+				continue
+			}
+		}
+		var (
+			queued bool
+			err    error
+		)
 		if s.engine != nil {
-			_, err = s.admitTaskWhenScheduled(t, "resume", true, false)
+			queued, err = s.admitTaskWhenScheduledWithReason(t, "resume", true, false, "paused_by_proxy", true)
 		} else {
 			err = s.m.ClearPauseReason(t.ID)
 		}
 		if err != nil {
+			// Admission re-checks the persisted reason under concMu. A user pause,
+			// terminal transition, delete, or archive therefore cannot be revived;
+			// only keep probing if the proxy pause is still eligible.
+			st := t.lifecycleSnapshot()
+			if st.PauseReason == "paused_by_proxy" && !isTerminalStatus(st.Status) {
+				t.updateLifecycle(func(v *taskLifecycleState) {
+					v.ReconnectMax = max
+					v.ReconnectNextAt = time.Now().Add(interval).Unix()
+				})
+			}
 			log.Printf("[proxy] resume task %s: %v", t.ID, err)
 			continue
 		}
-		if s.engine != nil {
+		if s.engine != nil && !queued {
 			s.engine.Resume(t)
 		}
 		t.updateLifecycle(func(v *taskLifecycleState) {
