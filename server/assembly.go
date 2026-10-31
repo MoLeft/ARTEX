@@ -84,7 +84,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 					}
 					if !found {
 						all = append(all, &db.MCPServer{
-							Name: lightpandaReaderMCPName, Transport: "http", URL: url, Enabled: true,
+							Name: lightpandaReaderMCPName, Transport: "http", URL: url, Env: json.RawMessage(`{"Host":"127.0.0.1"}`), Enabled: true,
 						})
 					}
 				}

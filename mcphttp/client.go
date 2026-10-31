@@ -382,6 +382,9 @@ func (c *Client) Close() error {
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}
+	if host := c.headers["Host"]; host != "" {
+		req.Host = host
+	}
 	if resp, err := c.http.Do(req); err == nil {
 		resp.Body.Close()
 	}
@@ -437,6 +440,9 @@ func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool
 	req.Header.Set("MCP-Protocol-Version", version)
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
+	}
+	if host := c.headers["Host"]; host != "" {
+		req.Host = host
 	}
 	c.mu.Lock()
 	sid := c.sessionID
