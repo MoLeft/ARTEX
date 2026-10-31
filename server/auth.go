@@ -267,6 +267,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		TOTP     string `json:"totp"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "请求格式错误")
@@ -287,6 +288,19 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
 		writeErr(w, 401, "用户名或密码错误")
+		return
+	}
+	required, valid, err := checkLoginTOTP(pg, s.jwtKey, req.TOTP, time.Now())
+	if err != nil {
+		writeErr(w, 503, errDataSourceUnavailable)
+		return
+	}
+	if !valid {
+		if required && !s.totpAttempts.allow(time.Now()) {
+			writeErr(w, 429, "验证码尝试过多，请一分钟后重试")
+			return
+		}
+		writeErr(w, 401, "用户名、密码或验证码错误")
 		return
 	}
 	tok, err := signJWT(s.jwtKey)

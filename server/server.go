@@ -48,9 +48,10 @@ type Server struct {
 	lastCPUUse uint64
 	lastCPUAt  time.Time
 
-	skillDir  string // root directory for skill subdirectories
-	jwtKey    []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
-	basicAuth basicAuthGate
+	skillDir     string // root directory for skill subdirectories
+	jwtKey       []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
+	basicAuth    basicAuthGate
+	totpAttempts totpAttempts
 
 	// concMu serializes concurrency-cap decisions (admission + reconcile) so a
 	// scheduler tick and an HTTP settings change / task creation can't both count
@@ -715,6 +716,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
+	mux.HandleFunc("GET /api/settings/totp", s.getTOTPSettings)
+	mux.HandleFunc("POST /api/settings/totp/setup", s.setupTOTP)
+	mux.HandleFunc("PUT /api/settings/totp", s.enableTOTP)
+	mux.HandleFunc("DELETE /api/settings/totp", s.disableTOTP)
 	mux.HandleFunc("GET /api/basic-auth/check", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusNoContent)
