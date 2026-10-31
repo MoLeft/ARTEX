@@ -215,6 +215,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			if err != nil || t == "" {
 				return "", false
 			}
+			if key == "reporter" && os.Getenv("ARTEX_LIGHTPANDA_MCP_URL") != "" {
+				t += reporterLightpandaPrompt
+			}
 			if key == "reporter" && m.pg.GetBool(settingBrowserScreenshot, false) {
 				t += `
 
