@@ -6,7 +6,7 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 </div>
 
-本仓库是 [RuoJi6/ARTEX](https://github.com/RuoJi6/ARTEX) 的独立维护 fork，保留 [原项目](https://github.com/Autumn-27/ARTEX) 的提交历史与 AGPL-3.0 许可证。正式发布后，程序包从 [MoLeft/ARTEX Releases](https://github.com/MoLeft/ARTEX/releases) 下载，Docker 镜像使用 [moleftcn/artex](https://hub.docker.com/r/moleftcn/artex)。
+本项目是基于 [RuoJi6/ARTEX](https://github.com/RuoJi6/ARTEX) 的独立维护 fork。我们会根据实际需求更新一些让 ARTEX 更好用的功能，但不保证每个人都用得上。项目保留 [原项目](https://github.com/Autumn-27/ARTEX) 的提交历史与 AGPL-3.0 许可证。正式发布后，程序包从 [MoLeft/ARTEX Releases](https://github.com/MoLeft/ARTEX/releases) 下载，Docker 镜像使用 [moleftcn/artex](https://hub.docker.com/r/moleftcn/artex)。
 
 ---
 
