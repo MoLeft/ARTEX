@@ -199,7 +199,7 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 
 ### 维护者：通过 GitHub Actions 发布在线更新
 
-`ci.yml` 会在提交到 `main` 和创建/更新 PR 时测试 `server` 以外的 Go 包、运行 `server` 的 TOTP 单元测试，并检查前端静态构建。当前带 PostgreSQL 的全量测试有既存失败，`server` 的完整测试在无数据库时也会失败，尚未作为发布门槛；发布工作流另用临时 PostgreSQL 验证 Docker 镜像启动和前端可访问。发布工作流为 `.github/workflows/release.yml`：推送标签后会再次运行上述 Go 测试，通过后才构建并发布；也可在 Actions → release → Run workflow 中输入已存在的标签重新执行失败的发布。正式版标签采用 `v0.YY.MM.DD.SSS`（日期加三位提交序号），首个版本为 `v0.26.10.31.001`；测试版在同一编号后追加 `-beta1`、`-beta2` 等。页面显示完整标签，例如 `v0.26.10.31.001-beta1`。后续版本号应递增。
+`ci.yml` 会在提交到 `main` 和创建/更新 PR 时测试 `server` 以外的 Go 包、运行 `server` 的 TOTP 单元测试，并用隔离 PostgreSQL 验证发现统计和代理断线恢复；同时检查前端静态构建。`server` 的完整测试尚未作为发布门槛；发布工作流另用临时 PostgreSQL 验证 Docker 镜像启动和前端可访问。发布工作流为 `.github/workflows/release.yml`：推送标签后会再次运行上述 Go 测试，通过后才构建并发布；也可在 Actions → release → Run workflow 中输入已存在的标签重新执行失败的发布。正式版标签采用 `v0.YY.MM.DD.SSS`（日期加三位提交序号），首个版本为 `v0.26.10.31.001`；测试版在同一编号后追加 `-beta1`、`-beta2` 等。页面显示完整标签，例如 `v0.26.10.31.001-beta1`。后续版本号应递增。
 
 ```bash
 git push origin main

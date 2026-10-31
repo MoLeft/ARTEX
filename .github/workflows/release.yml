@@ -56,6 +56,18 @@ jobs:
   test:
     needs: prepare
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: artex
+          POSTGRES_PASSWORD: artex-ci-test
+          POSTGRES_DB: artex
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U artex -d artex"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,6 +79,12 @@ jobs:
       # shortcut: server's database-backed suite has baseline failures; Docker smoke still checks database startup.
       - run: go test -p 1 $(go list ./... | grep -v '/server$')
       - run: go test ./server -run '^(TestTOTPMatchesRFCVectorAndTimeWindow|TestLoginTOTPRequirementFailsClosed|TestTOTPSecretEncryptionRejectsTampering)$'
+      - name: Test finding counts and proxy recovery
+        env:
+          ARTEX_PG_DSN: postgres://artex:artex-ci-test@127.0.0.1:5432/artex?sslmode=disable
+        run: |
+          go test ./db -run '^TestMissingSkillStatsPageCountsBeyondFirstPage$' -count=1
+          go test ./server -run '^(TestProxy|TestDashboardActivityUsesLatestPage|TestSummaryAndReportBeyondListLimits|TestFindingStatsBeyondLegacyListLimit|TestTaskFindingsPageIncludesAllNodesAndProtectsSources|TestMissingSkillAPIReportsWholeLedger|TestInheritedActivityDetailAndRelationDeletion)$' -count=1 -p 1
 
   # ① 前端静态导出（一次），产物给交叉编译各平台复用
   frontend:

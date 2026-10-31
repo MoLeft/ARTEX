@@ -410,6 +410,7 @@ func (s *Server) testEgressProxy(w http.ResponseWriter, r *http.Request) {
 	// 整体上限 40s：单次 Timeout 只兜一次，不兜总量；前端 fetch 没有超时。
 	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
 	defer cancel()
+	proxyGuards := s.snapshotProxyReconnectGuards(false)
 
 	configuredProxy := strings.TrimSpace(req.GlobalProxy)
 	rep := egressReport{
@@ -454,6 +455,12 @@ func (s *Server) testEgressProxy(w http.ResponseWriter, r *http.Request) {
 
 	rep.OK = judgeEgress(rep)
 	rep.Warnings = egressWarnings(rep, pending, savedProxy)
+	if rep.OK && !pending {
+		// The settings page uses this endpoint for its manual "测试代理" action.
+		// A successful probe is the same signal as an automatic reconnect success,
+		// but it must never consume an automatic attempt.
+		s.proxyReconnectSuccessWithGuards(proxyGuards, nil)
+	}
 	writeJSON(w, 200, rep)
 }
 

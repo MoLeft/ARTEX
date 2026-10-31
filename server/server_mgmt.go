@@ -101,7 +101,14 @@ func (s *Server) beginTaskDelete(taskID string) bool {
 	if s.engine.IsDeleting(taskID) {
 		return false
 	}
-	return s.engine.BeginDelete(taskID)
+	ok := s.engine.BeginDelete(taskID)
+	if ok {
+		// A user delete/archive action is an explicit override of proxy recovery.
+		if s.m != nil && s.m.pg != nil {
+			_ = s.m.ClearPauseReason(taskID)
+		}
+	}
+	return ok
 }
 
 // abortTaskDelete restores the execution barrier from the committed task row,
@@ -1053,12 +1060,16 @@ func (s *Server) fsMissingSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	missing, err := pg.MissingSkillStats(limit)
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	page := findingPaginationParam(r.URL.Query().Get("page"), 1, 0)
+	missing, total, calls, err := pg.MissingSkillStatsPage(limit, page)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"missing": missing})
+	writeJSON(w, 200, map[string]any{"missing": missing, "total": total, "total_calls": calls, "page": page, "page_size": limit})
 }
 
 // cleanStrs trims each string and drops empties.
