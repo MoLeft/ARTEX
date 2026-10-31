@@ -99,7 +99,7 @@ function SidePanel({
             <p>上下文更新于 {new Date(side.snapshot.captured_at).toLocaleString()}</p>
           </>
         ) : (
-          "主 Agent 首次运行后即可提问"
+          "有任务描述、Planner/Worker 结果或发现记录后即可提问"
         )}
       </div>
       <div
@@ -120,7 +120,7 @@ function SidePanel({
           <Empty>
             <EmptyHeader>
               <EmptyTitle>随时问一个问题</EmptyTitle>
-              <EmptyDescription>根据当前 Agent 的上下文回答，主任务继续运行。</EmptyDescription>
+              <EmptyDescription>根据当前任务上下文回答，主任务继续运行；暂停或尚未运行主 Agent 也可以提问。</EmptyDescription>
             </EmptyHeader>
           </Empty>
         )}

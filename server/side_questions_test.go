@@ -199,6 +199,84 @@ func (f *sideHTTPFixture) checkpoint(t *testing.T, p sidequestion.Parent) sidequ
 	}
 	return snap
 }
+
+func TestSideTaskContextFallbackForPausedTask(t *testing.T) {
+	f := newSideHTTPFixture(t)
+	task, err := f.m.CreateTask("审查暂停任务的上下文", "确认边界访问控制", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := strconv.ParseInt(task.ID, 10, 64)
+	t.Cleanup(func() { _ = f.m.pg.DeleteTask(id) })
+	if err := f.m.pg.SetPaused(id, true); err != nil {
+		t.Fatal(err)
+	}
+	iid, err := task.Store.AddNode(db.KindIntent, map[string]any{"summary": "检查越权读取"}, 1, "paused", "planner", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := task.Store.AppendActivity(db.Activity{NodeID: &iid, Worker: "worker", Kind: "result", Summary: "发现对象读取缺少租户校验"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.m.pg.AddFinding(id, iid, "IDOR", "跨租户读取", db.SeverityHigh, "读取接口返回其他租户对象", "响应中出现其他租户 tenant_id", "worker", nil); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/tasks/" + task.ID + "/chat/side-questions"
+	var history struct {
+		Snapshot *struct {
+			Available bool `json:"available"`
+		} `json:"snapshot"`
+	}
+	w := f.call(t, "GET", path, nil, 200)
+	if err := json.Unmarshal(w.Body.Bytes(), &history); err != nil {
+		t.Fatal(err)
+	}
+	if history.Snapshot == nil || !history.Snapshot.Available {
+		t.Fatalf("task context snapshot unavailable: %s", w.Body.String())
+	}
+	e := decodeSide(t, f.call(t, "POST", path, map[string]string{"question": "暂停前发现了什么？", "client_request_id": "paused-context"}, 202))
+	select {
+	case req := <-f.provider.started:
+		text := req.Messages[0].Text()
+		for _, want := range []string{"审查暂停任务的上下文", "发现对象读取缺少租户校验", "读取接口返回其他租户对象"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("synthetic task context missing %q: %s", want, text)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("side request did not start from task context")
+	}
+	if got, err := f.m.pg.GetTask(id); err != nil || got == nil || !got.Paused {
+		t.Fatalf("side question changed paused task: %+v %v", got, err)
+	}
+	f.call(t, "POST", "/api/side-questions/"+e.ID+"/cancel", nil, 200)
+}
+
+func TestSideTaskContextFallbackRequiresUsableContext(t *testing.T) {
+	f := newSideHTTPFixture(t)
+	task, err := f.m.CreateTask("", "", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := strconv.ParseInt(task.ID, 10, 64)
+	t.Cleanup(func() { _ = f.m.pg.DeleteTask(id) })
+	path := "/api/tasks/" + task.ID + "/chat/side-questions"
+	var history struct {
+		Snapshot any `json:"snapshot"`
+	}
+	w := f.call(t, "GET", path, nil, 200)
+	if err := json.Unmarshal(w.Body.Bytes(), &history); err != nil {
+		t.Fatal(err)
+	}
+	if history.Snapshot != nil {
+		t.Fatalf("empty task unexpectedly received a context snapshot: %s", w.Body.String())
+	}
+	w = f.call(t, "POST", path, map[string]string{"question": "没有上下文怎么办？", "client_request_id": "empty-context"}, 409)
+	if !strings.Contains(w.Body.String(), "任务上下文") {
+		t.Fatalf("unhelpful empty-context error: %s", w.Body.String())
+	}
+}
+
 func decodeSide(t *testing.T, w *httptest.ResponseRecorder) sidequestion.Exchange {
 	t.Helper()
 	var e sidequestion.Exchange
