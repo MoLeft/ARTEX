@@ -77,8 +77,12 @@ export function FindingCaseMemberRow({
         !matched && "bg-muted/30",
       )}
     >
-      {onSelect && !f.inherited ? (
-        <Checkbox checked={selected} onCheckedChange={(v) => onSelect(id, v === true)} aria-label={`选择上报 #${id}`} />
+      {onSelect && !f.inherited && f.finding_id ? (
+        <Checkbox
+          checked={selected}
+          onCheckedChange={(v) => onSelect(id, v === true)}
+          aria-label={`选择上报 #${id}`}
+        />
       ) : null}
       <StatusBadge domain="severity" value={f.severity} />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -105,6 +109,7 @@ export function FindingCaseMemberRow({
 export function FindingCaseMembers({
   caseId,
   version,
+  refreshVersion,
   matchedIds,
   selectedIds,
   onSelect,
@@ -114,6 +119,7 @@ export function FindingCaseMembers({
 }: {
   caseId: string;
   version?: number;
+  refreshVersion?: number;
   matchedIds?: number[];
   selectedIds?: Set<string>;
   onSelect?: (id: string, checked: boolean) => void;
@@ -141,7 +147,7 @@ export function FindingCaseMembers({
     return () => {
       active = false;
     };
-  }, [caseId, page, pageSize, version, contextTask, retry]);
+  }, [caseId, page, pageSize, version, refreshVersion, contextTask, retry]);
   if (error)
     return (
       <Alert>
@@ -396,6 +402,7 @@ export function FindingCaseReviewPanel({ taskId, onChange }: { taskId?: string; 
 
 export function FindingCaseList({
   query,
+  refreshVersion,
   selectedIds,
   onSelect,
   contextTask,
@@ -403,6 +410,7 @@ export function FindingCaseList({
   onTotal,
 }: {
   query: Omit<FindingQuery, "page" | "pageSize">;
+  refreshVersion?: number;
   selectedIds?: Set<string>;
   onSelect?: (id: string, checked: boolean) => void;
   contextTask?: string;
@@ -441,7 +449,7 @@ export function FindingCaseList({
       active = false;
       clearTimeout(timer);
     };
-  }, [key, page, pageSize, refresh]);
+  }, [key, page, pageSize, refresh, refreshVersion]);
   React.useEffect(() => {
     if (data) onTotal?.(data.total);
   }, [data, onTotal]);
@@ -480,6 +488,7 @@ export function FindingCaseList({
               key={`case:${row.case.id}`}
               row={row}
               selectedIds={selectedIds}
+              refreshVersion={refreshVersion}
               onSelect={onSelect}
               contextTask={contextTask}
               readOnly={readOnly}
@@ -523,6 +532,7 @@ export function FindingCaseList({
 // the original table rows and controls in each surrounding view.
 export function FindingCaseFolder({
   row,
+  refreshVersion,
   selectedIds,
   onSelect,
   contextTask,
@@ -532,6 +542,7 @@ export function FindingCaseFolder({
   renderRecords,
 }: {
   row: FindingCaseListRow;
+  refreshVersion?: number;
   selectedIds?: Set<string>;
   onSelect?: (id: string, checked: boolean) => void;
   contextTask?: string;
@@ -634,6 +645,7 @@ export function FindingCaseFolder({
         >
           <FindingCaseMembers
             nested
+            refreshVersion={refreshVersion}
             renderRecords={renderRecords}
             caseId={group.id}
             version={group.version}

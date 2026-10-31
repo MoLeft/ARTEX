@@ -111,6 +111,7 @@ interface FindingsTableProps {
   matchedIds?: number[];
   presentation?: "records" | "task" | "asset";
   selectedIds: Set<string>;
+  refreshVersion?: number;
   onToggleSelected: (id: string, checked: boolean) => void;
   onToggleSelectedPage: (ids: string[], checked: boolean) => void;
   /** 当前展开行的 findingRowKey;null = 全部收起。 */
@@ -139,6 +140,7 @@ export function FindingsTable({
   matchedIds,
   presentation = "records",
   selectedIds,
+  refreshVersion,
   onToggleSelected,
   onToggleSelectedPage,
   expandedKey,
@@ -169,6 +171,7 @@ export function FindingsTable({
   const shared: Omit<FindingsTableProps, "items" | "caseRows"> = {
     presentation,
     selectedIds,
+    refreshVersion,
     onToggleSelected,
     onToggleSelectedPage,
     expandedKey,
@@ -629,6 +632,7 @@ function FindingFolderTableRows({
               <FindingCaseMembers
                 caseId={group.id}
                 version={group.version}
+                refreshVersion={shared.refreshVersion}
                 nested
                 renderRecords={(members) => (
                   <FindingsTable {...shared} items={members} matchedIds={row.matched_ids} hideHeader />
