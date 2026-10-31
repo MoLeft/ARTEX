@@ -335,6 +335,18 @@ SET value = jsonb_set(value::jsonb, '{enabled}', 'false'::jsonb)::text,
 WHERE key = 'auth.http_basic';
 ```
 
+### TOTP 两步验证
+
+在 **系统配置 → 系统与账号 → TOTP 两步验证** 中配置验证器。扫描页面二维码或手动输入密钥，再输入当前 ARTEX 密码与验证器的六位动态码，验证成功后才会启用。登录页始终显示 TOTP 输入框；未启用时可留空，启用后必须填写。关闭时也要输入当前密码和动态码。
+
+TOTP 密钥以加密形式存入数据库，二维码与明文密钥只在配置时显示。服务器上的 `jwt.key` 同时用于派生加密密钥，备份或迁移时须一并保留；公网使用请通过 HTTPS。启用或关闭不会使已经签发的登录 token 立即失效，它们仍按原有有效期使用。
+
+若验证器丢失，服务器管理员可先备份数据库，再连接 ARTEX 数据库执行以下语句清除 TOTP。清除后登录可留空验证码；单独运行 `reset-password.sh` 不会清除 TOTP。
+
+```sql
+UPDATE settings SET value = '', updated_at = now() WHERE key = 'auth.totp_secret';
+```
+
 ### 反向代理部署（HTTPS / 只开放 443）
 
 前端和 API/SSE 都由同一个后端端口（默认 `:8787`）提供，实时活动流默认走**同源**地址，因此**无需配置 `NEXT_PUBLIC_SSE_BASE`**，公网只开放 443、把 8787 留在内网即可。

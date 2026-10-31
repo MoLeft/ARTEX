@@ -153,7 +153,7 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers as Record<string, string> | undefined),
     },
   });
-  if (r.status === 401) {
+  if (r.status === 401 && path !== "/auth/login") {
     if (typeof window !== "undefined") {
       localStorage.removeItem("artex_token");
       document.cookie = "artex_token=; path=/; max-age=0";
@@ -315,7 +315,8 @@ export const api = {
 
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
-  login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
+  login: (username: string, password: string, totp: string) =>
+    post<{ token: string }>("/auth/login", { username, password, totp }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
@@ -980,6 +981,11 @@ export const api = {
   basicAuthSettings: () => get<{ enabled: boolean; username: string; password_set: boolean }>("/settings/basic-auth"),
   setBasicAuthSettings: (settings: { enabled: boolean; username: string; password: string }) =>
     put<{ enabled: boolean; username: string; password_set: boolean }>("/settings/basic-auth", settings),
+  totpSettings: () => get<{ enabled: boolean }>("/settings/totp"),
+  setupTOTP: () => post<{ secret: string; uri: string }>("/settings/totp/setup"),
+  enableTOTP: (password: string, secret: string, code: string) =>
+    put<{ enabled: boolean }>("/settings/totp", { password, secret, code }),
+  disableTOTP: (password: string, code: string) => del<{ enabled: boolean }>("/settings/totp", { password, code }),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
   // Run a real "test" search with the given (or saved) config to verify it works.
   testWebSearch: (patch: {

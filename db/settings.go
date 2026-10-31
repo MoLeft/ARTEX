@@ -78,6 +78,29 @@ ON CONFLICT (key) DO NOTHING`, key, value)
 	return n > 0, nil
 }
 
+// SetSettingIfEmpty enables a setting only if no value is active, including
+// concurrent setup requests from separate browser tabs.
+func (d *DB) SetSettingIfEmpty(key, value string) (bool, error) {
+	res, err := d.Exec(`
+INSERT INTO settings(key, value) VALUES ($1, $2)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+WHERE settings.value = ''`, key, value)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+func (d *DB) ClearSettingIfValue(key, value string) (bool, error) {
+	res, err := d.Exec(`UPDATE settings SET value = '', updated_at = now() WHERE key = $1 AND value = $2`, key, value)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // GetBool returns the boolean setting, or def when unset/unparseable.
 func (d *DB) GetBool(key string, def bool) bool {
 	v, ok, err := d.GetSetting(key)

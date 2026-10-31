@@ -27,6 +27,7 @@ import type { EgressReport, LLMProfile, Settings, WorkerPool } from "@/lib/types
 
 import { useEgressIp } from "../../_components/egress-ip-banner";
 import { BasicAuthCard } from "./_components/basic-auth-card";
+import { TOTPCard } from "./_components/totp-card";
 import { UpdateCard } from "./_components/update-card";
 
 export default function SystemSettingsPage() {
@@ -586,6 +587,7 @@ export default function SystemSettingsPage() {
           <div className="flex flex-col divide-y rounded-xl border bg-card/30 px-3 [&>[data-slot=card]]:mb-0 [&>[data-slot=card]]:rounded-none [&>[data-slot=card]]:bg-transparent [&>[data-slot=card]]:py-4 [&>[data-slot=card]]:ring-0">
             {isSettingVisible("system", "更新 版本 升级") ? <UpdateCard /> : null}
             {isSettingVisible("system", "基础认证 登录 用户名 密码") ? <BasicAuthCard /> : null}
+            {isSettingVisible("system", "TOTP 两步验证 动态码 登录 安全") ? <TOTPCard /> : null}
 
             <Card
               className={`${isSettingVisible("traffic", "流量 捕获 traffic proxy HTTP 代理") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
