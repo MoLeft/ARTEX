@@ -63,6 +63,12 @@ func (s *Server) initSideQuestions() {
 		log.Printf("[btw] recover: %v", err)
 	}
 	s.ctx = sidequestion.WithPublisher(s.ctx, func(snap sidequestion.Snapshot) {
+		// RunID=0 is reserved for the task-context fallback. It is rebuilt on
+		// every request and must never enter the checkpoint publisher's memory
+		// or flush queue, where it could mask a real main-agent checkpoint.
+		if snap.RunID == 0 {
+			return
+		}
 		s.side.mu.Lock()
 		defer s.side.mu.Unlock()
 		key := snap.Parent.Key()
@@ -120,13 +126,20 @@ func (s *Server) flushSideSnapshots() {
 }
 
 func (s *Server) sideSnapshot(ctx context.Context, p sidequestion.Parent) (*sidequestion.Snapshot, error) {
+	taskMain := p.TaskID > 0 && p.IntentID == 0
 	s.side.mu.Lock()
 	snap, ok := s.side.latest[p.Key()]
 	s.side.mu.Unlock()
-	if ok {
+	if ok && snap.RunID > 0 {
 		return &snap, nil
 	}
 	if snap, err := s.m.pg.SideSnapshot(ctx, p.Key()); err != nil || snap != nil {
+		// A task fallback is deliberately ephemeral from the point of view of
+		// context selection. Older versions persisted it at (0,0), but that row
+		// must not freeze the task material or model identity for later requests.
+		if taskMain && snap != nil && snap.RunID == 0 {
+			return nil, nil
+		}
 		return snap, err
 	}
 	if p.ApprovalID > 0 {
