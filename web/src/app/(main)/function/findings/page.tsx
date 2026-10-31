@@ -281,6 +281,11 @@ export default function FindingsPage() {
   const [includeOriginals, setIncludeOriginals] = React.useState(false);
   const [reviewing, setReviewing] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
+  const [batchMode, setBatchMode] = React.useState<"status" | "severity" | null>(null);
+  const [batchStatus, setBatchStatus] = React.useState<FindingStatus | "">("");
+  const [batchSeverity, setBatchSeverity] = React.useState<Severity | "">("");
+  const [batchSaving, setBatchSaving] = React.useState(false);
+  const [batchRefresh, setBatchRefresh] = React.useState(0);
 
   const toggleSelected = React.useCallback((id: string, checked: boolean) => {
     setSelectedIds((prev) => {
@@ -697,6 +702,50 @@ export default function FindingsPage() {
     [refreshAfterMutation, setFindings, status],
   );
 
+  async function applyBatchEdit() {
+    if (!batchMode || batchSaving || selectedIds.size === 0) return;
+    if (batchMode === "status" && !batchStatus) return;
+    if (batchMode === "severity" && !batchSeverity) return;
+    const ids = [...selectedIds];
+    const fields =
+      batchMode === "status" ? { status: batchStatus as FindingStatus } : { severity: batchSeverity as Severity };
+    setBatchSaving(true);
+    try {
+      const results = await Promise.allSettled(ids.map((id) => api.updateFinding(id, fields)));
+      const succeeded = new Set(ids.filter((_, index) => results[index].status === "fulfilled"));
+      setSelectedIds((current) => new Set([...current].filter((id) => !succeeded.has(id))));
+      if (succeeded.size > 0) {
+        void api
+          .findingStats()
+          .then(setStats)
+          .catch(() => {
+            // The list refresh remains valid if the aggregate request fails.
+          });
+        setBatchRefresh((current) => current + 1);
+        if (view === "flat" || view === "asset") {
+          void loadFlat();
+          if (view === "asset") void loadAssetTree();
+        } else if (view === "grouped") {
+          void refreshGroups();
+          for (const key of expandedGroupsRef.current) {
+            const group = groupFindingsRef.current[key];
+            if (group?.loaded) void loadGroup(key, group.page, group.pageSize);
+          }
+        }
+      }
+      if (succeeded.size === ids.length) {
+        toast.success(`已更新 ${succeeded.size} 条发现`);
+        setBatchMode(null);
+      } else {
+        const firstError = results.find((result) => result.status === "rejected");
+        const reason = firstError?.status === "rejected" ? `：${String(firstError.reason)}` : "";
+        toast.error(`成功 ${succeeded.size} 条，失败 ${ids.length - succeeded.size} 条；失败项仍保持选中${reason}`);
+      }
+    } finally {
+      setBatchSaving(false);
+    }
+  }
+
   // 行内展开的详细报告缓存按全局稳定行键存。report 是大段 Markdown,列表查询不带它,
   // 故展开时才按 finding_id 单独拉取一次;done 且文本为空 = 该漏洞暂无报告。
   const [reports, setReports] = React.useState<Record<string, FindingReport>>({});
@@ -839,6 +888,7 @@ export default function FindingsPage() {
 
   const rowProps = {
     selectedIds,
+    refreshVersion: batchRefresh,
     onToggleSelected: toggleSelected,
     onToggleSelectedPage: toggleSelectedPage,
     expandedKey: expanded,
@@ -1020,13 +1070,27 @@ export default function FindingsPage() {
           </Select>
 
           <div className="ml-auto flex shrink-0 items-center gap-3">
-            {selectedIds.size > 0 && (
-              <span className="text-xs text-muted-foreground tabular-nums">已选 {selectedIds.size} 条</span>
-            )}
+            <Button size="sm" variant="outline" onClick={openExport}>
+              <DownloadIcon /> 导出
+            </Button>
+          </div>
+        </div>
+
+        {selectedIds.size > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2">
+            <span className="mr-auto text-sm font-medium tabular-nums">已选 {selectedIds.size} 条</span>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={batchSaving || reviewing}
+              onClick={() => setSelectedIds(new Set())}
+            >
+              清空选择
+            </Button>
             <Button
               size="sm"
               variant="outline"
-              disabled={reviewing || selectedIds.size === 0}
+              disabled={reviewing || batchSaving}
               onClick={async () => {
                 setReviewing(true);
                 try {
@@ -1039,13 +1103,32 @@ export default function FindingsPage() {
                 }
               }}
             >
-              {reviewing ? <Spinner /> : null}整理所选（{selectedIds.size}）
+              {reviewing ? <Spinner /> : null}整理所选
             </Button>
-            <Button size="sm" variant="outline" onClick={openExport}>
-              <DownloadIcon /> 导出
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={batchSaving || reviewing}
+              onClick={() => {
+                setBatchStatus("");
+                setBatchMode("status");
+              }}
+            >
+              设置状态
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={batchSaving || reviewing}
+              onClick={() => {
+                setBatchSeverity("");
+                setBatchMode("severity");
+              }}
+            >
+              设置等级
             </Button>
           </div>
-        </div>
+        )}
 
         {view === "flat" && flatListCard}
 
@@ -1105,6 +1188,7 @@ export default function FindingsPage() {
 
         {view === "cases" && (
           <FindingCaseList
+            refreshVersion={batchRefresh}
             onTotal={setCaseTotal}
             query={{ severity, status, vulnclass, task, query, sort, ...dateRange }}
             selectedIds={selectedIds}
@@ -1230,6 +1314,59 @@ export default function FindingsPage() {
           </div>
         )}
       </div>
+
+      <Dialog
+        open={batchMode !== null}
+        onOpenChange={(open) => {
+          if (!open && !batchSaving) setBatchMode(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>批量设置{batchMode === "status" ? "状态" : "等级"}</DialogTitle>
+            <DialogDescription>
+              将所选 {selectedIds.size} 条发现统一设置为指定{batchMode === "status" ? "状态" : "等级"}。
+            </DialogDescription>
+          </DialogHeader>
+          <Select
+            value={batchMode === "status" ? batchStatus : batchSeverity}
+            onValueChange={(value) =>
+              batchMode === "status" ? setBatchStatus(value as FindingStatus) : setBatchSeverity(value as Severity)
+            }
+            disabled={batchSaving}
+          >
+            <SelectTrigger className="w-full" aria-label={batchMode === "status" ? "选择状态" : "选择等级"}>
+              <SelectValue placeholder={batchMode === "status" ? "选择状态" : "选择等级"} />
+            </SelectTrigger>
+            <SelectContent>
+              {batchMode === "status"
+                ? FINDING_STATUSES.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {statusMeta("finding", value).label}
+                    </SelectItem>
+                  ))
+                : SEVERITIES.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {statusMeta("severity", value).label}
+                    </SelectItem>
+                  ))}
+            </SelectContent>
+          </Select>
+          <DialogFooter>
+            <Button variant="outline" disabled={batchSaving} onClick={() => setBatchMode(null)}>
+              取消
+            </Button>
+            <Button
+              disabled={
+                batchSaving || selectedIds.size === 0 || !(batchMode === "status" ? batchStatus : batchSeverity)
+              }
+              onClick={applyBatchEdit}
+            >
+              {batchSaving ? <Spinner data-icon="inline-start" /> : null}确认设置
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {retestFinding?.finding_id ? (
         <FindingRetestDialog
