@@ -145,7 +145,7 @@ func newSideHTTPFixture(t *testing.T) *sideHTTPFixture {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, jwtKey: []byte("btw-test-signing-key-only"), chatBusy: map[string]bool{}}
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, jwtKey: []byte("btw-test-signing-key-only"), chatBusy: map[string]bool{}, provByProfile: map[int64]*provEntry{}}
 	s.initSideQuestions()
 	p := &sideHTTPProvider{started: make(chan llm.CompletionRequest, 16), release: make(chan struct{})}
 	cfg := agent.Config{Format: llm.FormatOpenAI, BaseURL: "http://fixture.invalid", Model: "fixture", Stream: true}
@@ -154,6 +154,11 @@ func newSideHTTPFixture(t *testing.T) *sideHTTPFixture {
 	s.llmOn = true
 	s.llmDirect = bindSideProvider(p, cfg, 0, "fixture")
 	s.cfgMu.Unlock()
+	if active, err := m.pg.ActiveProfile(); err == nil && active != nil {
+		if activeCfg, ok := s.loadProfileConfig(active.ID); ok {
+			s.provByProfile[active.ID] = &provEntry{prov: p, cfg: activeCfg}
+		}
+	}
 	token, err := signJWT(s.jwtKey)
 	if err != nil {
 		t.Fatal(err)
