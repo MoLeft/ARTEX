@@ -18,6 +18,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api, openSSE } from "@/lib/api";
 import type { UpdateCheck, UpdateProgress, UpdateSettings } from "@/lib/types";
 
@@ -52,7 +53,7 @@ export function UpdateCard() {
   const [savingNetwork, setSavingNetwork] = React.useState(false);
   const [networkError, setNetworkError] = React.useState("");
   const streamRef = React.useRef<ReturnType<typeof openSSE> | null>(null);
-  const networkDirty = network?.proxy !== savedNetwork?.proxy;
+  const networkDirty = network?.proxy !== savedNetwork?.proxy || network?.channel !== savedNetwork?.channel;
 
   React.useEffect(() => {
     let active = true;
@@ -104,10 +105,11 @@ export function UpdateCard() {
     try {
       const settings = await api.saveUpdateSettings({
         proxy: network.proxy,
+        channel: network.channel,
       });
       setNetwork(settings);
       setSavedNetwork(settings);
-      toast.success("更新网络设置已保存");
+      toast.success("更新设置已保存");
       check();
     } catch (e) {
       setNetworkError((e as Error).message);
@@ -248,6 +250,29 @@ export function UpdateCard() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <FieldGroup>
+          <Field data-disabled={busy || restarting || savingNetwork || !network}>
+            <FieldLabel htmlFor="update-channel" className="text-sm font-normal text-muted-foreground">
+              更新通道
+            </FieldLabel>
+            <Select
+              value={network?.channel ?? "stable"}
+              disabled={busy || restarting || savingNetwork || !network}
+              onValueChange={(channel) =>
+                network && setNetwork({ ...network, channel: channel as UpdateSettings["channel"] })
+              }
+            >
+              <SelectTrigger id="update-channel" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="stable">正式版</SelectItem>
+                <SelectItem value="beta">测试版（也接收正式版）</SelectItem>
+              </SelectContent>
+            </Select>
+            <FieldDescription className="text-xs">
+              选择后点击保存，全系统生效；正式版通道不会提示测试版。
+            </FieldDescription>
+          </Field>
           <Field data-invalid={!!networkError} data-disabled={busy || restarting || savingNetwork || !network}>
             <FieldLabel htmlFor="update-proxy" className="text-sm font-normal text-muted-foreground">
               更新代理（可选）
@@ -260,12 +285,7 @@ export function UpdateCard() {
                 value={network?.proxy ?? ""}
                 disabled={busy || restarting || savingNetwork || !network}
                 aria-invalid={!!networkError}
-                onChange={(e) =>
-                  network &&
-                  setNetwork({
-                    proxy: e.target.value,
-                  })
-                }
+                onChange={(e) => network && setNetwork({ ...network, proxy: e.target.value })}
               />
               <Button
                 type="button"

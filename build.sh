@@ -8,7 +8,7 @@
 #   ARTEX_TARGET_OS=linux             One target OS in single-target mode.
 #   ARTEX_TARGET_ARCH=amd64           One target arch in single-target mode.
 #   ARTEX_TARGETS=linux/amd64,...     Comma-separated targets for multi-target mode.
-#   ARTEX_BUILD_VERSION=v0.3.3        Version embedded in the binary and archive name.
+#   ARTEX_BUILD_VERSION=v0.26.10.31.001-beta1  Version embedded in the binary; archive omits v.
 #   ARTEX_OUTPUT=/path/to/artex       Explicit binary path in single-target mode.
 #   ARTEX_OUTPUT_DIR=dist             Directory for default binary paths.
 #   ARTEX_PACKAGE=1                   Create a zip archive for each target.
@@ -97,8 +97,8 @@ if [ -z "${ARTEX_BUILD_VERSION:-}" ]; then
     ARTEX_BUILD_VERSION="dev"
   fi
 fi
-# Release tags are commonly passed as v0.3.3; keep the binary version consistent.
-ARTEX_BUILD_VERSION="${ARTEX_BUILD_VERSION#v}"
+# Keep the release tag in the UI; only archive names omit its v prefix.
+ARTEX_PACKAGE_VERSION="${ARTEX_BUILD_VERSION#v}"
 ARTEX_OUTPUT_DIR="${ARTEX_OUTPUT_DIR:-dist}"
 ARTEX_PACKAGE_DIR="${ARTEX_PACKAGE_DIR:-$ARTEX_OUTPUT_DIR}"
 ARTEX_UPX_ARGS="${ARTEX_UPX_ARGS:---best --lzma}"
@@ -165,7 +165,7 @@ package_binary() {
   binary="$1"
   goos="$2"
   goarch="$3"
-  package_name="artex-${ARTEX_BUILD_VERSION}-${goos}-${goarch}"
+  package_name="artex-${ARTEX_PACKAGE_VERSION}-${goos}-${goarch}"
   package_root="${ARTEX_PACKAGE_DIR}/${package_name}"
   archive="${ARTEX_PACKAGE_DIR}/${package_name}.zip"
 

@@ -51,10 +51,10 @@ func TestUpdateSettingsHTTPPersistence(t *testing.T) {
 			t.Fatalf("unauthenticated %s: %d", method, r.Code)
 		}
 	}
-	if cfg, err := s.loadUpdateSettings(); err != nil || cfg.Proxy != "" {
+	if cfg, err := s.loadUpdateSettings(); err != nil || cfg.Proxy != "" || cfg.Channel != "stable" {
 		t.Fatalf("default: %+v %v", cfg, err)
 	}
-	for _, body := range []string{`{"proxy":"127.0.0.1:7897"}`, `{"proxy":"http://proxy:65536"}`, `{`} {
+	for _, body := range []string{`{"proxy":"127.0.0.1:7897"}`, `{"proxy":"http://proxy:65536"}`, `{"channel":"other"}`, `{`} {
 		if r := request("PUT", body, true); r.Code != 400 {
 			t.Fatalf("invalid setting accepted: %d %s", r.Code, r.Body.String())
 		}
@@ -64,14 +64,14 @@ func TestUpdateSettingsHTTPPersistence(t *testing.T) {
 	m.mu.Unlock()
 	originalGlobal := m.GlobalProxy()
 	for _, proxy := range []string{" http://127.0.0.1:7897 ", ""} {
-		body, _ := json.Marshal(updateSettings{Proxy: proxy})
+		body, _ := json.Marshal(updateSettings{Proxy: proxy, Channel: "beta"})
 		if r := request("PUT", string(body), true); r.Code != 200 {
 			t.Fatalf("save: %d %s", r.Code, r.Body.String())
 		}
 		// Read through a fresh Server to prove the setting comes from the DB.
 		fresh := &Server{m: m}
 		cfg, err := fresh.loadUpdateSettings()
-		if err != nil || cfg.Proxy != strings.TrimSpace(proxy) {
+		if err != nil || cfg.Proxy != strings.TrimSpace(proxy) || cfg.Channel != "beta" {
 			t.Fatalf("reload: %+v %v", cfg, err)
 		}
 		r := request("GET", "", true)
@@ -88,8 +88,8 @@ func TestUpdateSettingsHTTPPersistence(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer client.CloseIdleConnections()
-		if proxy != "" && effective != "http://127.0.0.1:7897" {
-			t.Fatalf("proxy not normalized: %q", effective)
+		if proxy != "" && effective.Proxy != "http://127.0.0.1:7897" {
+			t.Fatalf("proxy not normalized: %q", effective.Proxy)
 		}
 		if proxy == "" && client.Transport.(*http.Transport).Proxy != nil {
 			t.Fatal("direct inherited proxy")

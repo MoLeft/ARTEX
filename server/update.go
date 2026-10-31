@@ -81,9 +81,10 @@ var relCache = &releaseCache{}
 //
 // 取数期间一直持有锁：并发请求会排队等同一次查询的结果，而不是各自去打 GitHub
 // （页面刚加载时多个标签页同时来查，正是最容易触发限流的时刻）。
-func (c *releaseCache) get(ctx context.Context, client *http.Client, force bool, network string) (*selfupdate.Release, error) {
+func (c *releaseCache) get(ctx context.Context, client *http.Client, force bool, network, channel string) (*selfupdate.Release, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	network += "|" + channel
 
 	if !force && c.network == network {
 		ttl := releaseTTL
@@ -98,6 +99,9 @@ func (c *releaseCache) get(ctx context.Context, client *http.Client, force bool,
 	fetch := c.fetch
 	if fetch == nil {
 		fetch = selfupdate.FetchLatest
+		if channel == "beta" {
+			fetch = selfupdate.FetchLatestBeta
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, releaseTimeout)
 	defer cancel()
@@ -202,7 +206,7 @@ func (h *updateHub) subscribe() (<-chan updateProgress, func()) {
 	}
 }
 
-// updateCheck 查询 GitHub 上的最新正式版并与当前版本比较。
+// updateCheck 查询所选通道的最新版本并与当前版本比较。
 //
 // 前端也会直连 api.github.com（GitHub 的 CORS 是 *），但**以本接口为准**：
 // 下载是后端做的，只有后端能访问 GitHub 才谈得上更新。浏览器能连、服务器连不上
@@ -228,13 +232,13 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 
 	// 顶栏提示走缓存（默认）；用户点"检查更新"时带 force=1 强制回源。
 	force := r.URL.Query().Get("force") != ""
-	client, network, err := s.updateClient()
+	client, settings, err := s.updateClient()
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	defer client.CloseIdleConnections()
-	rel, err := relCache.get(r.Context(), client, force, network)
+	rel, err := relCache.get(r.Context(), client, force, settings.Proxy, settings.Channel)
 	if err != nil {
 		out["error"] = err.Error()
 		writeJSON(w, 200, out)
@@ -264,7 +268,7 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 	if !comparable {
 		// 开发构建（dev / git describe 带后缀）没有可比较的版本号。放行只会
 		// 用正式版覆盖掉本地正在调试的二进制，所以直接不给更新。
-		out["reason"] = fmt.Sprintf("当前版本 %q 不是正式发布版本，已禁用一键更新", current)
+		out["reason"] = fmt.Sprintf("当前版本 %q 不是可比较的发布版本，已禁用一键更新", current)
 	}
 	writeJSON(w, 200, out)
 }
@@ -277,20 +281,20 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 	current := BuildVersion
 
 	// 走缓存：确保装上的就是用户在界面上看到并确认的那个版本。
-	client, network, err := s.updateClient()
+	client, settings, err := s.updateClient()
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	defer client.CloseIdleConnections()
-	rel, err := relCache.get(r.Context(), client, false, network)
+	rel, err := relCache.get(r.Context(), client, false, settings.Proxy, settings.Channel)
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return
 	}
 	cmp, comparable := selfupdate.CompareVersions(current, rel.TagName)
 	if !comparable {
-		writeErr(w, 400, fmt.Sprintf("当前版本 %q 不是正式发布版本，已禁用一键更新", current))
+		writeErr(w, 400, fmt.Sprintf("当前版本 %q 不是可比较的发布版本，已禁用一键更新", current))
 		return
 	}
 	if cmp >= 0 {

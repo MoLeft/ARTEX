@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ExitRestart 是"请守护进程重新拉起我"的退出码（EX_TEMPFAIL）。启动脚本看到它
@@ -122,39 +123,75 @@ func CompareVersions(a, b string) (int, bool) {
 	if !aok || !bok {
 		return 0, false
 	}
-	for i := range 3 {
-		if av[i] != bv[i] {
-			if av[i] < bv[i] {
+	for i := range av.parts {
+		if av.parts[i] != bv.parts[i] {
+			if av.parts[i] < bv.parts[i] {
 				return -1, true
 			}
 			return 1, true
 		}
 	}
+	if av.beta != bv.beta {
+		if av.beta == 0 || (bv.beta != 0 && av.beta > bv.beta) {
+			return 1, true
+		}
+		return -1, true
+	}
 	return 0, true
 }
 
-// parseVersion 解析 "v0.3.7" / "0.3.7" 形式的版本号为 [3]int。
-//
-// 只接受纯净的三段式：build.sh 在非 tag 构建时用 git describe 产出
-// "0.3.7-2-gabc1234" 这类带后缀的版本，它们必须被判为不可比较，而不是被当成
-// 0.3.7 —— 否则开发构建会被误判为"已是最新"或被正式版覆盖。
-func parseVersion(s string) ([3]int, bool) {
+type releaseVersion struct {
+	parts [5]int
+	beta  int // 0 为正式版；同一版本的 beta 始终低于正式版。
+}
+
+// parseVersion 同时接受旧三段版本与 fork 的 0.YY.MM.DD.SSS[-betaN]。
+// git describe 的提交后缀必须保持不可比较，避免覆盖开发构建。
+func parseVersion(s string) (releaseVersion, bool) {
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "v")
 	if s == "" {
-		return [3]int{}, false
+		return releaseVersion{}, false
+	}
+	base, suffix, hasSuffix := strings.Cut(s, "-beta")
+	if hasSuffix {
+		s = base
 	}
 	parts := strings.Split(s, ".")
-	if len(parts) != 3 {
-		return [3]int{}, false
+	if len(parts) != 3 && len(parts) != 5 {
+		return releaseVersion{}, false
 	}
-	var out [3]int
+	if hasSuffix && (len(parts) != 5 || suffix == "" || suffix[0] == '0') {
+		return releaseVersion{}, false
+	}
+	var out releaseVersion
 	for i, p := range parts {
+		if p == "" || strings.Trim(p, "0123456789") != "" {
+			return releaseVersion{}, false
+		}
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 0 {
-			return [3]int{}, false
+			return releaseVersion{}, false
 		}
-		out[i] = n
+		out.parts[i] = n
+	}
+	if len(parts) == 5 {
+		year, month, day := out.parts[1], out.parts[2], out.parts[3]
+		date := time.Date(2000+year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+		if parts[0] != "0" || len(parts[1]) != 2 || len(parts[2]) != 2 || len(parts[3]) != 2 || len(parts[4]) != 3 ||
+			year > 99 || out.parts[4] == 0 || date.Year() != 2000+year || int(date.Month()) != month || date.Day() != day {
+			return releaseVersion{}, false
+		}
+	}
+	if hasSuffix {
+		if strings.Trim(suffix, "0123456789") != "" {
+			return releaseVersion{}, false
+		}
+		beta, err := strconv.Atoi(suffix)
+		if err != nil || beta == 0 {
+			return releaseVersion{}, false
+		}
+		out.beta = beta
 	}
 	return out, true
 }
