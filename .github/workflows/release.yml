@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "已存在的正式版本标签，例如 v0.3.15"
+        description: "已存在的标签，例如 v0.26.10.31.001 或 v0.26.10.31.001-beta1"
         required: true
         type: string
   push:
@@ -21,22 +21,30 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      beta: ${{ steps.version.outputs.beta }}
       commit: ${{ steps.commit.outputs.sha }}
     steps:
       - name: Validate release version
         id: version
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-          ARTEX_DOCKER_IMAGE: ${{ vars.ARTEX_DOCKER_IMAGE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "正式版本必须是 v主版本.次版本.修订号，例如 v0.3.15" >&2
+          if [[ ! "$RELEASE_TAG" =~ ^v0\.([0-9]{2})\.([0-9]{2})\.([0-9]{2})\.([0-9]{3})(-beta([1-9][0-9]*))?$ ]]; then
+            echo "版本标签须为 v0.YY.MM.DD.SSS[-betaN]" >&2
             exit 1
           fi
-          if [[ ! "$ARTEX_DOCKER_IMAGE" =~ ^[a-z0-9][a-z0-9_-]*/[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
-            echo "请先配置 Actions 变量 ARTEX_DOCKER_IMAGE，格式为 Docker Hub 用户名/镜像名" >&2
+          date_text="20${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
+          if [ "${BASH_REMATCH[4]}" = "000" ] || [ "$(date -u -d "$date_text" +%F 2>/dev/null)" != "$date_text" ]; then
+            echo "版本日期无效，或提交序号为 000" >&2
             exit 1
           fi
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "请先配置 Actions Secrets DOCKERHUB_USERNAME 与 DOCKERHUB_TOKEN" >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_TAG" == *-beta* ]]; then echo "beta=true" >> "$GITHUB_OUTPUT"; else echo "beta=false" >> "$GITHUB_OUTPUT"; fi
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
@@ -144,20 +152,13 @@ jobs:
           done
           sha256sum *.zip > SHA256SUMS
           sha256sum --check SHA256SUMS
-      - name: Replace release only when the tag moved to a new commit
-        env:
-          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+      - name: Refuse to overwrite a published release
         run: |
-          if gh release view "$RELEASE_TAG" --json isDraft,targetCommitish > /tmp/artex-release.json 2>/tmp/artex-release.err; then
+          if gh release view "$RELEASE_TAG" --json isDraft > /tmp/artex-release.json 2>/tmp/artex-release.err; then
             draft=$(jq -r .isDraft /tmp/artex-release.json)
-            target=$(jq -r '.targetCommitish // empty' /tmp/artex-release.json)
             if [[ "$draft" != "true" ]]; then
-              if [[ "$target" == "$RELEASE_COMMIT" ]]; then
-                echo "该版本已发布且已指向当前提交，拒绝重复发布" >&2
-                exit 1
-              fi
-              echo "标签已移动到新提交，删除旧 Release 后重新创建 $RELEASE_TAG"
-              gh release delete "$RELEASE_TAG" --yes
+              echo "该版本已发布，拒绝覆盖；请创建更高版本的标签" >&2
+              exit 1
             fi
           elif ! grep -qi 'release not found\|HTTP 404' /tmp/artex-release.err; then
             cat /tmp/artex-release.err >&2
@@ -166,25 +167,35 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
+          name: ${{ needs.prepare.outputs.tag }}
           target_commitish: ${{ needs.prepare.outputs.commit }}
           draft: true
+          prerelease: ${{ needs.prepare.outputs.beta == 'true' }}
           fail_on_unmatched_files: true
           files: |
             dist/*.zip
             dist/SHA256SUMS
           generate_release_notes: true
           body: |
-            Docker Hub 镜像：`${{ vars.ARTEX_DOCKER_IMAGE }}:${{ needs.prepare.outputs.tag }}`，同时提供 `latest`。
+            Docker Hub 镜像：`moleft/artex:${{ needs.prepare.outputs.tag }}`。正式版同时更新 `latest`。
             支持 Linux AMD64 / ARM64，Docker 会自动选择宿主机架构。
             程序包提供 Linux、macOS 的 AMD64 / ARM64 及 Windows AMD64，并附 SHA256SUMS。
             部署和在线更新说明见本仓库 README。
       - name: Publish complete release
-        run: gh release edit "$RELEASE_TAG" --draft=false --latest
+        env:
+          BETA: ${{ needs.prepare.outputs.beta }}
+        run: |
+          if [ "$BETA" = true ]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
+          fi
 
   # GITHUB_TOKEN 发布的 Release 不会再次触发 release: published 工作流。
   # 直接依赖发布 job，保证 ZIP、校验文件和镜像全部发布成功后才更新 Demo。
   demo:
     needs: [prepare, release]
+    if: ${{ needs.prepare.outputs.beta == 'false' && vars.VERCEL_ORG_ID != '' && vars.VERCEL_PROJECT_ID != '' && vars.DEMO_URL != '' }}
     uses: ./.github/workflows/demo.yml
     with:
       tag: ${{ needs.prepare.outputs.tag }}
@@ -246,7 +257,7 @@ jobs:
           trap 'docker logs artex-smoke; docker rm -f artex-smoke' EXIT
           curl --fail --retry 30 --retry-connrefused --retry-delay 2 --max-time 3 \
             http://127.0.0.1:8787/api/health > /tmp/artex-health.json
-          jq -e --arg version "${RELEASE_TAG#v}" '.ok == true and .version == $version' /tmp/artex-health.json
+          jq -e --arg version "$RELEASE_TAG" '.ok == true and .version == $version' /tmp/artex-health.json
           curl --fail http://127.0.0.1:8787/ > /tmp/artex-index.html
           grep -qi '<!doctype html' /tmp/artex-index.html
       - name: Push tested architecture image
@@ -255,7 +266,7 @@ jobs:
           context: .
           platforms: linux/${{ matrix.arch }}
           push: true
-          tags: ${{ vars.ARTEX_DOCKER_IMAGE }}:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+          tags: moleft/artex:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.tag }}
@@ -263,7 +274,7 @@ jobs:
             org.opencontainers.image.licenses=AGPL-3.0
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
 
-  # ⑤ 只有两种架构都通过启动验证，才发布正式版本和 latest 镜像。
+  # ⑤ 两种架构都通过启动验证后发布版本镜像；正式版再更新 latest。
   docker-publish:
     needs: [prepare, docker]
     runs-on: ubuntu-24.04
@@ -275,11 +286,12 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Publish multi-platform image
         env:
-          IMAGE: ${{ vars.ARTEX_DOCKER_IMAGE }}
+          IMAGE: moleft/artex
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          BETA: ${{ needs.prepare.outputs.beta }}
         run: |
-          docker buildx imagetools create \
-            --tag "$IMAGE:$RELEASE_TAG" --tag "$IMAGE:latest" \
-            "$IMAGE:$RELEASE_TAG-amd64" "$IMAGE:$RELEASE_TAG-arm64"
+          tags=(--tag "$IMAGE:$RELEASE_TAG")
+          if [ "$BETA" = false ]; then tags+=(--tag "$IMAGE:latest"); fi
+          docker buildx imagetools create "${tags[@]}" "$IMAGE:$RELEASE_TAG-amd64" "$IMAGE:$RELEASE_TAG-arm64"
           docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --raw > /tmp/artex-manifest.json
           jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | index("amd64") != null and index("arm64") != null' /tmp/artex-manifest.json

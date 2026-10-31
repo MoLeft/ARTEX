@@ -14,17 +14,17 @@ func (f releaseTransport) RoundTrip(r *http.Request) (*http.Response, error) { r
 
 func TestFetchLatestUsesForkRelease(t *testing.T) {
 	client := &http.Client{Transport: releaseTransport(func(r *http.Request) (*http.Response, error) {
-		if got := r.URL.String(); got != "https://api.github.com/repos/RuoJi6/ARTEX/releases/latest" {
+		if got := r.URL.String(); got != "https://api.github.com/repos/MoLeft/ARTEX/releases/latest" {
 			t.Fatalf("unexpected update source: %s", got)
 		}
 		if r.Method != http.MethodGet || r.Header.Get("Accept") != "application/vnd.github+json" {
 			t.Fatalf("invalid GitHub request: %s %v", r.Method, r.Header)
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{
-			"tag_name":"v0.3.16",
+			"tag_name":"v0.26.10.31.001",
 			"assets":[
-				{"name":"artex-0.3.16-linux-arm64.zip","browser_download_url":"https://github.com/RuoJi6/ARTEX/releases/download/v0.3.16/artex-0.3.16-linux-arm64.zip"},
-				{"name":"SHA256SUMS","browser_download_url":"https://github.com/RuoJi6/ARTEX/releases/download/v0.3.16/SHA256SUMS"}
+				{"name":"artex-0.26.10.31.001-linux-arm64.zip","browser_download_url":"https://github.com/MoLeft/ARTEX/releases/download/v0.26.10.31.001/artex-0.26.10.31.001-linux-arm64.zip"},
+				{"name":"SHA256SUMS","browser_download_url":"https://github.com/MoLeft/ARTEX/releases/download/v0.26.10.31.001/SHA256SUMS"}
 			]
 		}`))}, nil
 	})}
@@ -52,7 +52,26 @@ func TestFetchLatestMissingRelease(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("{}"))}, nil
 	})}
 	_, err := FetchLatest(context.Background(), client)
-	if err == nil || !strings.Contains(err.Error(), "RuoJi6/ARTEX") || !strings.Contains(err.Error(), "不可访问或尚未发布") {
+	if err == nil || !strings.Contains(err.Error(), "MoLeft/ARTEX") || !strings.Contains(err.Error(), "不可访问或尚未发布") {
 		t.Fatalf("unexpected missing-release error: %v", err)
+	}
+}
+
+func TestFetchLatestBetaSelectsNewestVersion(t *testing.T) {
+	client := &http.Client{Transport: releaseTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != releasesURL {
+			t.Fatalf("unexpected update source: %s", r.URL)
+		}
+		body := `[
+			{"tag_name":"v0.26.10.31.001", "prerelease":false},
+			{"tag_name":"v0.26.10.31.002-beta2", "prerelease":true},
+			{"tag_name":"v0.26.10.31.003", "draft":true},
+			{"tag_name":"v0.26.10.31.002-beta1", "prerelease":true}
+		]`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	rel, err := FetchLatestBeta(context.Background(), client)
+	if err != nil || rel.TagName != "v0.26.10.31.002-beta2" {
+		t.Fatalf("latest beta = %+v, %v", rel, err)
 	}
 }

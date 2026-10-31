@@ -12,13 +12,20 @@ import (
 const updateSettingsKey = "update.network"
 
 type updateSettings struct {
-	Proxy string `json:"proxy"`
+	Proxy   string `json:"proxy"`
+	Channel string `json:"channel"`
 }
 
 func (cfg *updateSettings) validate() error {
 	cfg.Proxy = strings.TrimSpace(cfg.Proxy)
 	if _, err := selfupdate.ParseProxy(cfg.Proxy); err != nil {
 		return err
+	}
+	if cfg.Channel == "" {
+		cfg.Channel = "stable"
+	}
+	if cfg.Channel != "stable" && cfg.Channel != "beta" {
+		return fmt.Errorf("更新通道须为正式版或测试版")
 	}
 	return nil
 }
@@ -73,11 +80,11 @@ func (s *Server) putUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 // Capture one effective proxy for both release discovery and all asset downloads.
 // A different proxy bypasses cached success/error results from the previous route.
-func (s *Server) updateClient() (*http.Client, string, error) {
+func (s *Server) updateClient() (*http.Client, updateSettings, error) {
 	cfg, err := s.loadUpdateSettings()
 	if err != nil {
-		return nil, "", err
+		return nil, cfg, err
 	}
 	client, err := selfupdate.NewClient(cfg.Proxy)
-	return client, cfg.Proxy, err
+	return client, cfg, err
 }

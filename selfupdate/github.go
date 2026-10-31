@@ -13,10 +13,11 @@ import (
 
 // Repo 是发布源。写死而不是做成配置项：更新源可配等于给任何能改配置的人一条
 // 远程代码执行通道，对一个渗透测试平台来说这个口子开不得。
-const Repo = "RuoJi6/ARTEX"
+const Repo = "MoLeft/ARTEX"
 
 // latestURL 是 GitHub 的"最新正式版"接口。它会自动跳过 prerelease 和 draft。
 const latestURL = "https://api.github.com/repos/" + Repo + "/releases/latest"
+const releasesURL = "https://api.github.com/repos/" + Repo + "/releases?per_page=100"
 
 // allowedHosts 限定升级链路能访问的域名。配合下面的 checkRedirect，
 // 任何一跳被重定向到名单外的主机都会直接失败——这是防止 DNS 污染 / 中间人
@@ -117,7 +118,56 @@ func checkURL(u *url.URL) error {
 
 // FetchLatest 查询最新正式版。
 func FetchLatest(ctx context.Context, c *http.Client) (*Release, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestURL, nil)
+	resp, err := fetchReleases(ctx, c, latestURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var rel Release
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return nil, fmt.Errorf("解析 Release 失败: %w", err)
+	}
+	parsed, valid := parseVersion(rel.TagName)
+	if !valid || parsed.beta != 0 || rel.Draft || rel.Prerelease {
+		return nil, fmt.Errorf("Release 缺少正式版本 tag")
+	}
+	return &rel, nil
+}
+
+// FetchLatestBeta 返回测试通道中版本号最高的正式版或测试版。
+func FetchLatestBeta(ctx context.Context, c *http.Client) (*Release, error) {
+	resp, err := fetchReleases(ctx, c, releasesURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var releases []Release
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, fmt.Errorf("解析 Release 列表失败: %w", err)
+	}
+	var latest *Release
+	for i := range releases {
+		r := &releases[i]
+		if r.Draft || r.TagName == "" {
+			continue
+		}
+		if _, ok := parseVersion(r.TagName); !ok {
+			continue
+		}
+		if latest == nil {
+			latest = r
+		} else if cmp, _ := CompareVersions(latest.TagName, r.TagName); cmp < 0 {
+			latest = r
+		}
+	}
+	if latest == nil {
+		return nil, fmt.Errorf("仓库 %s 尚未发布可用版本", Repo)
+	}
+	return latest, nil
+}
+
+func fetchReleases(ctx context.Context, c *http.Client, endpoint string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -131,26 +181,20 @@ func FetchLatest(ctx context.Context, c *http.Client) (*Release, error) {
 	if err != nil {
 		return nil, fmt.Errorf("访问 GitHub 失败（可在版本与更新中配置更新代理）: %w", err)
 	}
-	defer resp.Body.Close()
-
 	switch {
 	case resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusTooManyRequests:
 		// 未认证的 GitHub API 是每 IP 每小时 60 次，共用出口 IP 时很容易撞上。
+		resp.Body.Close()
 		return nil, fmt.Errorf("GitHub 接口限流（每小时 60 次），请稍后再试")
 	case resp.StatusCode == http.StatusNotFound:
-		return nil, fmt.Errorf("仓库 %s 不可访问或尚未发布正式版本", Repo)
+		resp.Body.Close()
+		return nil, fmt.Errorf("仓库 %s 不可访问或尚未发布版本", Repo)
 	case resp.StatusCode != http.StatusOK:
+		resp.Body.Close()
 		return nil, fmt.Errorf("GitHub 返回 %d", resp.StatusCode)
 	}
 
-	var rel Release
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return nil, fmt.Errorf("解析 Release 失败: %w", err)
-	}
-	if strings.TrimSpace(rel.TagName) == "" {
-		return nil, fmt.Errorf("Release 缺少 tag")
-	}
-	return &rel, nil
+	return resp, nil
 }
 
 // AssetName 返回当前平台对应的发布包名，与 build.sh 的 package_binary 保持一致：

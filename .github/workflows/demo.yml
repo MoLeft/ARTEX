@@ -32,7 +32,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name != 'release' || github.event.release.prerelease == false
+    if: ${{ (github.event_name != 'release' || github.event.release.prerelease == false) && vars.VERCEL_ORG_ID != '' && vars.VERCEL_PROJECT_ID != '' && vars.DEMO_URL != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -52,8 +52,8 @@ jobs:
             const { owner, repo } = context.repo;
             const { data: latest } = await github.rest.repos.getLatestRelease({ owner, repo });
             const tag = process.env.REQUESTED_TAG || latest.tag_name;
-            if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag)) {
-              throw new Error('只允许 v主版本.次版本.修订号 的正式标签');
+            if (!/^v0\.\d{2}\.\d{2}\.\d{2}\.(?!000)\d{3}$/.test(tag)) {
+              throw new Error('只允许 v0.YY.MM.DD.SSS 的正式标签');
             }
             const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
             if (release.draft || release.prerelease) throw new Error('草稿和预发布版本不可部署');
