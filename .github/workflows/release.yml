@@ -53,6 +53,33 @@ jobs:
         id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: artex
+          POSTGRES_PASSWORD: artex-ci-test
+          POSTGRES_DB: artex
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U artex -d artex"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      ARTEX_PG_DSN: postgres://artex:artex-ci-test@127.0.0.1:5432/artex?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -p 1 ./...
+
   # ① 前端静态导出（一次），产物给交叉编译各平台复用
   frontend:
     needs: prepare
@@ -77,7 +104,7 @@ jobs:
 
   # ② 五平台交叉编译（内嵌前端）+ 打 zip
   binaries:
-    needs: [prepare, frontend]
+    needs: [prepare, frontend, test]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -177,7 +204,7 @@ jobs:
             dist/SHA256SUMS
           generate_release_notes: true
           body: |
-            Docker Hub 镜像：`moleft/artex:${{ needs.prepare.outputs.tag }}`。正式版同时更新 `latest`。
+            Docker Hub 镜像：`moleftcn/artex:${{ needs.prepare.outputs.tag }}`。正式版同时更新 `latest`。
             支持 Linux AMD64 / ARM64，Docker 会自动选择宿主机架构。
             程序包提供 Linux、macOS 的 AMD64 / ARM64 及 Windows AMD64，并附 SHA256SUMS。
             部署和在线更新说明见本仓库 README。
@@ -266,7 +293,7 @@ jobs:
           context: .
           platforms: linux/${{ matrix.arch }}
           push: true
-          tags: moleft/artex:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+          tags: moleftcn/artex:${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.tag }}
@@ -286,7 +313,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Publish multi-platform image
         env:
-          IMAGE: moleft/artex
+          IMAGE: moleftcn/artex
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           BETA: ${{ needs.prepare.outputs.beta }}
         run: |
