@@ -323,3 +323,105 @@ func TestProxyPauseDoesNotReviveExhaustedOrNonProxyTasks(t *testing.T) {
 		t.Fatalf("new proxy task did not initialize reconnect state: %+v", got)
 	}
 }
+
+func TestProxyReconnectRoundResetsAfterManualResume(t *testing.T) {
+	m := proxyTestManager(t)
+	task, err := m.CreateTask("proxy retry round", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) }()
+	s := newAdmissionTestServer(m, nil)
+	m.SetTaskControlMutex(&s.concMu)
+	m.globalProxy = "http://proxy.invalid"
+	if err := m.ApplyProxyPause(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	s.engine.Pause(task.ID, agent.AbortPausedByProxy)
+	task.updateLifecycle(func(v *taskLifecycleState) {
+		v.ReconnectAttempt, v.ReconnectMax, v.ReconnectNextAt = 5, 5, 12345
+		v.ReconnectExhausted, v.ReconnectLastError = true, "proxy exhausted"
+	})
+	if _, err := s.applyTaskControl(task, "resume"); err != nil {
+		t.Fatal(err)
+	}
+	resumed := task.lifecycleSnapshot()
+	if resumed.PauseReason != "" || resumed.ReconnectAttempt != 0 || resumed.ReconnectMax != 0 || resumed.ReconnectNextAt != 0 || resumed.ReconnectExhausted || resumed.ReconnectLastError != "" {
+		t.Fatalf("manual resume retained reconnect state: %+v", resumed)
+	}
+	s.pauseProxyTask(task.ID, errors.New("proxy failed again"))
+	paused := task.lifecycleSnapshot()
+	if paused.PauseReason != "paused_by_proxy" || paused.ReconnectAttempt != 0 || paused.ReconnectExhausted {
+		t.Fatalf("new proxy round was not reset: %+v", paused)
+	}
+	if paused.ReconnectMax == 0 || paused.ReconnectNextAt == 0 || paused.ReconnectLastError == "" {
+		t.Fatalf("new proxy round did not initialize reconnect state: %+v", paused)
+	}
+}
+
+func TestProxyReconnectDropsStaleProbeFailureAfterNewRound(t *testing.T) {
+	m := proxyTestManager(t)
+	task, err := m.CreateTask("proxy stale probe", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) }()
+	s := newAdmissionTestServer(m, nil)
+	m.SetTaskControlMutex(&s.concMu)
+	m.globalProxy = "http://proxy.invalid"
+	oldMax, hadMax, err := m.pg.GetSetting(settingProxyReconnectMax)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if hadMax {
+			_ = m.pg.SetSetting(settingProxyReconnectMax, oldMax)
+		} else {
+			_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, settingProxyReconnectMax)
+		}
+	}()
+	if err := m.pg.SetSetting(settingProxyReconnectMax, "1"); err != nil {
+		t.Fatal(err)
+	}
+	s.proxyProbe = func(context.Context, string, string, []string, time.Duration) egressProbeResult {
+		return egressProbeResult{Error: "initial probe failure"}
+	}
+	s.pauseProxyTask(task.ID, errors.New("initial proxy failure"))
+	task.updateLifecycle(func(v *taskLifecycleState) { v.ReconnectNextAt = 0 })
+	oldRound := task.lifecycleSnapshot().ReconnectGeneration
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	s.proxyProbe = func(context.Context, string, string, []string, time.Duration) egressProbeResult {
+		close(probeStarted)
+		<-releaseProbe
+		return egressProbeResult{Error: "stale probe failure"}
+	}
+	tickDone := make(chan struct{})
+	go func() {
+		s.proxyReconnectTick()
+		close(tickDone)
+	}()
+	select {
+	case <-probeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect tick did not start its probe")
+	}
+	if _, err := s.applyTaskControl(task, "resume"); err != nil {
+		t.Fatal(err)
+	}
+	s.pauseProxyTask(task.ID, errors.New("new proxy failure"))
+	newRound := task.lifecycleSnapshot()
+	if newRound.ReconnectGeneration == oldRound || newRound.ReconnectAttempt != 0 || newRound.ReconnectExhausted {
+		t.Fatalf("new proxy round was not established: old=%d new=%+v", oldRound, newRound)
+	}
+	close(releaseProbe)
+	select {
+	case <-tickDone:
+	case <-time.After(time.Second):
+		t.Fatal("reconnect tick did not finish")
+	}
+	after := task.lifecycleSnapshot()
+	if after.PauseReason != "paused_by_proxy" || after.ReconnectGeneration != newRound.ReconnectGeneration || after.ReconnectAttempt != 0 || after.ReconnectExhausted || after.ReconnectNextAt != newRound.ReconnectNextAt || after.ReconnectLastError != newRound.ReconnectLastError {
+		t.Fatalf("stale probe mutated the new round: before=%+v after=%+v", newRound, after)
+	}
+}

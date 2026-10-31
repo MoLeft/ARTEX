@@ -129,7 +129,10 @@ type Server struct {
 	archiveWG      sync.WaitGroup
 	credentialWake chan struct{}
 	proxyReconnect proxyReconnectSupervisor
-	side           *sideQuestionState
+	// proxyProbe is injectable for deterministic reconnect race tests. Production
+	// servers leave it nil and use probeEgress directly.
+	proxyProbe func(context.Context, string, string, []string, time.Duration) egressProbeResult
+	side       *sideQuestionState
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.

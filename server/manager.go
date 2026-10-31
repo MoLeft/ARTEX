@@ -28,25 +28,26 @@ import (
 // sharing the process-wide asset store. ID is the PG task id as a string; ExpID
 // is the exploration the task owns.
 type Task struct {
-	ID                 string `json:"id"`
-	ExpID              int64  `json:"exploration_id"`
-	Remark             string `json:"remark"`
-	Name               string `json:"name"` // 可选任务名称;空=未命名
-	CategoryID         *int64 `json:"category_id,omitempty"`
-	CategoryName       string `json:"category_name,omitempty"`
-	PinnedAt           int64  `json:"pinned_at,omitempty"`
-	Description        string `json:"description"`
-	Goal               string `json:"goal"`
-	CreatedAt          int64  `json:"created_at"`
-	CompletedAt        int64  `json:"completed_at,omitempty"` // 进入终态的 unix 秒;0=未完成
-	Paused             bool   `json:"paused"`
-	PauseReason        string `json:"pause_reason,omitempty"`
-	ReconnectAttempt   int    `json:"-"`
-	ReconnectMax       int    `json:"-"`
-	ReconnectNextAt    int64  `json:"-"`
-	ReconnectExhausted bool   `json:"-"`
-	ReconnectLastError string `json:"-"`
-	Queued             bool   `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
+	ID                  string `json:"id"`
+	ExpID               int64  `json:"exploration_id"`
+	Remark              string `json:"remark"`
+	Name                string `json:"name"` // 可选任务名称;空=未命名
+	CategoryID          *int64 `json:"category_id,omitempty"`
+	CategoryName        string `json:"category_name,omitempty"`
+	PinnedAt            int64  `json:"pinned_at,omitempty"`
+	Description         string `json:"description"`
+	Goal                string `json:"goal"`
+	CreatedAt           int64  `json:"created_at"`
+	CompletedAt         int64  `json:"completed_at,omitempty"` // 进入终态的 unix 秒;0=未完成
+	Paused              bool   `json:"paused"`
+	PauseReason         string `json:"pause_reason,omitempty"`
+	ReconnectAttempt    int    `json:"-"`
+	ReconnectMax        int    `json:"-"`
+	ReconnectNextAt     int64  `json:"-"`
+	ReconnectExhausted  bool   `json:"-"`
+	ReconnectLastError  string `json:"-"`
+	ReconnectGeneration uint64 `json:"-"`
+	Queued              bool   `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
 	// QueuedAt is an internal Unix-nanosecond ordering key. It is deliberately
 	// finer than CreatedAt so several tasks enqueued in the same second retain
 	// their real FIFO order.
@@ -100,6 +101,7 @@ type taskLifecycleState struct {
 	ReconnectNextAt     int64
 	ReconnectExhausted  bool
 	ReconnectLastError  string
+	ReconnectGeneration uint64
 	Queued              bool
 	QueuedAt            int64
 	QueueMode           string
@@ -131,7 +133,7 @@ func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 		Status:           t.Status,
 		Paused:           t.Paused,
 		PauseReason:      t.PauseReason,
-		ReconnectAttempt: t.ReconnectAttempt, ReconnectMax: t.ReconnectMax, ReconnectNextAt: t.ReconnectNextAt, ReconnectExhausted: t.ReconnectExhausted, ReconnectLastError: t.ReconnectLastError,
+		ReconnectAttempt: t.ReconnectAttempt, ReconnectMax: t.ReconnectMax, ReconnectNextAt: t.ReconnectNextAt, ReconnectExhausted: t.ReconnectExhausted, ReconnectLastError: t.ReconnectLastError, ReconnectGeneration: t.ReconnectGeneration,
 		Queued:              t.Queued,
 		QueuedAt:            t.QueuedAt,
 		QueueMode:           t.QueueMode,
@@ -165,6 +167,7 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.ReconnectNextAt = state.ReconnectNextAt
 	t.ReconnectExhausted = state.ReconnectExhausted
 	t.ReconnectLastError = state.ReconnectLastError
+	t.ReconnectGeneration = state.ReconnectGeneration
 	t.Queued = state.Queued
 	t.QueuedAt = state.QueuedAt
 	t.QueueMode = state.QueueMode
@@ -1512,6 +1515,11 @@ func (m *Manager) applyTaskAdmissionWithSchedule(id, expectedStatus, status stri
 			if segmentStartedAt.Valid {
 				state.RunSegmentStartedAt = segmentStartedAt.Time.Unix()
 			}
+			state.ReconnectAttempt = 0
+			state.ReconnectMax = 0
+			state.ReconnectNextAt = 0
+			state.ReconnectExhausted = false
+			state.ReconnectLastError = ""
 		})
 	}
 	m.mu.Unlock()

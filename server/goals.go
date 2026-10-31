@@ -121,6 +121,13 @@ func (s *Server) admitTaskWhenScheduled(t *Task, mode string, requirePaused, sch
 // a user while the probe was in flight. preserveSchedule keeps calendar state
 // and never creates schedule_manual_until (used by proxy recovery).
 func (s *Server) admitTaskWhenScheduledWithReason(t *Task, mode string, requirePaused, scheduled bool, requiredReason string, preserveSchedule bool) (queued bool, err error) {
+	return s.admitTaskWhenScheduledWithGeneration(t, mode, requirePaused, scheduled, requiredReason, preserveSchedule, 0)
+}
+
+// admitTaskWhenScheduledWithGeneration extends the proxy recovery admission
+// gate with a reconnect-round check. A delayed probe must not admit a task from
+// a newer proxy pause round that happens to have the same attempt number.
+func (s *Server) admitTaskWhenScheduledWithGeneration(t *Task, mode string, requirePaused, scheduled bool, requiredReason string, preserveSchedule bool, requiredGeneration uint64) (queued bool, err error) {
 	if t == nil {
 		return false, fmt.Errorf("task not found")
 	}
@@ -166,6 +173,9 @@ func (s *Server) admitTaskWhenScheduledWithReason(t *Task, mode string, requireP
 		}
 		if requiredReason != "" && lifecycle.PauseReason != requiredReason {
 			return false, fmt.Errorf("任务暂停原因已改变")
+		}
+		if requiredReason == "paused_by_proxy" && requiredGeneration != 0 && lifecycle.ReconnectGeneration != requiredGeneration {
+			return false, fmt.Errorf("任务代理重连轮次已改变")
 		}
 		mode = s.resumeAdmissionMode(t)
 	}
