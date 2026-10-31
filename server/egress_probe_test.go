@@ -516,4 +516,7 @@ func TestMaskSecrets(t *testing.T) {
 			t.Fatalf("maskSecrets(%q) = %q，期望 %q", in, got, want)
 		}
 	}
+	if got := maskSecrets("http://user:pa ss@192.168.1.5:8080"); strings.Contains(got, "pa ss") {
+		t.Fatalf("格式错误的代理地址仍泄漏密码：%q", got)
+	}
 }

@@ -117,6 +117,7 @@ func probeBlockSensitiveDial(_, address string, _ syscall.RawConn) error {
 
 // urlTokenRe 按空白切分：错误信息里地址和别的词混在一起，整串处理会误伤。
 var urlTokenRe = regexp.MustCompile(`\S+`)
+var spacedUserinfoRe = regexp.MustCompile(`://[^/\s@:]+:[^@\n]*\s+[^@\n]*@`)
 
 // invalidPortRe 匹配 Go 报错里的 `invalid port ":xxx"`。它是独立一段（不含 `://`），
 // 而 `http://u:s3cr3t/p4ss@h` 的这段正是密码前半部分。
@@ -125,6 +126,10 @@ var invalidPortRe = regexp.MustCompile(`invalid port ":[^"]*"`)
 // maskSecrets 把地址里的密码换成 `***`（这些文本会进 Configured / Path / probes[].error，
 // 都会被界面显示）。不用 `://[^/@\s]+@` 这种正则：密码里可能有 `@` 或 `/`，换不干净。
 func maskSecrets(s string) string {
+	// shortcut: 格式错误且含空格的 userinfo 整条隐藏，需保留详细诊断时再做专门解析。
+	if spacedUserinfoRe.MatchString(s) {
+		return "代理地址格式错误（凭据已隐藏）"
+	}
 	out := urlTokenRe.ReplaceAllStringFunc(s, maskToken)
 	// 只有确实换过密码才连端口报错一起换：没有 `***@` 就是端口写错，换掉就看不出错在哪。
 	if strings.Contains(out, "***@") {
