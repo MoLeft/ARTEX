@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"iter"
@@ -417,13 +418,14 @@ func TestSideTaskContextModelUnavailableIsDistinct(t *testing.T) {
 	t.Cleanup(func() { _ = f.m.pg.DeleteTask(id) })
 	var profileID int64
 	var originalAPIKey string
-	if err := f.m.pg.QueryRow(`SELECT id, COALESCE(api_key, '') FROM llm_profiles WHERE is_default=true ORDER BY id LIMIT 1`).Scan(&profileID, &originalAPIKey); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = f.m.pg.Exec(`UPDATE llm_profiles SET api_key=$1 WHERE id=$2`, originalAPIKey, profileID)
-	})
-	if _, err := f.m.pg.Exec(`UPDATE llm_profiles SET api_key='' WHERE id=$1`, profileID); err != nil {
+	if err := f.m.pg.QueryRow(`SELECT id, COALESCE(api_key, '') FROM llm_profiles WHERE is_default=true ORDER BY id LIMIT 1`).Scan(&profileID, &originalAPIKey); err == nil {
+		t.Cleanup(func() {
+			_, _ = f.m.pg.Exec(`UPDATE llm_profiles SET api_key=$1 WHERE id=$2`, originalAPIKey, profileID)
+		})
+		if _, err := f.m.pg.Exec(`UPDATE llm_profiles SET api_key='' WHERE id=$1`, profileID); err != nil {
+			t.Fatal(err)
+		}
+	} else if err != sql.ErrNoRows {
 		t.Fatal(err)
 	}
 	f.s.cfgMu.Lock()
