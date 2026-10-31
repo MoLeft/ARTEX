@@ -28,19 +28,25 @@ import (
 // sharing the process-wide asset store. ID is the PG task id as a string; ExpID
 // is the exploration the task owns.
 type Task struct {
-	ID           string `json:"id"`
-	ExpID        int64  `json:"exploration_id"`
-	Remark       string `json:"remark"`
-	Name         string `json:"name"` // 可选任务名称;空=未命名
-	CategoryID   *int64 `json:"category_id,omitempty"`
-	CategoryName string `json:"category_name,omitempty"`
-	PinnedAt     int64  `json:"pinned_at,omitempty"`
-	Description  string `json:"description"`
-	Goal         string `json:"goal"`
-	CreatedAt    int64  `json:"created_at"`
-	CompletedAt  int64  `json:"completed_at,omitempty"` // 进入终态的 unix 秒;0=未完成
-	Paused       bool   `json:"paused"`
-	Queued       bool   `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
+	ID                 string `json:"id"`
+	ExpID              int64  `json:"exploration_id"`
+	Remark             string `json:"remark"`
+	Name               string `json:"name"` // 可选任务名称;空=未命名
+	CategoryID         *int64 `json:"category_id,omitempty"`
+	CategoryName       string `json:"category_name,omitempty"`
+	PinnedAt           int64  `json:"pinned_at,omitempty"`
+	Description        string `json:"description"`
+	Goal               string `json:"goal"`
+	CreatedAt          int64  `json:"created_at"`
+	CompletedAt        int64  `json:"completed_at,omitempty"` // 进入终态的 unix 秒;0=未完成
+	Paused             bool   `json:"paused"`
+	PauseReason        string `json:"pause_reason,omitempty"`
+	ReconnectAttempt   int    `json:"-"`
+	ReconnectMax       int    `json:"-"`
+	ReconnectNextAt    int64  `json:"-"`
+	ReconnectExhausted bool   `json:"-"`
+	ReconnectLastError string `json:"-"`
+	Queued             bool   `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
 	// QueuedAt is an internal Unix-nanosecond ordering key. It is deliberately
 	// finer than CreatedAt so several tasks enqueued in the same second retain
 	// their real FIFO order.
@@ -88,6 +94,12 @@ type taskLifecycleState struct {
 	PinnedAt            int64
 	Status              string
 	Paused              bool
+	PauseReason         string
+	ReconnectAttempt    int
+	ReconnectMax        int
+	ReconnectNextAt     int64
+	ReconnectExhausted  bool
+	ReconnectLastError  string
 	Queued              bool
 	QueuedAt            int64
 	QueueMode           string
@@ -113,11 +125,13 @@ func (t *Task) lifecycleSnapshot() taskLifecycleState {
 
 func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 	return taskLifecycleState{
-		Name:                t.Name,
-		Remark:              t.Remark,
-		PinnedAt:            t.PinnedAt,
-		Status:              t.Status,
-		Paused:              t.Paused,
+		Name:             t.Name,
+		Remark:           t.Remark,
+		PinnedAt:         t.PinnedAt,
+		Status:           t.Status,
+		Paused:           t.Paused,
+		PauseReason:      t.PauseReason,
+		ReconnectAttempt: t.ReconnectAttempt, ReconnectMax: t.ReconnectMax, ReconnectNextAt: t.ReconnectNextAt, ReconnectExhausted: t.ReconnectExhausted, ReconnectLastError: t.ReconnectLastError,
 		Queued:              t.Queued,
 		QueuedAt:            t.QueuedAt,
 		QueueMode:           t.QueueMode,
@@ -145,6 +159,12 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.PinnedAt = state.PinnedAt
 	t.Status = state.Status
 	t.Paused = state.Paused
+	t.PauseReason = state.PauseReason
+	t.ReconnectAttempt = state.ReconnectAttempt
+	t.ReconnectMax = state.ReconnectMax
+	t.ReconnectNextAt = state.ReconnectNextAt
+	t.ReconnectExhausted = state.ReconnectExhausted
+	t.ReconnectLastError = state.ReconnectLastError
 	t.Queued = state.Queued
 	t.QueuedAt = state.QueuedAt
 	t.QueueMode = state.QueueMode
@@ -1073,7 +1093,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		Remark:     pt.Remark,
 		CategoryID: cloneInt64Ptr(pt.CategoryID), CategoryName: pt.CategoryName,
 		PinnedAt:    unixOrZero(pt.PinnedAt),
-		Description: pt.Description, Goal: pt.Goal, CreatedAt: pt.CreatedAt.Unix(), Paused: pt.Paused, Queued: pt.Queued,
+		Description: pt.Description, Goal: pt.Goal, CreatedAt: pt.CreatedAt.Unix(), Paused: pt.Paused, PauseReason: pt.PauseReason, Queued: pt.Queued,
 		QueuedAt: unixNanoOrZero(pt.QueuedAt), QueueMode: pt.QueueMode,
 		CompletedAt: unixOrZero(pt.CompletedAt), Status: pt.Status, ParentRef: pt.ParentRef,
 		LLMProfileID:  pt.LLMProfileID,
@@ -1420,7 +1440,7 @@ func (m *Manager) applyTaskAdmission(id, expectedStatus, status string, queued b
 	        WHEN $2 IN ('done','failed','timeout') THEN COALESCE(completed_at, now())
 	        ELSE NULL
 	    END,
-	    paused=false, schedule_paused=false,
+	    paused=false, pause_reason='', schedule_paused=false,
 	    schedule_manual_until=COALESCE($7::timestamptz, schedule_manual_until),
 	    queued=$3,
 	    queued_at=CASE
@@ -1458,6 +1478,7 @@ func (m *Manager) applyTaskAdmission(id, expectedStatus, status string, queued b
 		t.updateLifecycle(func(state *taskLifecycleState) {
 			state.Status = status
 			state.Paused = false
+			state.PauseReason = ""
 			state.Queued = queued
 			state.QueueMode = committedMode
 			state.QueuedAt = 0
@@ -1494,6 +1515,12 @@ func (m *Manager) applyTaskAdmission(id, expectedStatus, status string, queued b
 func (m *Manager) ApplyTaskPause(id string) error { return m.ApplyTaskPauseOrigin(id, false) }
 
 func (m *Manager) ApplyTaskPauseOrigin(id string, scheduled bool) error {
+	return m.ApplyTaskPauseOriginReason(id, map[bool]string{true: "paused_by_schedule", false: "paused_by_user"}[scheduled], scheduled)
+}
+
+// ApplyTaskPauseOriginReason persists a pause cause and keeps it on the live handle.
+// reason is a stable API value such as user, schedule, orchestrator, or proxy.
+func (m *Manager) ApplyTaskPauseOriginReason(id, reason string, scheduled bool) error {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
 	n, err := strconv.ParseInt(id, 10, 64)
@@ -1504,12 +1531,12 @@ func (m *Manager) ApplyTaskPauseOrigin(id string, scheduled bool) error {
 	var activeRunSeconds int64
 	var segmentStartedAt sql.NullTime
 	err = m.pg.QueryRow(`UPDATE tasks
-		SET paused=true, queued=false, queued_at=NULL, schedule_paused=$2, schedule_manual_until=NULL,
+		SET paused=true, pause_reason=$3, queued=false, queued_at=NULL, schedule_paused=$2, schedule_manual_until=NULL,
 		    active_run_seconds=active_run_seconds + CASE WHEN run_segment_started_at IS NOT NULL THEN GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - run_segment_started_at)))::bigint) ELSE 0 END,
 		    run_segment_started_at=NULL
 		WHERE id=$1 AND deleted_at IS NULL AND paused=false
 		  AND status NOT IN ('done','failed','timeout')
-		RETURNING COALESCE(queue_mode,''), active_run_seconds, run_segment_started_at`, n, scheduled).Scan(&mode, &activeRunSeconds, &segmentStartedAt)
+		RETURNING COALESCE(queue_mode,''), active_run_seconds, run_segment_started_at`, n, scheduled, reason).Scan(&mode, &activeRunSeconds, &segmentStartedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("task %s is unavailable for pause", id)
 	}
@@ -1520,6 +1547,12 @@ func (m *Manager) ApplyTaskPauseOrigin(id string, scheduled bool) error {
 	if t := m.tasks[id]; t != nil {
 		t.updateLifecycle(func(state *taskLifecycleState) {
 			state.Paused = true
+			state.PauseReason = reason
+			state.ReconnectAttempt = 0
+			state.ReconnectMax = 0
+			state.ReconnectNextAt = 0
+			state.ReconnectExhausted = false
+			state.ReconnectLastError = ""
 			state.Queued = false
 			state.QueuedAt = 0
 			state.QueueMode = mode
@@ -1531,6 +1564,60 @@ func (m *Manager) ApplyTaskPauseOrigin(id string, scheduled bool) error {
 		})
 	}
 	m.mu.Unlock()
+	return nil
+}
+
+// ApplyProxyPause atomically pauses a running task and marks it eligible for
+// reconnect auto-resume. Already-paused tasks retain their original reason.
+func (m *Manager) ApplyProxyPause(id string) error {
+	m.taskStateMu.Lock()
+	defer m.taskStateMu.Unlock()
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		return err
+	}
+	var mode string
+	var active int64
+	var started sql.NullTime
+	err = m.pg.QueryRow(`UPDATE tasks SET paused=true, pause_reason='paused_by_proxy', queued=false, queued_at=NULL,
+ schedule_paused=false, schedule_manual_until=NULL,
+ active_run_seconds=active_run_seconds + CASE WHEN run_segment_started_at IS NOT NULL THEN GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - run_segment_started_at)))::bigint) ELSE 0 END,
+ run_segment_started_at=NULL WHERE id=$1 AND deleted_at IS NULL AND paused=false AND status NOT IN ('done','failed','timeout')
+ RETURNING COALESCE(queue_mode,''), active_run_seconds, run_segment_started_at`, n).Scan(&mode, &active, &started)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	m.mu.RLock()
+	t := m.tasks[id]
+	m.mu.RUnlock()
+	if t != nil {
+		t.updateLifecycle(func(s *taskLifecycleState) {
+			s.Paused = true
+			s.PauseReason = "paused_by_proxy"
+			s.Queued = false
+			s.QueuedAt = 0
+			s.QueueMode = mode
+			s.ActiveRunSeconds = active
+			s.RunSegmentStartedAt = 0
+		})
+	}
+	return nil
+}
+
+// ClearPauseReason removes auto-resume eligibility without changing lifecycle.
+func (m *Manager) ClearPauseReason(id string) error {
+	if _, err := m.pg.Exec(`UPDATE tasks SET pause_reason='' WHERE id=$1 AND pause_reason='paused_by_proxy'`, id); err != nil {
+		return err
+	}
+	m.mu.RLock()
+	t := m.tasks[id]
+	m.mu.RUnlock()
+	if t != nil && t.lifecycleSnapshot().PauseReason == "paused_by_proxy" {
+		t.updateLifecycle(func(s *taskLifecycleState) { s.PauseReason = "" })
+	}
 	return nil
 }
 

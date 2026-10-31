@@ -116,9 +116,17 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 		}
 		if lifecycle.Paused {
 			if pauseCause != agent.AbortPausedBySchedule {
-				if _, err := s.m.pg.Exec(`UPDATE tasks SET schedule_paused=false WHERE id=$1`, t.ID); err != nil {
+				if _, err := s.m.pg.Exec(`UPDATE tasks SET schedule_paused=false, pause_reason='paused_by_user' WHERE id=$1`, t.ID); err != nil {
 					return out, err
 				}
+				t.updateLifecycle(func(state *taskLifecycleState) {
+					state.PauseReason = "paused_by_user"
+					state.ReconnectAttempt = 0
+					state.ReconnectMax = 0
+					state.ReconnectNextAt = 0
+					state.ReconnectExhausted = false
+					state.ReconnectLastError = ""
+				})
 				out.Paused = true
 				out.Status = "paused"
 				return out, nil
@@ -131,7 +139,17 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 			pauseCause = agent.AbortPausedByUser
 		}
 		s.engine.Pause(t.ID, pauseCause)
-		if err := s.m.ApplyTaskPauseOrigin(t.ID, pauseCause == agent.AbortPausedBySchedule); err != nil {
+		reason := "paused_by_user"
+		if pauseCause == agent.AbortPausedBySchedule {
+			reason = "paused_by_schedule"
+		}
+		if pauseCause == agent.AbortPausedByOrchestrator {
+			reason = "paused_by_orchestrator"
+		}
+		if pauseCause == agent.AbortPausedByProxy {
+			reason = "paused_by_proxy"
+		}
+		if err := s.m.ApplyTaskPauseOriginReason(t.ID, reason, pauseCause == agent.AbortPausedBySchedule); err != nil {
 			if !wasEnginePaused && !wasQueued {
 				s.engine.Resume(t)
 			}

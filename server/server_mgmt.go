@@ -101,7 +101,12 @@ func (s *Server) beginTaskDelete(taskID string) bool {
 	if s.engine.IsDeleting(taskID) {
 		return false
 	}
-	return s.engine.BeginDelete(taskID)
+	ok := s.engine.BeginDelete(taskID)
+	if ok {
+		// A user delete/archive action is an explicit override of proxy recovery.
+		_ = s.m.ClearPauseReason(taskID)
+	}
+	return ok
 }
 
 // abortTaskDelete restores the execution barrier from the committed task row,
