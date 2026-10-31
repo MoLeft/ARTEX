@@ -1580,6 +1580,16 @@ func (m *Manager) ApplyTaskPauseOriginReason(id, reason string, scheduled bool) 
 // ApplyProxyPause atomically pauses a running task and marks it eligible for
 // reconnect auto-resume. Already-paused tasks retain their original reason.
 func (m *Manager) ApplyProxyPause(id string) error {
+	_, err := m.ApplyProxyPauseWithCallback(id, nil)
+	return err
+}
+
+// ApplyProxyPauseWithCallback is the locked proxy-pause transition. When the
+// task actually changes from running to paused, callback runs while the
+// Server's task-control mutex is still held, after the DB and live lifecycle
+// state have committed. This lets callers install the Engine barrier before a
+// concurrent user/orchestrator pause can observe the new paused state.
+func (m *Manager) ApplyProxyPauseWithCallback(id string, callback func()) (transitioned bool, err error) {
 	if m.controlMu != nil {
 		m.controlMu.Lock()
 		defer m.controlMu.Unlock()
@@ -1588,7 +1598,7 @@ func (m *Manager) ApplyProxyPause(id string) error {
 	defer m.taskStateMu.Unlock()
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var mode string
 	var active int64
@@ -1598,10 +1608,10 @@ func (m *Manager) ApplyProxyPause(id string) error {
  run_segment_started_at=NULL WHERE id=$1 AND deleted_at IS NULL AND paused=false AND status NOT IN ('done','failed','timeout')
  RETURNING COALESCE(queue_mode,''), active_run_seconds, run_segment_started_at`, n).Scan(&mode, &active, &started)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	m.mu.RLock()
 	t := m.tasks[id]
@@ -1617,7 +1627,10 @@ func (m *Manager) ApplyProxyPause(id string) error {
 			s.RunSegmentStartedAt = 0
 		})
 	}
-	return nil
+	if callback != nil {
+		callback()
+	}
+	return true, nil
 }
 
 // ClearPauseReason removes auto-resume eligibility without changing lifecycle.
@@ -1633,7 +1646,7 @@ func (m *Manager) ClearPauseReason(id string) error {
 			s.PauseReason = ""
 			s.ReconnectAttempt, s.ReconnectMax, s.ReconnectNextAt = 0, 0, 0
 			s.ReconnectExhausted, s.ReconnectLastError = false, ""
-	})
+		})
 	}
 	return nil
 }

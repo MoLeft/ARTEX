@@ -108,24 +108,29 @@ func (s *Server) pauseProxyTask(taskID string, cause error) {
 	if strings.TrimSpace(s.m.GlobalProxy()) == "" {
 		return
 	}
-	err := s.m.ApplyProxyPause(taskID)
+	transitioned, err := s.m.ApplyProxyPauseWithCallback(taskID, func() {
+		if s.engine != nil {
+			s.engine.Pause(taskID, agent.AbortPausedByProxy)
+		}
+	})
 	if err != nil {
 		log.Printf("[proxy] pause task %s: %v", taskID, err)
 		return
 	}
-	if s.engine != nil {
-		if t, ok := s.m.Task(taskID); ok && t.lifecycleSnapshot().PauseReason == "paused_by_proxy" {
-			s.engine.Pause(taskID, agent.AbortPausedByProxy)
-		}
+	if !transitioned {
+		// A no-op means the task was already paused (possibly by a user,
+		// schedule, or an exhausted proxy attempt). Preserve its reason and
+		// reconnect state exactly as-is.
+		return
 	}
 	s.cancelTaskChat(taskID, agent.AbortChatPausedWithTask)
 	max, interval := s.proxyReconnectConfig()
 	now := time.Now().Add(interval).Unix()
-	for _, t := range s.m.List() {
-		if t.ID != taskID && t.lifecycleSnapshot().PauseReason != "paused_by_proxy" {
-			continue
-		}
+	if t, ok := s.m.Task(taskID); ok {
 		t.updateLifecycle(func(st *taskLifecycleState) {
+			// Only the task that transitioned in this call starts a new
+			// reconnect round. A task that exhausted a prior round remains
+			// untouched until it is manually resumed and paused again.
 			st.ReconnectMax = max
 			st.ReconnectNextAt = now
 			st.ReconnectExhausted = false
@@ -238,6 +243,14 @@ func (s *Server) proxyReconnectTick() {
 }
 
 func (s *Server) proxyReconnectSuccess() {
+	s.proxyReconnectSuccessWithHook(nil)
+}
+
+// proxyReconnectSuccessWithHook is kept small and private so tests can
+// deterministically place a competing pause immediately after admission has
+// released concMu. Production callers use proxyReconnectSuccess without a
+// hook.
+func (s *Server) proxyReconnectSuccessWithHook(afterAdmission func()) {
 	max, interval := s.proxyReconnectConfig()
 	s.scheduleMu.Lock()
 	defer s.scheduleMu.Unlock()
@@ -258,12 +271,12 @@ func (s *Server) proxyReconnectSuccess() {
 				continue
 			}
 		}
-		var (
-			queued bool
-			err    error
-		)
+		var err error
 		if s.engine != nil {
-			queued, err = s.admitTaskWhenScheduledWithReason(t, "resume", true, false, "paused_by_proxy", true)
+			_, err = s.admitTaskWhenScheduledWithReason(t, "resume", true, false, "paused_by_proxy", true)
+			if afterAdmission != nil {
+				afterAdmission()
+			}
 		} else {
 			err = s.m.ClearPauseReason(t.ID)
 		}
@@ -281,9 +294,10 @@ func (s *Server) proxyReconnectSuccess() {
 			log.Printf("[proxy] resume task %s: %v", t.ID, err)
 			continue
 		}
-		if s.engine != nil && !queued {
-			s.engine.Resume(t)
-		}
+		// The non-queued path's startAdmittedTask already resumes the Engine
+		// while concMu is held. Do not Resume again after releasing the lock:
+		// a concurrent user/orchestrator pause could have installed a newer
+		// barrier in the meantime.
 		t.updateLifecycle(func(v *taskLifecycleState) {
 			v.ReconnectAttempt = 0
 			v.ReconnectMax = 0

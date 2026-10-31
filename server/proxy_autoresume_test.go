@@ -192,3 +192,134 @@ func TestProxyAdmissionPreservesCalendarOverride(t *testing.T) {
 		t.Fatalf("proxy admission changed calendar state: paused=%v until=%v", schedulePaused, manualUntil)
 	}
 }
+
+func TestProxyReconnectSuccessKeepsCompetingUserPauseBarrier(t *testing.T) {
+	m := proxyTestManager(t)
+	task, err := m.CreateTask("proxy success race", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) }()
+	s := newAdmissionTestServer(m, nil)
+	m.SetTaskControlMutex(&s.concMu)
+	m.globalProxy = "http://proxy.invalid"
+	if _, err := m.ApplyProxyPauseWithCallback(task.ID, func() { s.engine.Pause(task.ID, agent.AbortPausedByProxy) }); err != nil {
+		t.Fatal(err)
+	}
+
+	var pauseErr error
+	s.proxyReconnectSuccessWithHook(func() {
+		_, pauseErr = s.applyTaskControl(task, "pause")
+	})
+	if pauseErr != nil {
+		t.Fatalf("competing user pause failed: %v", pauseErr)
+	}
+	state := task.lifecycleSnapshot()
+	if state.PauseReason != "paused_by_user" || !state.Paused {
+		t.Fatalf("user pause was overwritten: %+v", state)
+	}
+	if !s.engine.IsPaused(task.ID) {
+		t.Fatal("user pause barrier was cleared by a post-admission Resume")
+	}
+}
+
+func TestProxyPauseBarrierInstalledBeforeControlUnlock(t *testing.T) {
+	m := proxyTestManager(t)
+	task, err := m.CreateTask("proxy barrier", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) }()
+	s := newAdmissionTestServer(m, nil)
+	m.SetTaskControlMutex(&s.concMu)
+	m.globalProxy = "http://proxy.invalid"
+
+	userDone := make(chan error, 1)
+	transitioned, err := m.ApplyProxyPauseWithCallback(task.ID, func() {
+		s.engine.Pause(task.ID, agent.AbortPausedByProxy)
+		if !s.engine.IsPaused(task.ID) {
+			t.Fatal("proxy barrier was not installed in the locked callback")
+		}
+		go func() {
+			_, pauseErr := s.applyTaskControl(task, "pause")
+			userDone <- pauseErr
+		}()
+		select {
+		case <-userDone:
+			t.Fatal("user pause acquired concMu before proxy callback returned")
+		case <-time.After(20 * time.Millisecond):
+		}
+	})
+	if err != nil || !transitioned {
+		t.Fatalf("proxy transition=%v err=%v", transitioned, err)
+	}
+	if err := <-userDone; err != nil {
+		t.Fatalf("concurrent user pause failed: %v", err)
+	}
+	if !s.engine.IsPaused(task.ID) {
+		t.Fatal("concurrent user pause left the engine running")
+	}
+	if got := task.lifecycleSnapshot().PauseReason; got != "paused_by_user" {
+		t.Fatalf("concurrent user pause reason=%q", got)
+	}
+}
+
+func TestProxyPauseDoesNotReviveExhaustedOrNonProxyTasks(t *testing.T) {
+	m := proxyTestManager(t)
+	exhausted, err := m.CreateTask("exhausted proxy", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userPaused, err := m.CreateTask("user paused", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := m.CreateTask("new proxy failure", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = m.DeleteTask(exhausted.ID, DeleteTaskOptions{})
+		_, _ = m.DeleteTask(userPaused.ID, DeleteTaskOptions{})
+		_, _ = m.DeleteTask(other.ID, DeleteTaskOptions{})
+	}()
+	s := newAdmissionTestServer(m, nil)
+	m.SetTaskControlMutex(&s.concMu)
+	m.globalProxy = "http://proxy.invalid"
+	if err := m.ApplyProxyPause(exhausted.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApplyTaskPauseOriginReason(userPaused.ID, "paused_by_user", false); err != nil {
+		t.Fatal(err)
+	}
+	exhausted.updateLifecycle(func(v *taskLifecycleState) {
+		v.ReconnectAttempt, v.ReconnectMax, v.ReconnectNextAt = 5, 5, 12345
+		v.ReconnectExhausted, v.ReconnectLastError = true, "proxy down"
+	})
+	userPaused.updateLifecycle(func(v *taskLifecycleState) {
+		v.ReconnectAttempt, v.ReconnectMax, v.ReconnectNextAt = 3, 7, 23456
+		v.ReconnectExhausted, v.ReconnectLastError = true, "manual pause state"
+	})
+	exhaustedBefore := exhausted.lifecycleSnapshot()
+	userBefore := userPaused.lifecycleSnapshot()
+
+	// A no-op proxy pause on an already paused task must not reset either state.
+	s.pauseProxyTask(exhausted.ID, errors.New("another proxy failure"))
+	s.pauseProxyTask(userPaused.ID, errors.New("proxy failure while user paused"))
+	if got := exhausted.lifecycleSnapshot(); got.ReconnectNextAt != exhaustedBefore.ReconnectNextAt || !got.ReconnectExhausted || got.ReconnectLastError != exhaustedBefore.ReconnectLastError {
+		t.Fatalf("exhausted task was revived: before=%+v after=%+v", exhaustedBefore, got)
+	}
+	if got := userPaused.lifecycleSnapshot(); got.PauseReason != "paused_by_user" || got.ReconnectNextAt != userBefore.ReconnectNextAt || !got.ReconnectExhausted {
+		t.Fatalf("user-paused task was mutated: before=%+v after=%+v", userBefore, got)
+	}
+
+	// A genuinely new proxy pause of another running task initializes only that
+	// task's reconnect round.
+	s.pauseProxyTask(other.ID, errors.New("new proxy failure"))
+	if got := exhausted.lifecycleSnapshot(); got.ReconnectNextAt != exhaustedBefore.ReconnectNextAt || !got.ReconnectExhausted {
+		t.Fatalf("subsequent proxy pause revived exhausted task: %+v", got)
+	}
+	if got := other.lifecycleSnapshot(); got.PauseReason != "paused_by_proxy" || got.ReconnectMax == 0 || got.ReconnectExhausted {
+		t.Fatalf("new proxy task did not initialize reconnect state: %+v", got)
+	}
+}

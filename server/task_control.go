@@ -116,17 +116,31 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 		}
 		if lifecycle.Paused {
 			if pauseCause != agent.AbortPausedBySchedule {
-				if _, err := s.m.pg.Exec(`UPDATE tasks SET schedule_paused=false, pause_reason='paused_by_user' WHERE id=$1`, t.ID); err != nil {
+				if pauseCause == nil {
+					pauseCause = agent.AbortPausedByUser
+				}
+				reason := "paused_by_user"
+				if pauseCause == agent.AbortPausedByOrchestrator {
+					reason = "paused_by_orchestrator"
+				}
+				if pauseCause == agent.AbortPausedByProxy {
+					reason = "paused_by_proxy"
+				}
+				if _, err := s.m.pg.Exec(`UPDATE tasks SET schedule_paused=false, pause_reason=$2 WHERE id=$1`, t.ID, reason); err != nil {
 					return out, err
 				}
 				t.updateLifecycle(func(state *taskLifecycleState) {
-					state.PauseReason = "paused_by_user"
+					state.PauseReason = reason
 					state.ReconnectAttempt = 0
 					state.ReconnectMax = 0
 					state.ReconnectNextAt = 0
 					state.ReconnectExhausted = false
 					state.ReconnectLastError = ""
 				})
+				// The lifecycle row may already have been paused by another
+				// actor. Reinstall the requested cause barrier while holding
+				// concMu instead of assuming the existing barrier is sufficient.
+				s.engine.Pause(t.ID, pauseCause)
 				out.Paused = true
 				out.Status = "paused"
 				return out, nil
