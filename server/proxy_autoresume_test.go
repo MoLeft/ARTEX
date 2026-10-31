@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -369,6 +370,11 @@ func TestProxyReconnectDropsStaleProbeFailureAfterNewRound(t *testing.T) {
 	s := newAdmissionTestServer(m, nil)
 	m.SetTaskControlMutex(&s.concMu)
 	m.globalProxy = "http://proxy.invalid"
+	// Keep the canceled test server from starting its supervisor. The test owns
+	// the reconnect tick and injects a blocking probe below.
+	s.proxyReconnect.mu.Lock()
+	s.proxyReconnect.wake = make(chan struct{}, 1)
+	s.proxyReconnect.mu.Unlock()
 	oldMax, hadMax, err := m.pg.GetSetting(settingProxyReconnectMax)
 	if err != nil {
 		t.Fatal(err)
@@ -391,8 +397,9 @@ func TestProxyReconnectDropsStaleProbeFailureAfterNewRound(t *testing.T) {
 	oldRound := task.lifecycleSnapshot().ReconnectGeneration
 	probeStarted := make(chan struct{})
 	releaseProbe := make(chan struct{})
+	var probeStartedOnce sync.Once
 	s.proxyProbe = func(context.Context, string, string, []string, time.Duration) egressProbeResult {
-		close(probeStarted)
+		probeStartedOnce.Do(func() { close(probeStarted) })
 		<-releaseProbe
 		return egressProbeResult{Error: "stale probe failure"}
 	}
@@ -423,5 +430,71 @@ func TestProxyReconnectDropsStaleProbeFailureAfterNewRound(t *testing.T) {
 	after := task.lifecycleSnapshot()
 	if after.PauseReason != "paused_by_proxy" || after.ReconnectGeneration != newRound.ReconnectGeneration || after.ReconnectAttempt != 0 || after.ReconnectExhausted || after.ReconnectNextAt != newRound.ReconnectNextAt || after.ReconnectLastError != newRound.ReconnectLastError {
 		t.Fatalf("stale probe mutated the new round: before=%+v after=%+v", newRound, after)
+	}
+}
+
+func TestProxyReconnectManualSuccessDoesNotAdmitNewRound(t *testing.T) {
+	m := proxyTestManager(t)
+	task, err := m.CreateTask("proxy stale manual success", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) }()
+	s := newAdmissionTestServer(m, nil)
+	m.SetTaskControlMutex(&s.concMu)
+	m.globalProxy = "http://proxy.invalid"
+	if err := m.ApplyProxyPause(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	s.engine.Pause(task.ID, agent.AbortPausedByProxy)
+	guards := s.snapshotProxyReconnectGuards(false)
+	task.updateLifecycle(func(v *taskLifecycleState) {
+		v.ReconnectGeneration++
+		v.ReconnectNextAt = 987654
+		v.ReconnectLastError = "new round still failing"
+	})
+	before := task.lifecycleSnapshot()
+	s.proxyReconnectSuccessWithGuards(guards, nil)
+	after := task.lifecycleSnapshot()
+	if after.PauseReason != "paused_by_proxy" || !s.engine.IsPaused(task.ID) {
+		t.Fatalf("stale manual success admitted new round: %+v", after)
+	}
+	if after.ReconnectGeneration != before.ReconnectGeneration || after.ReconnectNextAt != before.ReconnectNextAt || after.ReconnectLastError != before.ReconnectLastError {
+		t.Fatalf("stale manual success wiped new round state: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestProxyReconnectSettingsSuccessGuardsGenerationZero(t *testing.T) {
+	m := proxyTestManager(t)
+	task, err := m.CreateTask("proxy generation zero", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) }()
+	s := newAdmissionTestServer(m, nil)
+	m.SetTaskControlMutex(&s.concMu)
+	m.globalProxy = "http://proxy.invalid"
+	if err := m.ApplyProxyPause(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	s.engine.Pause(task.ID, agent.AbortPausedByProxy)
+	initial := task.lifecycleSnapshot()
+	if initial.ReconnectGeneration != 0 {
+		t.Fatalf("fresh persisted proxy pause generation=%d, want zero", initial.ReconnectGeneration)
+	}
+	guards := s.snapshotProxyReconnectGuards(false)
+	task.updateLifecycle(func(v *taskLifecycleState) {
+		v.ReconnectGeneration = 1
+		v.ReconnectNextAt = 13579
+		v.ReconnectLastError = "generation one failure"
+	})
+	before := task.lifecycleSnapshot()
+	s.proxyReconnectSuccessWithGuards(guards, nil)
+	after := task.lifecycleSnapshot()
+	if after.PauseReason != "paused_by_proxy" || !s.engine.IsPaused(task.ID) {
+		t.Fatalf("generation-zero stale settings success admitted new round: %+v", after)
+	}
+	if after.ReconnectGeneration != before.ReconnectGeneration || after.ReconnectNextAt != before.ReconnectNextAt || after.ReconnectLastError != before.ReconnectLastError {
+		t.Fatalf("generation-zero stale settings success wiped state: before=%+v after=%+v", before, after)
 	}
 }

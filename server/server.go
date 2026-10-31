@@ -3851,6 +3851,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		changed = true
 	}
 	if req.GlobalProxy != nil {
+		var proxyGuards map[string]proxyReconnectGuard
+		if strings.TrimSpace(*req.GlobalProxy) == "" {
+			proxyGuards = s.snapshotProxyReconnectGuards(false)
+		}
 		// Validation failure (bad scheme/host) is a client error, not a 500.
 		if err := s.m.SetGlobalProxy(*req.GlobalProxy); err != nil {
 			writeErr(w, 400, err.Error())
@@ -3858,7 +3862,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		changed = true // capture-off egress is baked into agents at build time → rebuild
 		if strings.TrimSpace(*req.GlobalProxy) == "" {
-			s.proxyReconnectSuccess()
+			s.proxyReconnectSuccessWithGuards(proxyGuards, nil)
 		}
 	}
 	if req.ProxyReconnectMax != nil || req.ProxyReconnectInterval != nil {

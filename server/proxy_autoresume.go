@@ -58,6 +58,36 @@ type proxyReconnectSupervisor struct {
 	wake chan struct{}
 }
 
+type proxyReconnectGuard struct {
+	generation   uint64
+	attempt      int
+	checkAttempt bool
+}
+
+func (s *Server) snapshotProxyReconnectGuards(checkAttempt bool) map[string]proxyReconnectGuard {
+	guards := make(map[string]proxyReconnectGuard)
+	if s == nil || s.m == nil {
+		return guards
+	}
+	for _, t := range s.m.List() {
+		st := t.lifecycleSnapshot()
+		if st.PauseReason != "paused_by_proxy" {
+			continue
+		}
+		guards[t.ID] = proxyReconnectGuard{
+			generation:   st.ReconnectGeneration,
+			attempt:      st.ReconnectAttempt,
+			checkAttempt: checkAttempt,
+		}
+	}
+	return guards
+}
+
+func proxyReconnectGuardMatches(st taskLifecycleState, guard proxyReconnectGuard) bool {
+	return st.PauseReason == "paused_by_proxy" && st.ReconnectGeneration == guard.generation &&
+		(!guard.checkAttempt || st.ReconnectAttempt == guard.attempt)
+}
+
 func (s *Server) ensureProxySupervisor() {
 	s.proxyReconnect.mu.Lock()
 	if s.proxyReconnect.wake == nil {
@@ -245,7 +275,9 @@ func (s *Server) proxyReconnectTick() {
 		}
 		res := s.runProxyProbe(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second)
 		if res.OK {
-			s.proxyReconnectSuccessFor(t.ID, round, attempt)
+			s.proxyReconnectSuccessWithGuards(map[string]proxyReconnectGuard{
+				t.ID: {generation: round, attempt: attempt, checkAttempt: true},
+			}, nil)
 			return
 		}
 		err := res.Error
@@ -264,11 +296,13 @@ func (s *Server) proxyReconnectTick() {
 }
 
 func (s *Server) proxyReconnectSuccess() {
-	s.proxyReconnectSuccessWithGuard("", 0, 0, nil)
+	s.proxyReconnectSuccessWithGuards(s.snapshotProxyReconnectGuards(false), nil)
 }
 
 func (s *Server) proxyReconnectSuccessFor(taskID string, generation uint64, attempt int) {
-	s.proxyReconnectSuccessWithGuard(taskID, generation, attempt, nil)
+	s.proxyReconnectSuccessWithGuards(map[string]proxyReconnectGuard{
+		taskID: {generation: generation, attempt: attempt, checkAttempt: true},
+	}, nil)
 }
 
 // proxyReconnectSuccessWithHook is kept small and private so tests can
@@ -276,22 +310,30 @@ func (s *Server) proxyReconnectSuccessFor(taskID string, generation uint64, atte
 // released concMu. Production callers use proxyReconnectSuccess without a
 // hook.
 func (s *Server) proxyReconnectSuccessWithHook(afterAdmission func()) {
-	s.proxyReconnectSuccessWithGuard("", 0, 0, afterAdmission)
+	s.proxyReconnectSuccessWithGuards(s.snapshotProxyReconnectGuards(false), afterAdmission)
 }
 
 func (s *Server) proxyReconnectSuccessWithGuard(expectedID string, expectedGeneration uint64, expectedAttempt int, afterAdmission func()) {
+	guards := s.snapshotProxyReconnectGuards(false)
+	if expectedID != "" {
+		guards = map[string]proxyReconnectGuard{
+			expectedID: {generation: expectedGeneration, attempt: expectedAttempt, checkAttempt: true},
+		}
+	}
+	s.proxyReconnectSuccessWithGuards(guards, afterAdmission)
+}
+
+func (s *Server) proxyReconnectSuccessWithGuards(guards map[string]proxyReconnectGuard, afterAdmission func()) {
 	max, interval := s.proxyReconnectConfig()
 	s.scheduleMu.Lock()
 	defer s.scheduleMu.Unlock()
 	for _, t := range s.m.List() {
-		if st := t.lifecycleSnapshot(); st.PauseReason != "paused_by_proxy" {
+		guard, ok := guards[t.ID]
+		if !ok {
 			continue
 		}
-		if expectedID == t.ID {
-			st := t.lifecycleSnapshot()
-			if st.PauseReason != "paused_by_proxy" || st.ReconnectGeneration != expectedGeneration || st.ReconnectAttempt != expectedAttempt {
-				continue
-			}
+		if !proxyReconnectGuardMatches(t.lifecycleSnapshot(), guard) {
+			continue
 		}
 		if s.m.pg != nil {
 			inside, scheduleErr := s.proxyResumeInsideSchedule(t.ID, time.Now())
@@ -308,11 +350,7 @@ func (s *Server) proxyReconnectSuccessWithGuard(expectedID string, expectedGener
 		}
 		var err error
 		if s.engine != nil {
-			if expectedID == t.ID {
-				_, err = s.admitTaskWhenScheduledWithGeneration(t, "resume", true, false, "paused_by_proxy", true, expectedGeneration)
-			} else {
-				_, err = s.admitTaskWhenScheduledWithReason(t, "resume", true, false, "paused_by_proxy", true)
-			}
+			_, err = s.admitTaskWhenScheduledWithGenerationChecked(t, "resume", true, false, "paused_by_proxy", true, guard.generation, true)
 			if afterAdmission != nil {
 				afterAdmission()
 			}
@@ -324,8 +362,7 @@ func (s *Server) proxyReconnectSuccessWithGuard(expectedID string, expectedGener
 			// terminal transition, delete, or archive therefore cannot be revived;
 			// only keep probing if the proxy pause is still eligible.
 			st := t.lifecycleSnapshot()
-			if st.PauseReason == "paused_by_proxy" && !isTerminalStatus(st.Status) &&
-				(expectedID == "" || (st.ReconnectGeneration == expectedGeneration && st.ReconnectAttempt == expectedAttempt)) {
+			if proxyReconnectGuardMatches(st, guard) && !isTerminalStatus(st.Status) {
 				t.updateLifecycle(func(v *taskLifecycleState) {
 					v.ReconnectMax = max
 					v.ReconnectNextAt = time.Now().Add(interval).Unix()
@@ -339,7 +376,7 @@ func (s *Server) proxyReconnectSuccessWithGuard(expectedID string, expectedGener
 		// a concurrent user/orchestrator pause could have installed a newer
 		// barrier in the meantime.
 		t.updateLifecycle(func(v *taskLifecycleState) {
-			if expectedID == t.ID && v.ReconnectGeneration != expectedGeneration {
+			if !proxyReconnectGuardMatches(*v, guard) {
 				return
 			}
 			v.ReconnectAttempt = 0
@@ -359,14 +396,15 @@ func (s *Server) testTaskProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proxy := strings.TrimSpace(s.m.GlobalProxy())
+	guards := s.snapshotProxyReconnectGuards(false)
 	if proxy == "" {
 		writeJSON(w, 200, map[string]any{"ok": true, "direct": true})
-		s.proxyReconnectSuccess()
+		s.proxyReconnectSuccessWithGuards(guards, nil)
 		return
 	}
-	res := probeEgress(r.Context(), proxy, "", defaultEgressProbes, 10*time.Second)
+	res := s.runProxyProbe(r.Context(), proxy, "", defaultEgressProbes, 10*time.Second)
 	if res.OK {
-		s.proxyReconnectSuccess()
+		s.proxyReconnectSuccessWithGuards(guards, nil)
 	}
 	if !res.OK && res.Error == "" {
 		res.Error = "代理探测失败"
