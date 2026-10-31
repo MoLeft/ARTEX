@@ -6,13 +6,13 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 </div>
 
-本仓库是 [RuoJi6/ARTEX](https://github.com/RuoJi6/ARTEX) 的独立维护 fork，保留 [原项目](https://github.com/Autumn-27/ARTEX) 的提交历史与 AGPL-3.0 许可证。正式发布后，程序包从 [MoLeft/ARTEX Releases](https://github.com/MoLeft/ARTEX/releases) 下载，Docker 镜像使用 [moleft/artex](https://hub.docker.com/r/moleft/artex)。
+本仓库是 [RuoJi6/ARTEX](https://github.com/RuoJi6/ARTEX) 的独立维护 fork，保留 [原项目](https://github.com/Autumn-27/ARTEX) 的提交历史与 AGPL-3.0 许可证。正式发布后，程序包从 [MoLeft/ARTEX Releases](https://github.com/MoLeft/ARTEX/releases) 下载，Docker 镜像使用 [moleftcn/artex](https://hub.docker.com/r/moleftcn/artex)。
 
 ---
 
 ## 截图预览
 
-> 以下为界面截图；本 fork 的在线 Demo 尚未配置。
+> 以下为界面截图；本 fork 的在线 Demo 项目已创建，首次正式版发布后上线。
 
 | 仪表盘（总览 / Token 消耗 / 活动流） | 任务列表 |
 | :---: | :---: |
@@ -69,7 +69,7 @@ Demo 只运行 `web/` 前端，构建时启用 `NEXT_PUBLIC_MOCK=1`，不需要 
 
 ### 首次配置 Vercel
 
-1. 在自己的 Vercel 账号创建空项目，设置名称（例如 `artex-demo-moleft`）。保持 **Git 未连接**，避免每次提交都自动部署。`web/vercel.json` 也禁用了 Git 自动部署。
+1. 在自己的 Vercel 账号创建空项目（本 fork 使用 `artex-demo`）。保持 **Git 未连接**，避免每次提交都自动部署。`web/vercel.json` 也禁用了 Git 自动部署。
 2. 在 **Settings → Build and Deployment** 中选择 **Next.js**、Node.js **22.x**，安装命令可覆盖为 `npm ci`，构建命令为 `npm run build`，Output Directory 保持默认。**Root Directory 留空**：此工作流从检出的 `web/` 目录调用 Vercel CLI，不能再填一层 `web`。
 3. 在项目的 **Environment Variables** 中添加 `NEXT_PUBLIC_MOCK=1`，至少应用于 **Production**。不要设置 `NEXT_EXPORT=1`，也不要填写数据库连接或模型密钥。
 4. 在项目 **Settings → General** 复制 **Project ID**；在团队 **Settings → General** 复制 **Team ID**（对应 `VERCEL_ORG_ID`）。确认 **Domains** 中有准备使用的生产域名。
@@ -81,7 +81,7 @@ Demo 只运行 `web/` 前端，构建时启用 `NEXT_PUBLIC_MOCK=1`，不需要 
 | --- | --- |
 | `VERCEL_ORG_ID` | Vercel Team ID |
 | `VERCEL_PROJECT_ID` | Vercel Project ID |
-| `DEMO_URL` | 固定公开生产网址，含 `https://`，例如 `https://artex-demo-moleft.vercel.app` |
+| `DEMO_URL` | 固定公开生产网址，含 `https://`；本 fork 使用 `https://artex-demo-moleft.vercel.app` |
 
 ### 首次部署与重试
 
@@ -122,13 +122,13 @@ cd ARTEX
 git clone https://github.com/MoLeft/ARTEX.git
 cd ARTEX
 cp .env.example .env          # 填 POSTGRES_PASSWORD、可选 ANTHROPIC_API_KEY
-docker compose up -d          # 拉取 moleft/artex 镜像 + postgres
+docker compose up -d          # 拉取 moleftcn/artex 镜像 + postgres
 # → http://localhost:8787
 ```
 
 镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills` 与 `./data` 以绑定挂载持久化。
 
-`.env` 中默认 `ARTEX_IMAGE=moleft/artex`，`ARTEX_TAG=latest` 使用最新正式版镜像，也可固定为 `v0.26.10.31.001` 或 `v0.26.10.31.001-beta1`。测试版不会覆盖 `latest`。镜像支持 `linux/amd64` 和 `linux/arm64`，Docker 会自动选择与宿主机匹配的架构。初次部署请修改 `POSTGRES_PASSWORD`；运行服务无需配置 Docker Hub 发布 Token。
+`.env` 中默认 `ARTEX_IMAGE=moleftcn/artex`，`ARTEX_TAG=latest` 使用最新正式版镜像，也可固定为 `v0.26.10.31.001` 或 `v0.26.10.31.001-beta1`。测试版不会覆盖 `latest`。镜像支持 `linux/amd64` 和 `linux/arm64`，Docker 会自动选择与宿主机匹配的架构。初次部署请修改 `POSTGRES_PASSWORD`；运行服务无需配置 Docker Hub 发布 Token。
 
 远程 MCP 可在系统设置中选择 `http`（Streamable HTTP）或 `sse`（旧版 SSE）。
 旧版 SSE 服务通常使用 `GET /sse` 建立事件流，再通过服务返回的
@@ -199,7 +199,7 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 
 ### 维护者：通过 GitHub Actions 发布在线更新
 
-发布工作流为 `.github/workflows/release.yml`。推送标签会触发构建，也可在 Actions → release → Run workflow 中输入已存在的标签重新执行失败的发布。正式版标签采用 `v0.YY.MM.DD.SSS`（日期加三位提交序号），首个版本为 `v0.26.10.31.001`；测试版在同一编号后追加 `-beta1`、`-beta2` 等。页面显示完整标签，例如 `v0.26.10.31.001-beta1`。后续版本号应递增。
+`ci.yml` 会在提交到 `main` 和创建/更新 PR 时测试 `server` 以外的 Go 包、运行 `server` 的 TOTP 单元测试，并检查前端静态构建。当前带 PostgreSQL 的全量测试有既存失败，`server` 的完整测试在无数据库时也会失败，尚未作为发布门槛；发布工作流另用临时 PostgreSQL 验证 Docker 镜像启动和前端可访问。发布工作流为 `.github/workflows/release.yml`：推送标签后会再次运行上述 Go 测试，通过后才构建并发布；也可在 Actions → release → Run workflow 中输入已存在的标签重新执行失败的发布。正式版标签采用 `v0.YY.MM.DD.SSS`（日期加三位提交序号），首个版本为 `v0.26.10.31.001`；测试版在同一编号后追加 `-beta1`、`-beta2` 等。页面显示完整标签，例如 `v0.26.10.31.001-beta1`。后续版本号应递增。
 
 ```bash
 git push origin main
@@ -207,9 +207,9 @@ git tag v0.26.10.31.001
 git push origin v0.26.10.31.001
 ```
 
-工作流固定标签对应的提交，用 Node.js 22 导出前端，按照 `go.mod` 指定的 Go 版本编译内嵌前端的五个平台程序，并生成 ZIP 与 `SHA256SUMS`。AMD64 和 ARM64 镜像分别在 GitHub 原生 runner 上构建，连接临时 PostgreSQL 验证程序启动、版本和内嵌前端；两种架构都通过后发布 `moleft/artex` 多架构镜像。正式版更新版本标签与 `latest`；测试版只发布版本标签并标为 prerelease。镜像发布成功后上传完整 ZIP 和校验文件，最后公开 Release。已公开的同版本不允许覆盖，应发布新标签。
+工作流固定标签对应的提交，用 Node.js 22 导出前端，按照 `go.mod` 指定的 Go 版本编译内嵌前端的五个平台程序，并生成 ZIP 与 `SHA256SUMS`。AMD64 和 ARM64 镜像分别在 GitHub 原生 runner 上构建，连接临时 PostgreSQL 验证程序启动、版本和内嵌前端；两种架构都通过后发布 `moleftcn/artex` 多架构镜像。正式版更新版本标签与 `latest`；测试版只发布版本标签并标为 prerelease。镜像发布成功后上传完整 ZIP 和校验文件，最后公开 Release。已公开的同版本不允许覆盖，应发布新标签。
 
-维护者需在本仓库 Settings → Secrets and variables → Actions 中配置 Secrets `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`（有 `moleft/artex` 镜像推送权限）。程序包通过 GitHub 自带 `GITHUB_TOKEN` 上传，镜像通过上述凭据推送到 Docker Hub。凭据只供工作流登录使用，不写入源码或镜像。缺少凭据时工作流会在构建前停止。
+维护者需在本仓库 Settings → Secrets and variables → Actions 中配置 Secrets `DOCKERHUB_USERNAME=moleftcn`、`DOCKERHUB_TOKEN`（有 `moleftcn/artex` 镜像推送权限）。程序包通过 GitHub 自带 `GITHUB_TOKEN` 上传，镜像通过上述凭据推送到 Docker Hub。凭据只供工作流登录使用，不写入源码或镜像。缺少凭据时工作流会在构建前停止。
 
 ### 已有 Docker 部署迁移到本仓库镜像
 
