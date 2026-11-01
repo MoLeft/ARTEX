@@ -45,19 +45,23 @@ func (s *Server) wireInterceptReviewer() {
 		if profileID == 0 {
 			return intercept.Decision{}, fmt.Errorf("未配置可用的裁判模型")
 		}
-		prov, cfg, ok := s.providerForProfile(profileID)
-		if !ok {
-			return intercept.Decision{ProfileID: profileID}, fmt.Errorf("裁判模型 profile %d 不可用", profileID)
-		}
 		// A judge call is a bounded one-shot classification. Without a chain, a
 		// judge whose profile is throttled or out of credit makes every unmatched
 		// tool call fail until a human edits the config — the opposite of what a
-		// fallback judge exists for. Both wrappers are no-ops when the matching
-		// failover switch is off, so the default posture is unchanged.
+		// fallback judge exists for. Explicitly configured judges honour the
+		// bound-fallback switch; a judge that resolved to the active profile only
+		// needs the master switch.
+		var (
+			prov llm.Provider
+			ok   bool
+		)
 		if explicit {
-			prov = s.poolForBinding(profileID, prov, cfg)
+			prov, _, ok = s.llmForProfile(profileID)
 		} else {
-			prov = s.poolForActive(profileID, prov, cfg)
+			prov, _, ok = s.llmForActive(profileID)
+		}
+		if !ok {
+			return intercept.Decision{ProfileID: profileID}, fmt.Errorf("裁判模型 profile %d 不可用", profileID)
 		}
 		// Tag this call's usage as the "judge" lane so the config page can report
 		// how much the fallback approval has spent, separate from model profiles.

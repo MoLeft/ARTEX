@@ -124,17 +124,15 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 		// Pinned worker runtimes resolve their profile before touching bindings
 		// or the task failover state. A missing or invalid profile is an error,
 		// never an invitation to use another model.
-		prov, cfg, ok := r.s.providerForProfile(*r.pinProfileID)
+		// llmForProfile keeps a pin exclusive by default and only leads a chain
+		// once the operator opts in — otherwise every pinned worker would die
+		// with model_error the moment its one profile is throttled.
+		prov, cfg, ok := r.s.llmForProfile(*r.pinProfileID)
 		if !ok {
 			return taskLLMSelection{}, fmt.Errorf("LLM profile #%d is missing or invalid", *r.pinProfileID)
 		}
 		t, _ := r.s.m.Task(r.taskID)
-		// poolForBinding is a no-op unless the failover master switch and the
-		// bound-fallback switch are both on, so a pin still means "this profile
-		// only" by default. When the operator opts in, the pin leads the chain
-		// instead of failing outright — otherwise every pinned worker dies with
-		// model_error the moment its one profile is throttled or out of credit.
-		return taskLLMSelection{task: t, provider: r.s.poolForBinding(*r.pinProfileID, prov, cfg), retry: cfg.Retry}, nil
+		return taskLLMSelection{task: t, provider: prov, retry: cfg.Retry}, nil
 	}
 	taskNum, err := parseTaskID(r.taskID)
 	if err != nil {
@@ -168,7 +166,7 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 			return sel, &taskLLMError{taskID: r.taskID, chainExhausted: true, cause: errors.New("all selected profiles are quota exhausted")}
 		}
 		sel.profileID = *pt.ActiveLLMProfileID
-		prov, cfg, ok := r.s.providerForProfile(sel.profileID)
+		prov, cfg, ok := r.s.rawProviderForProfile(sel.profileID)
 		if !ok {
 			return sel, fmt.Errorf("LLM profile #%d is missing or invalid", sel.profileID)
 		}
@@ -190,7 +188,7 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 // agent run (a fresh Session is built per run in captureRun).
 func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
 	if r.pinProfileID != nil {
-		_, cfg, ok := r.s.providerForProfile(*r.pinProfileID)
+		_, cfg, ok := r.s.rawProviderForProfile(*r.pinProfileID)
 		return cfg, ok
 	}
 	taskNum, err := parseTaskID(r.taskID)
@@ -205,7 +203,7 @@ func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
 		return cfg, true
 	}
 	if len(pt.LLMProfileIDs) > 0 && pt.ActiveLLMProfileID != nil {
-		if _, cfg, ok := r.s.providerForProfile(*pt.ActiveLLMProfileID); ok {
+		if _, cfg, ok := r.s.rawProviderForProfile(*pt.ActiveLLMProfileID); ok {
 			return cfg, true
 		}
 	}
@@ -581,7 +579,7 @@ func isRetryableStreamError(err error) bool {
 // matches the provider the role will actually stream on.
 func (r *taskLLMRuntime) CompactionWindow() int {
 	if r.pinProfileID != nil {
-		if _, cfg, ok := r.s.providerForProfile(*r.pinProfileID); ok {
+		if _, cfg, ok := r.s.rawProviderForProfile(*r.pinProfileID); ok {
 			return cfg.CompactionWindow()
 		}
 		return (agent.Config{}).CompactionWindow()
@@ -622,17 +620,13 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 // (agents.llm_profile_id) — the highest-precedence level for task agents. ok=false
 // when the role has no binding or the bound profile no longer builds, so callers
 // fall through to the task chain. A bound profile stays exclusive unless
-// llm_pool_bind_fallback is on, which is what poolForBinding encodes.
+// llm_pool_bind_fallback is on, which is what llmForProfile encodes.
 func (s *Server) agentBindingProvider(agentKey string) (llm.Provider, agent.Config, bool) {
 	id := s.effectiveProfileForAgent(agentKey, nil)
 	if id == nil {
 		return nil, agent.Config{}, false
 	}
-	prov, cfg, ok := s.providerForProfile(*id)
-	if !ok {
-		return nil, agent.Config{}, false
-	}
-	return s.poolForBinding(*id, prov, cfg), cfg, true
+	return s.llmForProfile(*id)
 }
 
 // globalProvider returns the process-wide provider (persisted active profile or
@@ -659,7 +653,7 @@ func (s *Server) taskRuntimeAvailable(t *Task, agentKeys ...string) bool {
 	unboundReady := false
 	if len(state.ProfileIDs) > 0 {
 		if state.ActiveID != nil {
-			_, _, unboundReady = s.providerForProfile(*state.ActiveID)
+			_, _, unboundReady = s.rawProviderForProfile(*state.ActiveID)
 		}
 		// An exhausted chain still has the global provider to fall back on, which
 		// is what current() does — keep this predicate in step with it or the task
@@ -745,7 +739,7 @@ func (s *Server) workerForTaskSlot(t *Task, slot WorkerSlot) (*agent.Worker, err
 	if slot.ProfileID <= 0 {
 		return nil, errors.New("worker slot is not pinned")
 	}
-	_, cfg, ok := s.providerForProfile(slot.ProfileID)
+	_, cfg, ok := s.rawProviderForProfile(slot.ProfileID)
 	if !ok {
 		return nil, fmt.Errorf("LLM profile #%d is missing or invalid", slot.ProfileID)
 	}

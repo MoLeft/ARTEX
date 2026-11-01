@@ -174,7 +174,7 @@ func (s *Server) buildApprovalSideSnapshot(ctx context.Context, p sidequestion.P
 			profileID = active.ID
 		}
 	}
-	prov, cfg, ok := s.providerForProfile(profileID)
+	prov, cfg, ok := s.rawProviderForProfile(profileID)
 	if !ok || prov == nil {
 		return nil, errors.New("审查模型配置不可用")
 	}
@@ -270,18 +270,15 @@ func (s *Server) sideProvider(model sidequestion.Model) (llm.Provider, error) {
 		if !exists || sideModel(current, model.ProfileID, model.Name).Identity != model.Identity {
 			return nil, errors.New("模型配置已删除或变化，请先运行主 Agent 更新上下文")
 		}
-		p, cfg, ok = s.providerForProfile(model.ProfileID)
-		if ok {
-			// A side question is a read-only replay of context the parent run
-			// already produced; failing it because the parent's one profile is
-			// throttled buys nothing. poolForBinding stays a no-op unless the
-			// operator turned bound-profile fallback on.
-			p = s.poolForBinding(model.ProfileID, p, cfg)
-		}
+		// A side question is a read-only replay of context the parent run already
+		// produced; failing it because the parent's one profile is throttled buys
+		// nothing. llmForProfile is a no-op unless bound fallback is on.
+		p, cfg, ok = s.llmForProfile(model.ProfileID)
 	} else {
 		s.cfgMu.Lock()
-		// llmProv, not llmDirect: the global path's failover chain is the only
-		// reason a /btw question survives a provider that is out of credit.
+		// llmProv is the only global provider there is: it already carries the
+		// failover chain, which is the sole reason a /btw question survives a
+		// provider that is out of credit.
 		p, cfg, ok = s.llmProv, s.llmCfg, s.llmOn
 		s.cfgMu.Unlock()
 	}

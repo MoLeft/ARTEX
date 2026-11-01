@@ -62,12 +62,14 @@ type Server struct {
 	cfgMu     sync.Mutex
 	chatAgent *agent.ChatAgent // conversational runner for the chat page; nil w/o LLM
 	// llmProv is the fully-decorated global provider (recorder + failover chain)
-	// installed by applyLLM. Task routers use it after an explicit chain is cleared.
-	llmProv   llm.Provider
-	llmDirect llm.Provider // concrete global provider, before any failover pool
-	llmCfg    agent.Config // current LLM config (key not exposed)
-	llmOn     bool
-	llmProf   string // active LLM profile name (for llmrec tagging)
+	// installed by applyLLM. Task routers use it after an explicit chain is
+	// cleared, and it is the only global provider any call site reads: the bare
+	// pre-failover instance is not retained, so nothing can accidentally bypass
+	// the chain.
+	llmProv llm.Provider
+	llmCfg  agent.Config // current LLM config (key not exposed)
+	llmOn   bool
+	llmProf string // active LLM profile name (for llmrec tagging)
 
 	// chatBusy guards the per-task main-agent run: the chat handler launches the
 	// agent on the server's background ctx (not the request ctx) and returns
@@ -489,7 +491,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	// and Agent bindings, otherwise each path owns a separate rate limiter.
 	if active, _ := s.m.pg.ActiveProfile(); active != nil {
 		if activeCfg, ok := s.loadProfileConfig(active.ID); ok && activeCfg == cfg {
-			prov, _, _ = s.providerForProfile(active.ID)
+			prov, _, _ = s.rawProviderForProfile(active.ID)
 		}
 	}
 	if prov == nil {
@@ -505,12 +507,9 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
 		prov = bindSideProvider(prov, cfg, 0, profName)
 	}
-	s.cfgMu.Lock()
-	s.llmDirect = prov
-	s.cfgMu.Unlock()
 	// LLM 轮询(默认关):把激活配置包进故障转移链,当前配置不可用时自动切下一个。
-	// 只影响「走全局激活配置」的这条路径——agent 绑定 / 任务 pin 的走 providerForProfile,
-	// 默认仍然独占该配置(见 poolForBinding)。关闭或无备选时返回原 provider,行为不变。
+	// 显式配置(agent 绑定 / 任务 pin / 裁判)走 llmForProfile,默认仍然独占,
+	// 打开 llm_pool_bind_fallback 后才允许回退。关闭或无备选时原样返回。
 	if act, err := s.m.pg.ActiveProfile(); err == nil && act != nil {
 		prov = s.poolForActive(act.ID, prov, cfg)
 	}
@@ -614,11 +613,50 @@ func (s *Server) chatUnavailableReason() string {
 	return "LLM 未就绪，无法对话：请检查 系统 → LLM 配置是否有可用且已激活的配置"
 }
 
-// providerForProfile returns a cached provider+cfg for a profile id, so every agent
-// bound/pinned to the same profile shares one provider instance (one rate limiter).
-// ok=false when the profile is missing/invalid; pinned callers surface that error
-// while legacy callers retain their existing fallback behavior.
-func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool) {
+// llmForProfile is the ONLY entry point a request-issuing call site should use
+// when it already holds a concrete profile id: an agent binding, a task pin, an
+// explicitly chosen judge, a conversation's picked model.
+//
+// The provider comes back wrapped in the failover chain whenever the operator
+// enabled LLM polling AND bound-profile fallback. With either switch off it is
+// the bare provider — identical to the pre-failover behavior — so a binding
+// still means "this profile only" by default, and the wrapper costs nothing.
+func (s *Server) llmForProfile(id int64) (llm.Provider, agent.Config, bool) {
+	prov, cfg, ok := s.rawProviderForProfile(id)
+	if !ok {
+		return nil, agent.Config{}, false
+	}
+	return s.poolForBinding(id, prov, cfg), cfg, true
+}
+
+// llmForActive is llmForProfile for the globally active configuration. It only
+// requires the master failover switch: there is no binding to respect here, so
+// there is nothing to opt out of.
+func (s *Server) llmForActive(id int64) (llm.Provider, agent.Config, bool) {
+	prov, cfg, ok := s.rawProviderForProfile(id)
+	if !ok {
+		return nil, agent.Config{}, false
+	}
+	return s.poolForActive(id, prov, cfg), cfg, true
+}
+
+// rawProviderForProfile returns a cached, decorated provider+cfg for a profile
+// id, WITHOUT the failover chain. Callers bound/pinned to the same profile share
+// one instance, hence one rate limiter.
+//
+// This is deliberately not the default. It exists for exactly three jobs:
+//
+//   - building pool members, which must not recurse into a pool;
+//   - reading config values only (model name, context window, retry policy);
+//   - availability checks that never issue a request.
+//
+// Anything about to make a model call must go through llmForProfile,
+// llmForActive or globalProvider instead. TestLLMCallSitesUseFailoverEntryPoints
+// guards that rule.
+//
+// ok=false when the profile is missing/invalid; pinned callers surface that
+// error while legacy callers retain their existing fallback behavior.
+func (s *Server) rawProviderForProfile(id int64) (llm.Provider, agent.Config, bool) {
 	s.provCacheMu.Lock()
 	if s.provByProfile == nil {
 		s.provByProfile = make(map[int64]*provEntry)
@@ -637,7 +675,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	s.provCacheMu.Lock()
 	if generation != s.provCacheGen {
 		s.provCacheMu.Unlock()
-		return s.providerForProfile(id)
+		return s.rawProviderForProfile(id)
 	}
 	if e := s.provByProfile[id]; e != nil { // lost the race → keep the winner
 		s.provCacheMu.Unlock()
@@ -687,12 +725,12 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	if cached != nil {
 		return cached
 	}
-	prov, cfg, ok := s.providerForProfile(id)
+	prov, cfg, ok := s.llmForProfile(id)
 	if !ok {
 		return nil
 	}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
-	ca := agent.NewChatAgent(s.poolForBinding(id, prov, cfg), cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
+	ca := agent.NewChatAgent(prov, cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
 	ca.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	ca.SetWebSearch(s.m.WebSearchOpts())
 	ca.SetGuard(s.chatGuard())

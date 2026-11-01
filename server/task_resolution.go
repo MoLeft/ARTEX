@@ -33,7 +33,7 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 		result.Reason = "LLM 配置未设置 API Key"
 		return result
 	}
-	if _, _, ok := s.providerForProfile(p.ID); !ok {
+	if _, _, ok := s.rawProviderForProfile(p.ID); !ok {
 		result.Reason = "LLM 配置格式或参数无效"
 		return result
 	}

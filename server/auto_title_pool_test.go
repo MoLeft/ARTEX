@@ -81,7 +81,7 @@ func TestAutoTitlesFailOverBeforeReturning(t *testing.T) {
 	// its own bounded context and remains testable after this cancellation.
 	cancel()
 	for _, id := range []int64{primaryID, backupID} {
-		if _, _, ok := s.providerForProfile(id); !ok {
+		if _, _, ok := s.rawProviderForProfile(id); !ok {
 			t.Fatalf("profile %d unavailable", id)
 		}
 	}
