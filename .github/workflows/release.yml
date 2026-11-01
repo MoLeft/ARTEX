@@ -78,7 +78,7 @@ jobs:
           cache: true
       # shortcut: server's database-backed suite has baseline failures; Docker smoke still checks database startup.
       - run: go test -p 1 $(go list ./... | grep -v '/server$')
-      - run: go test ./server -run '^(TestTOTPMatchesRFCVectorAndTimeWindow|TestLoginTOTPRequirementFailsClosed|TestTOTPSecretEncryptionRejectsTampering)$'
+      - run: go test ./server -run '^(TestTOTPMatchesRFCVectorAndTimeWindow|TestLoginTOTPRequirementFailsClosed|TestTOTPSecretEncryptionRejectsTampering|TestLightpandaReporterToolBoundary|TestLightpandaRuntimeMCPFollowsVersionState)$'
       - name: Test finding counts and proxy recovery
         env:
           ARTEX_PG_DSN: postgres://artex:artex-ci-test@127.0.0.1:5432/artex?sslmode=disable
@@ -291,6 +291,11 @@ jobs:
           curl --fail --retry 30 --retry-connrefused --retry-delay 2 --max-time 3 \
             http://127.0.0.1:8787/api/health > /tmp/artex-health.json
           jq -e --arg version "$RELEASE_TAG" '.ok == true and .version == $version' /tmp/artex-health.json
+          docker exec artex-smoke curl --fail --silent --show-error --max-time 5 \
+            http://127.0.0.1:9222/mcp \
+            -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"artex-smoke","version":"1"}}}' \
+            | jq -e '.result.serverInfo.name == "lightpanda"'
           curl --fail http://127.0.0.1:8787/ > /tmp/artex-index.html
           grep -qi '<!doctype html' /tmp/artex-index.html
       - name: Push tested architecture image
