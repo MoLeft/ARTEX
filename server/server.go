@@ -213,14 +213,16 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			}
 			t, err := m.pg.CurrentPrompt(a.ID)
 			if err != nil || t == "" {
-				if key != "reporter" {
+				if key != "reporter" && key != "asset_mapper" {
 					return "", false
 				}
-				t = agent.ReporterDefaultPrompt
+				if key == "reporter" {
+					t = agent.ReporterDefaultPrompt
+				} else {
+					t = agent.BuiltinPromptSeeds()[key]
+				}
 			}
-			if key == "reporter" && os.Getenv("ARTEX_LIGHTPANDA_MCP_URL") != "" {
-				t += reporterLightpandaPrompt
-			}
+			t += lightpandaRuntimePrompt(m.pg, a)
 			if key == "reporter" && m.pg.GetBool(settingBrowserScreenshot, false) {
 				t += `
 
@@ -3954,13 +3956,9 @@ func (s *Server) setReporterBrowserScreenshotVisibility(enabled bool) error {
 	}
 	for _, server := range servers {
 		if server.Name == browserMCPName {
-			// Turning screenshots on is an explicit opt-in. Make the browser MCP
-			// usable in the shipped root-based container at the same time as the
-			// permission toggle, so the next reporter run gets a working browser
-			// instead of a deterministic Chromium sandbox error.
+			// Prepare a runnable browser; the MCP switch still controls whether it runs.
 			if enabled {
 				server.Args = encodeJSON(ensureBrowserMCPArgs(decodeStrSlice(server.Args), true))
-				server.Enabled = true
 				if _, err := s.m.pg.SaveMCP(server); err != nil {
 					return err
 				}
@@ -3968,8 +3966,7 @@ func (s *Server) setReporterBrowserScreenshotVisibility(enabled bool) error {
 			return s.m.pg.ToggleVisibility(reporter.ID, "mcp", server.ID, enabled)
 		}
 	}
-	// The built-in browser MCP may be deleted by an administrator. Keep the
-	// setting writable so it takes effect automatically if the server returns.
+	// Keep the setting writable if a legacy database has no browser MCP.
 	return nil
 }
 

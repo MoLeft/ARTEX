@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "已存在的标签，例如 v0.26.10.31.001 或 v0.26.10.31.001-beta1"
+        description: "已存在的提交标签，例如 v0.26.11.01.004 或 v0.26.11.01.004-beta"
         required: true
         type: string
   push:
@@ -31,8 +31,8 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v0\.([0-9]{2})\.([0-9]{2})\.([0-9]{2})\.([0-9]{3})(-beta([1-9][0-9]*))?$ ]]; then
-            echo "版本标签须为 v0.YY.MM.DD.SSS[-betaN]" >&2
+          if [[ ! "$RELEASE_TAG" =~ ^v0\.([0-9]{2})\.([0-9]{2})\.([0-9]{2})\.([0-9]{3})(-beta([1-9][0-9]*)?)?$ ]]; then
+            echo "版本标签须为 v0.YY.MM.DD.SSS[-beta]" >&2
             exit 1
           fi
           date_text="20${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
@@ -49,6 +49,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: refs/tags/${{ steps.version.outputs.tag }}
+          fetch-depth: 0
+      - name: Match tag to its commit version
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          if ! git rev-list --first-parent origin/main | grep -Fxq "$(git rev-parse HEAD)"; then
+            echo "只能发布 main 主线上的提交" >&2
+            exit 1
+          fi
+          base="${RELEASE_TAG%-beta*}"
+          expected="$(./version.sh HEAD)"
+          if [ "$base" != "$expected" ]; then
+            echo "标签编号 $base 与此提交应有的 $expected 不符" >&2
+            exit 1
+          fi
+          for tag in $(git tag --list "$base" "$base-beta*"); do
+            if [ "$tag" != "$RELEASE_TAG" ]; then
+              echo "提交编号 $base 已被标签 $tag 使用" >&2
+              exit 1
+            fi
+          done
       - name: Pin release commit
         id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -78,13 +100,18 @@ jobs:
           cache: true
       # shortcut: server's database-backed suite has baseline failures; Docker smoke still checks database startup.
       - run: go test -p 1 $(go list ./... | grep -v '/server$')
-      - run: go test ./server -run '^(TestTOTPMatchesRFCVectorAndTimeWindow|TestLoginTOTPRequirementFailsClosed|TestTOTPSecretEncryptionRejectsTampering|TestLightpandaReporterToolBoundary|TestLightpandaRuntimeMCPFollowsVersionState)$'
+      - run: go test ./server -run '^(TestTOTPMatchesRFCVectorAndTimeWindow|TestLoginTOTPRequirementFailsClosed|TestTOTPSecretEncryptionRejectsTampering|TestLightpandaReadToolBoundary|TestLightpandaRuntimeMCPFollowsVersionState)$'
       - name: Test finding counts and proxy recovery
         env:
           ARTEX_PG_DSN: postgres://artex:artex-ci-test@127.0.0.1:5432/artex?sslmode=disable
         run: |
           go test ./db -run '^TestMissingSkillStatsPageCountsBeyondFirstPage$' -count=1
           go test ./server -run '^(TestProxy|TestDashboardActivityUsesLatestPage|TestSummaryAndReportBeyondListLimits|TestFindingStatsBeyondLegacyListLimit|TestTaskFindingsPageIncludesAllNodesAndProtectsSources|TestMissingSkillAPIReportsWholeLedger|TestInheritedActivityDetailAndRelationDeletion)$' -count=1 -p 1
+      - name: Test built-in MCP controls
+        env:
+          ARTEX_PG_DSN: postgres://artex:artex-ci-test@127.0.0.1:5432/artex?sslmode=disable
+          ARTEX_TEST_MCP_CONTROLS: "1"
+        run: go test ./server -run '^TestBuiltinMCPControls$' -count=1
 
   # ① 前端静态导出（一次），产物给交叉编译各平台复用
   frontend:
@@ -171,6 +198,10 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           pattern: pkg-*
@@ -197,6 +228,28 @@ jobs:
             cat /tmp/artex-release.err >&2
             exit 1
           fi
+      - name: List changes since the previous published release
+        run: |
+          previous=""
+          while IFS= read -r tag; do
+            if git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null && git merge-base --is-ancestor "$tag" "HEAD^1"; then
+              previous="$tag"
+              break
+            fi
+          done < <(gh api "repos/$GH_REPO/releases?per_page=100" --jq '.[] | select(.draft == false) | .tag_name')
+          if [ -z "$previous" ]; then
+            echo "找不到上一已发布版本，无法生成完整更新内容" >&2
+            exit 1
+          fi
+          {
+            printf 'Docker Hub 镜像：`moleftcn/artex:%s`。正式版同时更新 `latest`。\n\n' "$RELEASE_TAG"
+            printf '支持 Linux AMD64 / ARM64，Docker 会自动选择宿主机架构。程序包提供 Linux、macOS 的 AMD64 / ARM64 及 Windows AMD64，并附 SHA256SUMS。\n\n'
+            printf '### 自 %s 以来的提交\n\n' "$previous"
+            while IFS=$'\t' read -r commit subject; do
+              printf -- '- `%s` %s (`%.7s`)\n' "$(./version.sh "$commit")" "$subject" "$commit"
+            done < <(git log --first-parent --reverse --format='%H%x09%s' "$previous..HEAD")
+            printf '\n部署和在线更新说明见本仓库 README。\n'
+          } > release-notes.md
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
@@ -208,12 +261,7 @@ jobs:
           files: |
             dist/*.zip
             dist/SHA256SUMS
-          generate_release_notes: true
-          body: |
-            Docker Hub 镜像：`moleftcn/artex:${{ needs.prepare.outputs.tag }}`。正式版同时更新 `latest`。
-            支持 Linux AMD64 / ARM64，Docker 会自动选择宿主机架构。
-            程序包提供 Linux、macOS 的 AMD64 / ARM64 及 Windows AMD64，并附 SHA256SUMS。
-            部署和在线更新说明见本仓库 README。
+          body_path: release-notes.md
       - name: Publish complete release
         env:
           BETA: ${{ needs.prepare.outputs.beta }}

@@ -1267,7 +1267,8 @@ export interface MCPServer {
   enabled: boolean;
   insecure?: boolean; // http: skip TLS cert verification (self-signed servers)
   tools?: string[]; // mcp_tools_cache (names only, for the count)
-  builtin?: boolean; // provided by the running version, not saved in PostgreSQL
+  builtin?: boolean; // seeded browser or runtime-owned Lightpanda
+  allowed_agents?: string[]; // present when the built-in MCP has a limited agent scope
 }
 
 export interface MCPTool {

@@ -602,9 +602,9 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         <div className="grid gap-2">
           {mcp.map((m) => (
             <label key={m.id} className="flex items-center gap-2 rounded-md border p-2 text-sm">
-              <Checkbox checked={mcpVisible.includes(m.id)} disabled={m.builtin} onCheckedChange={() => toggleMcp(m.id)} />
+              <Checkbox checked={mcpVisible.includes(m.id)} disabled={!!m.allowed_agents && !m.allowed_agents.includes(agentKey)} onCheckedChange={() => toggleMcp(m.id)} />
               {m.name}
-              <span className="text-muted-foreground ml-auto text-xs">{m.transport}</span>
+              <span className="text-muted-foreground ml-auto text-xs">{m.enabled ? m.transport : "已关闭"}</span>
             </label>
           ))}
           {mcp.length === 0 && <span className="text-muted-foreground text-xs">（暂无 MCP）</span>}

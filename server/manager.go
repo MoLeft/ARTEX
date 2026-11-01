@@ -843,8 +843,8 @@ const browserMCPName = "browser"
 // syncBrowserMCPProxy reconciles the seeded browser MCP's proxy args + CA env with
 // the current traffic-capture state: capture on → route Playwright through the
 // recording proxy (--proxy-server) and trust its MITM CA (NODE_EXTRA_CA_CERTS);
-// capture off → strip both. Idempotent, and a no-op if the user deleted/renamed the
-// MCP. Must be called WITHOUT m.mu held (ProxyAddr/ProxyCACert take the lock).
+// capture off → strip both. Idempotent. Must be called WITHOUT m.mu held
+// (ProxyAddr/ProxyCACert take the lock).
 func (m *Manager) syncBrowserMCPProxy() {
 	servers, err := m.pg.ListMCP()
 	if err != nil {
@@ -859,7 +859,7 @@ func (m *Manager) syncBrowserMCPProxy() {
 		}
 	}
 	if srv == nil {
-		return // user removed/renamed it — leave it alone
+		return
 	}
 
 	proxy := m.ProxyAddr()  // "" when capture off
@@ -867,11 +867,6 @@ func (m *Manager) syncBrowserMCPProxy() {
 
 	args := ensureBrowserMCPArgs(stripProxyArgs(decodeStrSlice(srv.Args)), m.pg.GetBool(settingBrowserScreenshot, false))
 	env := decodeStrMap(srv.Env)
-	if m.pg.GetBool(settingBrowserScreenshot, false) {
-		// A persisted screenshot opt-in must survive restart even if an older
-		// database had the seeded MCP disabled.
-		srv.Enabled = true
-	}
 	delete(env, "NODE_EXTRA_CA_CERTS")
 	if proxy != "" {
 		args = append(args, "--proxy-server", proxy)

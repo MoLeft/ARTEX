@@ -10,7 +10,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 )
 
-func TestLightpandaReporterToolBoundary(t *testing.T) {
+func TestLightpandaReadToolBoundary(t *testing.T) {
 	for _, name := range []string{
 		"mcp__artex_lightpanda_reader__goto",
 		"mcp__artex_lightpanda_reader__markdown",
@@ -21,7 +21,7 @@ func TestLightpandaReporterToolBoundary(t *testing.T) {
 		"mcp__artex_lightpanda_reader__waitForSelector",
 		"mcp__artex_lightpanda_reader__waitForState",
 	} {
-		if !isReporterLightpandaTool(name) {
+		if !isLightpandaReadTool(name) {
 			t.Errorf("read tool %s was rejected", name)
 		}
 	}
@@ -33,7 +33,7 @@ func TestLightpandaReporterToolBoundary(t *testing.T) {
 		"mcp__artex_lightpanda_reader__getCookies",
 		"mcp__other__goto",
 	} {
-		if isReporterLightpandaTool(name) {
+		if isLightpandaReadTool(name) {
 			t.Errorf("non-read tool %s was allowed", name)
 		}
 	}
@@ -41,27 +41,21 @@ func TestLightpandaReporterToolBoundary(t *testing.T) {
 
 func TestLightpandaRuntimeMCPFollowsVersionState(t *testing.T) {
 	t.Setenv("ARTEX_LIGHTPANDA_MCP_URL", "")
-	if lightpandaMCP() != nil || len(withLightpandaVisibility(nil, "reporter")) != 0 {
+	if lightpandaMCP(nil) != nil {
 		t.Fatal("Lightpanda should not be listed without a running MCP")
 	}
 	t.Setenv("ARTEX_LIGHTPANDA_MCP_URL", "http://127.0.0.1:9222/mcp")
-	m := lightpandaMCP()
-	if m == nil || m.ID != lightpandaReaderMCPID || !m.Builtin || len(m.Tools) != 8 {
+	m := lightpandaMCP(nil)
+	if m == nil || m.ID != lightpandaReaderMCPID || !m.Builtin || !m.Enabled || len(m.Tools) != 8 {
 		t.Fatalf("invalid runtime MCP: %+v", m)
 	}
 	for _, name := range m.Tools {
-		if !isReporterLightpandaTool(name) {
+		if !isLightpandaReadTool(name) {
 			t.Errorf("advertised tool %q is outside the allowed set", name)
 		}
 	}
-	if got := withLightpandaVisibility(nil, "reporter"); len(got) != 1 || got[0] != lightpandaReaderMCPID {
-		t.Fatalf("reporter visibility: %v", got)
-	}
-	if got := withLightpandaVisibility(nil, "worker"); len(got) != 0 {
-		t.Fatalf("worker visibility: %v", got)
-	}
-	if got := withoutLightpandaVisibility([]int64{7, lightpandaReaderMCPID}); len(got) != 1 || got[0] != 7 {
-		t.Fatalf("database visibility must exclude built-in MCP: %v", got)
+	if len(m.AllowedAgents) != 2 || !lightpandaAgentAllowed("reporter") || !lightpandaAgentAllowed("asset_mapper") || lightpandaAgentAllowed("worker") || lightpandaAgentAllowed("pentest") {
+		t.Fatalf("invalid agent scope: %v", m.AllowedAgents)
 	}
 }
 
@@ -88,6 +82,27 @@ func TestLightpandaOnlyExposesReadToolsToReporter(t *testing.T) {
 		t.Cleanup(func() { _ = pg.DeleteAgent("reporter") })
 	}
 	t.Setenv("ARTEX_LIGHTPANDA_MCP_URL", url)
+	reporter, _ := pg.GetAgentByKey("reporter")
+	visible, _ := pg.AgentVisible(reporter.ID, "mcp")
+	hadVisibility := false
+	for _, id := range visible {
+		hadVisibility = hadVisibility || id == lightpandaReaderMCPID
+	}
+	if err := pg.ToggleVisibility(reporter.ID, "mcp", lightpandaReaderMCPID, true); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pg.ToggleVisibility(reporter.ID, "mcp", lightpandaReaderMCPID, hadVisibility) })
+	oldEnabled, hadEnabled, _ := pg.GetSetting(settingLightpandaEnabled)
+	if err := pg.SetBool(settingLightpandaEnabled, true); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadEnabled {
+			_ = pg.SetSetting(settingLightpandaEnabled, oldEnabled)
+		} else {
+			_, _ = pg.Exec(`DELETE FROM settings WHERE key=$1`, settingLightpandaEnabled)
+		}
+	})
 	wireAgentAugment(pg, t.TempDir(), nil)
 	t.Cleanup(func() { agent.ToolAugment = nil })
 	for _, key := range []string{"reporter", "worker"} {
@@ -101,12 +116,30 @@ func TestLightpandaOnlyExposesReadToolsToReporter(t *testing.T) {
 				continue
 			}
 			found++
-			if key != "reporter" || !isReporterLightpandaTool(tool.Name()) {
+			if key != "reporter" || !isLightpandaReadTool(tool.Name()) {
 				t.Errorf("%s received disallowed tool %s", key, tool.Name())
 			}
 		}
 		if key == "reporter" && found != 8 {
 			t.Errorf("reporter received %d read tools, want 8", found)
+		}
+	}
+	if lightpandaRuntimePrompt(pg, reporter) == "" {
+		t.Fatal("visible reporter should receive the runtime prompt")
+	}
+	if err := pg.SetBool(settingLightpandaEnabled, false); err != nil {
+		t.Fatal(err)
+	}
+	if lightpandaMCP(pg).Enabled || lightpandaRuntimePrompt(pg, reporter) != "" {
+		t.Fatal("disabled Lightpanda must remove tools and runtime prompt")
+	}
+	tools, _, cleanup := agent.ToolAugment(context.Background(), "reporter")
+	if cleanup != nil {
+		defer cleanup()
+	}
+	for _, tool := range tools {
+		if strings.HasPrefix(tool.Name(), "mcp__"+lightpandaReaderMCPName+"__") {
+			t.Fatal("disabled Lightpanda remained visible to reporter")
 		}
 	}
 }
