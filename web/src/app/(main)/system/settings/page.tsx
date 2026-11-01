@@ -41,6 +41,8 @@ export default function SystemSettingsPage() {
   const [chatAutoTitleEnabled, setChatAutoTitleEnabled] = React.useState(false);
   const [savingIntelligence, setSavingIntelligence] = React.useState(false);
   const [trafficCapture, setTrafficCapture] = React.useState(false);
+  const [llmRecord, setLLMRecord] = React.useState(false);
+  const [savingLLMRecord, setSavingLLMRecord] = React.useState(false);
   const [browserScreenshot, setBrowserScreenshot] = React.useState(false);
   const [browserScreenshotTimestamp, setBrowserScreenshotTimestamp] = React.useState(false);
   const [opsecEnabled, setOpsecEnabled] = React.useState(false);
@@ -115,6 +117,7 @@ export default function SystemSettingsPage() {
     setTaskAutoTitleEnabled(!!s.task_auto_title_enabled);
     setChatAutoTitleEnabled(!!s.chat_auto_title_enabled);
     setTrafficCapture(!!s.traffic_capture);
+    setLLMRecord(!!s.llm_record);
     setBrowserScreenshot(!!s.browser_screenshot_enabled);
     setBrowserScreenshotTimestamp(!!s.browser_screenshot_timestamp_enabled);
     setOpsecEnabled(!!s.opsec_enabled);
@@ -358,6 +361,22 @@ export default function SystemSettingsPage() {
       .finally(() => setSaving(false));
   };
 
+  const toggleLLMRecord = (v: boolean) => {
+    setLLMRecord(v);
+    setSavingLLMRecord(true);
+    api
+      .setSettings({ llm_record: v })
+      .then((s) => {
+        apply(s);
+        toast.success(v ? "已开启 LLM 录制" : "已关闭 LLM 录制");
+      })
+      .catch((e) => {
+        setLLMRecord(!v);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingLLMRecord(false));
+  };
+
   const toggleBrowserScreenshot = (v: boolean) => {
     setBrowserScreenshot(v);
     setSaving(true);
@@ -420,7 +439,7 @@ export default function SystemSettingsPage() {
     { id: "system", label: "系统与账号", hint: "版本、登录与基础配置", icon: SettingsIcon },
     { id: "browser", label: "浏览器 MCP", hint: "Chrome / Lightpanda 与优先级", icon: GlobeIcon },
     { id: "traffic", label: "流量与安全", hint: "流量、代理、截图与 OPSEC", icon: RadioTowerIcon },
-    { id: "agent", label: "Agent 行为", hint: "约束、情报与自动化", icon: CpuIcon },
+    { id: "agent", label: "Agent 行为", hint: "录制、约束与情报", icon: CpuIcon },
     { id: "network", label: "网络与工具", hint: "搜索、脚本与并发", icon: SearchIcon },
     { id: "chat", label: "对话与界面", hint: "输入与交互偏好", icon: KeyboardIcon },
   ] as const;
@@ -1113,6 +1132,29 @@ export default function SystemSettingsPage() {
                     ))}
                   </div>
                 )}
+              </CardContent>
+            </Card>
+
+            <Card
+              className={`${isSettingVisible("agent", "LLM 录制 模型 请求 响应 调试") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
+            >
+              <CardHeader>
+                <CardTitle className="text-base">LLM 录制</CardTitle>
+                <CardDescription>
+                  保存 Agent 调用模型时的完整请求、响应及错误，供「LLM 录制」页面排查问题。默认关闭；仅记录开启后的调用，
+                  Token 用量统计不受影响。记录可能包含敏感内容。
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex items-center justify-between gap-4">
+                <Label htmlFor="llm-record" className="text-sm font-normal text-muted-foreground">
+                  LLM 录制{llmRecord ? " · 已开启" : " · 已关闭"}
+                </Label>
+                <Switch
+                  id="llm-record"
+                  checked={llmRecord}
+                  disabled={!settingsLoaded || savingLLMRecord}
+                  onCheckedChange={toggleLLMRecord}
+                />
               </CardContent>
             </Card>
 
