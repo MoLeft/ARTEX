@@ -366,7 +366,7 @@ func TestSecretKeysDeclaredForEveryKind(t *testing.T) {
 	// 交白卷」——返回空切片的渠道意味着它的凭据会明文回显到浏览器。
 	expect := map[string]bool{
 		KindDingTalk: true, KindFeishu: true, KindWeCom: true,
-		KindWebhook: true, KindTelegram: true, KindEmail: true,
+		KindWebhook: true, KindTelegram: true, KindEmail: true, KindBark: true,
 	}
 	for kind, ch := range registry {
 		if !expect[kind] {

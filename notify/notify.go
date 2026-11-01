@@ -19,6 +19,7 @@ const (
 	KindWebhook  = "webhook"  // 通用 Webhook：自定义方法/头/JSON 模板
 	KindTelegram = "telegram" // Telegram Bot API
 	KindEmail    = "email"    // SMTP 邮件
+	KindBark     = "bark"     // Bark iOS 推送
 )
 
 // 事件类型，对应 notification_events.kind。

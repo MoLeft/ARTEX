@@ -80,7 +80,9 @@ export default function NotifyPage() {
 
   function openAdd() {
     setEditing(null);
-    setForm(emptyForm(meta?.kinds[0]?.kind ?? "dingtalk"));
+    setForm(
+      emptyForm(meta?.kinds.some((k) => k.kind === "dingtalk") ? "dingtalk" : (meta?.kinds[0]?.kind ?? "dingtalk")),
+    );
     setOpen(true);
   }
 
@@ -133,7 +135,11 @@ export default function NotifyPage() {
       }
       if (d.kind === "number") {
         const n = Number(raw);
-        out[d.key] = Number.isFinite(n) && n > 0 ? n : 0;
+        if (form.kind === "bark") {
+          out[d.key] = raw == null || raw === "" || !Number.isFinite(n) ? "" : n;
+        } else {
+          out[d.key] = Number.isFinite(n) && n > 0 ? n : 0;
+        }
         continue;
       }
       if (d.kind === "kv") {
@@ -201,7 +207,7 @@ export default function NotifyPage() {
     setTesting(true);
     try {
       const r = await api.notifyTestChannel(editing.id);
-      toast.success(`已发出测试消息（${r.latency_ms} ms），请到群里确认`);
+      toast.success(`已发出测试消息（${r.latency_ms} ms），请到接收端确认`);
     } catch (e) {
       // 后端把渠道返回的原始错误如实回传，这是排查配置的唯一线索，原样展示。
       toast.error("测试失败：" + (e as Error).message, { duration: 12000 });
@@ -269,7 +275,7 @@ export default function NotifyPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">通知推送</h1>
           <p className="text-muted-foreground text-sm">
-            发现漏洞时推送到钉钉 / 飞书 / 企业微信等渠道 · 每个渠道可独立设推送时机与过滤规则
+            发现漏洞时推送到钉钉 / 飞书 / Bark 等渠道 · 每个渠道可独立设推送时机与过滤规则
           </p>
         </div>
         {meta && (

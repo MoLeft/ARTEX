@@ -77,6 +77,7 @@ export function ConfigField({
             ))}
           </SelectContent>
         </Select>
+        {def.help && <p className="text-muted-foreground text-xs">{def.help}</p>}
       </div>
     );
   }
