@@ -43,6 +43,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
+import { useListState } from "@/lib/list-state";
 import { SEVERITY_FILTER_OPTIONS, statusMeta } from "@/lib/status";
 import type {
   ActiveFindingRetest,
@@ -135,21 +136,21 @@ const EMPTY_STATS: FindingStats = {
 };
 
 export default function FindingsPage() {
-  const [view, setView] = React.useState<FindingView>("cases");
-  const [severity, setSeverity] = React.useState<"all" | Severity>("all");
-  const [status, setStatus] = React.useState<"all" | FindingStatus>("all");
-  const [vulnclass, setVulnclass] = React.useState<string>("all");
-  const [task, setTask] = React.useState<string>("all");
-  const [sort, setSort] = React.useState<"severity" | "time">("severity");
-  const [search, setSearch] = React.useState("");
-  const [query, setQuery] = React.useState("");
-  const [dateRange, setDateRange] = React.useState<FindingDateRange>({});
+  const [view, setView] = useListState<FindingView>("findings:view", "cases");
+  const [severity, setSeverity] = useListState<"all" | Severity>("findings:severity", "all");
+  const [status, setStatus] = useListState<"all" | FindingStatus>("findings:status", "all");
+  const [vulnclass, setVulnclass] = useListState<string>("findings:vulnclass", "all");
+  const [task, setTask] = useListState<string>("findings:task", "all");
+  const [sort, setSort] = useListState<"severity" | "time">("findings:sort", "severity");
+  const [search, setSearch] = useListState("findings:search", "");
+  const [query, setQuery] = useListState("findings:query", "");
+  const [dateRange, setDateRange] = useListState<FindingDateRange>("findings:date", {});
   const [expanded, setExpanded] = React.useState<string | null>(null);
   const [flat, setFlat] = React.useState<FlatFindingsState>(EMPTY_FLAT_STATE);
-  const [flatPage, setFlatPage] = React.useState(1);
-  const [flatPageSize, setFlatPageSize] = React.useState(20);
+  const [flatPage, setFlatPage] = useListState("findings:flat-page", 1);
+  const [flatPageSize, setFlatPageSize] = useListState("findings:flat-size", 20);
   const [assetTree, setAssetTree] = React.useState<AssetTreeState>(EMPTY_ASSET_TREE);
-  const [assetScope, setAssetScope] = React.useState<string | null>(null);
+  const [assetScope, setAssetScope] = useListState<string | null>("findings:asset-scope", null);
   const [groups, setGroups] = React.useState<FindingGroup[]>([]);
   const [groupTotal, setGroupTotal] = React.useState(0);
   const [expandedGroups, setExpandedGroups] = React.useState<Set<string>>(() => new Set());
@@ -158,8 +159,8 @@ export default function FindingsPage() {
   const [stats, setStats] = React.useState<FindingStats>(EMPTY_STATS);
   const [statsLoaded, setStatsLoaded] = React.useState(false);
   const [preferencesHydrated, setPreferencesHydrated] = React.useState(false);
-  const [page, setPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(10);
+  const [page, setPage] = useListState("findings:group-page", 1);
+  const [pageSize, setPageSize] = useListState("findings:group-size", 10);
   const [deepenFinding, setDeepenFinding] = React.useState<Finding | null>(null);
   const [retestFinding, setRetestFinding] = React.useState<Finding | null>(null);
   const [activeRetests, setActiveRetests] = React.useState<Record<string, ActiveFindingRetest>>({});
@@ -235,7 +236,7 @@ export default function FindingsPage() {
       }
     }
     setPreferencesHydrated(true);
-  }, []);
+  }, [setView, setStatus, setVulnclass, setTask, setSort, setSeverity]);
 
   React.useEffect(() => {
     if (!preferencesHydrated) return;
@@ -248,7 +249,7 @@ export default function FindingsPage() {
   React.useEffect(() => {
     const timer = window.setTimeout(() => setQuery(search.trim()), 300);
     return () => window.clearTimeout(timer);
-  }, [search]);
+  }, [search, setQuery]);
 
   // setFindings 同时改写两个视图缓存里的同一条发现,切换视图不会看到过期状态。
   const setFindings = React.useCallback((update: (current: Finding[]) => Finding[]) => {
@@ -573,8 +574,10 @@ export default function FindingsPage() {
   );
 
   // Reset every view's pagination and expansion when a shared finding filter changes.
+  const previousFilter = React.useRef(filterFingerprint);
   React.useEffect(() => {
-    void filterFingerprint;
+    if (previousFilter.current === filterFingerprint) return;
+    previousFilter.current = filterFingerprint;
     setPage(1);
     setExpanded(null);
     setExpandedGroups(new Set());
@@ -584,13 +587,14 @@ export default function FindingsPage() {
     // 筛选变了树也会变,原先选中的节点可能已经不在树里,退回「全部资产」。
     setAssetScope(null);
     setAssetTree(EMPTY_ASSET_TREE);
-  }, [filterFingerprint]);
+  }, [filterFingerprint, setPage, // 筛选变了树也会变,原先选中的节点可能已经不在树里,退回「全部资产」。
+    setAssetScope, setFlatPage]);
 
   // 换资产节点等于换了一份结果集,回到第一页。
   React.useEffect(() => {
     void assetScope;
     setFlatPage(1);
-  }, [assetScope]);
+  }, [assetScope, setFlatPage]);
 
   // 资产树只在进入视图 / 筛选变化时查一次(以及本页改动发现后由
   // refreshAfterMutation 主动重拉),不做轮询。
@@ -626,14 +630,14 @@ export default function FindingsPage() {
 
   React.useEffect(() => {
     const lastPage = Math.max(1, Math.ceil(groupTotal / pageSize));
-    if (page > lastPage) setPage(lastPage);
-  }, [groupTotal, page, pageSize]);
+    if (groupTotal > 0 && page > lastPage) setPage(lastPage);
+  }, [groupTotal, page, pageSize, setPage]);
 
   React.useEffect(() => {
     if (!flat.loaded) return;
     const lastPage = Math.max(1, Math.ceil(flat.total / flatPageSize));
     if (flatPage > lastPage) setFlatPage(lastPage);
-  }, [flat.loaded, flat.total, flatPage, flatPageSize]);
+  }, [flat.loaded, flat.total, flatPage, flatPageSize, setFlatPage]);
 
   // Whole-table aggregates (stat cards + vuln-class options) — independent of the
   // current page, so they stay exact.
@@ -670,7 +674,7 @@ export default function FindingsPage() {
     ) {
       setTask("all");
     }
-  }, [stats, statsLoaded, task, vulnclass]);
+  }, [stats, statsLoaded, task, vulnclass, setVulnclass, setTask]);
 
   // updateStatus optimistically flips one finding's triage state, reverting on error.
   const updateStatus = React.useCallback(

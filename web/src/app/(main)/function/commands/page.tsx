@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import type { CommandRecord, ToolStat } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -50,11 +51,11 @@ const PAGE_SIZES = [25, 50, 100];
 const CMD_MAX_LEN = 80;
 
 export default function CommandsPage() {
-  const [page, setPage] = React.useState(0);
-  const [size, setSize] = React.useState(50);
-  const [query, setQuery] = React.useState("");
-  const [queryQ, setQueryQ] = React.useState("");
-  const [taskFilter, setTaskFilter] = React.useState("");
+  const [page, setPage] = useListState("commands:page", 0);
+  const [size, setSize] = useListState("commands:size", 50);
+  const [query, setQuery] = useListState("commands:query", "");
+  const [queryQ, setQueryQ] = useListState("commands:query-debounced", "");
+  const [taskFilter, setTaskFilter] = useListState("commands:task", "");
 
   const [commands, setCommands] = React.useState<CommandRecord[]>([]);
   const [total, setTotal] = React.useState(0);
@@ -72,13 +73,17 @@ export default function CommandsPage() {
   React.useEffect(() => {
     const t = setTimeout(() => setQueryQ(query.trim()), 300);
     return () => clearTimeout(t);
-  }, [query]);
+  }, [query, setQueryQ]);
 
-  // Reset page on filter change.
+  // Reset page only when a filter actually changes.
+  const filterKey = JSON.stringify([queryQ, taskFilter, size]);
+  const previousFilter = React.useRef(filterKey);
   // biome-ignore lint/correctness/useExhaustiveDependencies: every filter change intentionally resets pagination.
   React.useEffect(() => {
+    if (previousFilter.current === filterKey) return;
+    previousFilter.current = filterKey;
     setPage(0);
-  }, [queryQ, taskFilter, size]);
+  }, [filterKey]);
 
   // Load data.
   React.useEffect(() => {

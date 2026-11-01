@@ -45,6 +45,7 @@ import { SortableHead } from "@/components/ui/sortable-head";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import { useStoredSortPreference } from "@/lib/sort-preference";
 import type { TrafficDetail, TrafficExchange, TrafficHost, TrafficResp } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -116,31 +117,32 @@ const STATUS_BUCKETS = ["2xx", "3xx", "4xx", "5xx"];
 
 export function TrafficHistory({ taskId }: { taskId?: string }) {
   const taskScoped = Boolean(taskId);
+  const listKey = `traffic:${taskId ?? "global"}`;
   const [selectedFlows, setSelectedFlows] = React.useState<Map<string, TrafficExchange>>(() => new Map());
   const router = useRouter();
   const [importing, setImporting] = React.useState(false);
   const importLock = React.useRef(false);
   const [linking, setLinking] = React.useState(false);
-  const [page, setPage] = React.useState(0);
-  const [size, setSize] = React.useState(50);
-  const [host, setHost] = React.useState(""); // raw host input
-  const [hostQ, setHostQ] = React.useState(""); // debounced → server
-  const [query, setQuery] = React.useState(""); // raw free-text input
-  const [queryQ, setQueryQ] = React.useState(""); // debounced → server
-  const [method, setMethod] = React.useState("all");
+  const [page, setPage] = useListState(`${listKey}:page`, 0);
+  const [size, setSize] = useListState(`${listKey}:size`, 50);
+  const [host, setHost] = useListState(`${listKey}:host`, ""); // raw host input
+  const [hostQ, setHostQ] = useListState(`${listKey}:host-debounced`, ""); // debounced → server
+  const [query, setQuery] = useListState(`${listKey}:query`, ""); // raw free-text input
+  const [queryQ, setQueryQ] = useListState(`${listKey}:query-debounced`, ""); // debounced → server
+  const [method, setMethod] = useListState(`${listKey}:method`, "all");
 
   // Advanced filters (issue #177): response-body content, path, status class and
   // response-size range. Text inputs are debounced like host/query; the status
   // select applies immediately.
-  const [body, setBody] = React.useState("");
-  const [bodyQ, setBodyQ] = React.useState("");
-  const [path, setPath] = React.useState("");
-  const [pathQ, setPathQ] = React.useState("");
-  const [statusFilter, setStatusFilter] = React.useState("all");
-  const [respMin, setRespMin] = React.useState("");
-  const [respMinQ, setRespMinQ] = React.useState("");
-  const [respMax, setRespMax] = React.useState("");
-  const [respMaxQ, setRespMaxQ] = React.useState("");
+  const [body, setBody] = useListState(`${listKey}:body`, "");
+  const [bodyQ, setBodyQ] = useListState(`${listKey}:body-debounced`, "");
+  const [path, setPath] = useListState(`${listKey}:path`, "");
+  const [pathQ, setPathQ] = useListState(`${listKey}:path-debounced`, "");
+  const [statusFilter, setStatusFilter] = useListState(`${listKey}:status`, "all");
+  const [respMin, setRespMin] = useListState(`${listKey}:min`, "");
+  const [respMinQ, setRespMinQ] = useListState(`${listKey}:min-debounced`, "");
+  const [respMax, setRespMax] = useListState(`${listKey}:max`, "");
+  const [respMaxQ, setRespMaxQ] = useListState(`${listKey}:max-debounced`, "");
   const [sort, setSort] = useStoredSortPreference<SortField>(SORT_STORAGE_KEY, SORT_FIELDS, "ts", "desc");
 
   const [traffic, setTraffic] = React.useState<TrafficResp | null>(null);
@@ -149,7 +151,7 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
   const [detailLoading, setDetailLoading] = React.useState(false);
 
   const [hosts, setHosts] = React.useState<TrafficHost[]>([]); // target picker
-  const [selectedHosts, setSelectedHosts] = React.useState<string[]>([]); // checked in picker
+  const [selectedHosts, setSelectedHosts] = useListState<string[]>(`${listKey}:selected-hosts`, []); // checked in picker
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [hostCountSortDirection, setHostCountSortDirection] = React.useState<HostCountSortDirection>("desc");
 
@@ -161,27 +163,27 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
   React.useEffect(() => {
     const t = setTimeout(() => setHostQ(host.trim()), 300);
     return () => clearTimeout(t);
-  }, [host]);
+  }, [host, setHostQ]);
   React.useEffect(() => {
     const t = setTimeout(() => setQueryQ(query.trim()), 300);
     return () => clearTimeout(t);
-  }, [query]);
+  }, [query, setQueryQ]);
   React.useEffect(() => {
     const t = setTimeout(() => setBodyQ(body.trim()), 300);
     return () => clearTimeout(t);
-  }, [body]);
+  }, [body, setBodyQ]);
   React.useEffect(() => {
     const t = setTimeout(() => setPathQ(path.trim()), 300);
     return () => clearTimeout(t);
-  }, [path]);
+  }, [path, setPathQ]);
   React.useEffect(() => {
     const t = setTimeout(() => setRespMinQ(respMin.trim()), 300);
     return () => clearTimeout(t);
-  }, [respMin]);
+  }, [respMin, setRespMinQ]);
   React.useEffect(() => {
     const t = setTimeout(() => setRespMaxQ(respMax.trim()), 300);
     return () => clearTimeout(t);
-  }, [respMax]);
+  }, [respMax, setRespMaxQ]);
 
   const hasAdvancedFilter = Boolean(bodyQ || pathQ || respMinQ || respMaxQ) || statusFilter !== "all";
   const resetAdvancedFilters = () => {
@@ -196,11 +198,17 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
     setRespMaxQ("");
   };
 
-  // Any filter/size/sort change resets to the first page.
+  // Only an actual filter/size/sort change resets to the first page.
+  const filterKey = JSON.stringify([
+    hostQ, queryQ, method, size, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort.field, sort.direction, taskId,
+  ]);
+  const previousFilter = React.useRef(filterKey);
   // biome-ignore lint/correctness/useExhaustiveDependencies: these values intentionally trigger a page reset.
   React.useEffect(() => {
+    if (previousFilter.current === filterKey) return;
+    previousFilter.current = filterKey;
     setPage(0);
-  }, [hostQ, queryQ, method, size, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort, taskId]);
+  }, [filterKey]);
 
   // Load the current page. Auto-refresh only on page 0 (newest) so paging back
   // through history isn't yanked out from under the user.

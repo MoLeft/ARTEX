@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import type { SSProject, SSTask } from "@/lib/types";
 
 type SSStatus = {
@@ -216,7 +217,7 @@ function StatusBadge({ status, loading }: { status: SSStatus | null; loading: bo
 // ── 同步工作区（项目 / 任务维度）────────────────────────────────────────────────
 
 function SyncWorkbench() {
-  const [dimension, setDimension] = React.useState<Dimension>("project");
+  const [dimension, setDimension] = useListState<Dimension>("sync:dimension", "project");
   const [assetTypes, setAssetTypes] = React.useState<Record<string, boolean>>({
     subdomain: true,
     service: true,
@@ -227,8 +228,8 @@ function SyncWorkbench() {
   const [projects, setProjects] = React.useState<SSProject[]>([]);
   const [tasks, setTasks] = React.useState<SSTask[]>([]);
   const [loading, setLoading] = React.useState(false);
-  const [search, setSearch] = React.useState("");
-  const [page, setPage] = React.useState(1);
+  const [search, setSearch] = useListState("sync:search", "");
+  const [page, setPage] = useListState("sync:page", 1);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
 
   const [syncing, setSyncing] = React.useState(false);

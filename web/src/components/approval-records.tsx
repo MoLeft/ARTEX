@@ -32,6 +32,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useSideQuestions } from "@/hooks/use-side-questions";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import type {
   InterceptApprovalFilter,
   InterceptApprovalRow,
@@ -789,15 +790,16 @@ function ApprovalTable({
 }
 
 export function ApprovalRecords({ taskId }: { taskId?: string }) {
+  const listKey = `approvals:${taskId ?? "global"}`;
   const [rows, setRows] = React.useState<InterceptApprovalRow[]>([]);
   const [pendingRows, setPendingRows] = React.useState<InterceptPending[]>([]);
-  const [page, setPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(20);
+  const [page, setPage] = useListState(`${listKey}:page`, 1);
+  const [pageSize, setPageSize] = useListState(`${listKey}:size`, 20);
   const [total, setTotal] = React.useState(0);
-  const [filter, setFilter] = React.useState<InterceptApprovalFilter>({});
-  const [searchText, setSearchText] = React.useState("");
-  const [fromDate, setFromDate] = React.useState("");
-  const [toDate, setToDate] = React.useState("");
+  const [filter, setFilter] = useListState<InterceptApprovalFilter>(`${listKey}:filter`, {});
+  const [searchText, setSearchText] = useListState(`${listKey}:search`, "");
+  const [fromDate, setFromDate] = useListState(`${listKey}:from`, "");
+  const [toDate, setToDate] = useListState(`${listKey}:to`, "");
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [error, setError] = React.useState("");
@@ -810,9 +812,11 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
   const filtered = Boolean(filter.status || filter.decision_source || filter.q || filter.from || filter.to);
 
   // A task can stay mounted while the user switches between task details.
-  // Reset the cursor so the new scope always starts at its newest records.
+  const previousTask = React.useRef(taskId);
   // biome-ignore lint/correctness/useExhaustiveDependencies: taskId intentionally resets pagination when scope changes.
   React.useEffect(() => {
+    if (previousTask.current === taskId) return;
+    previousTask.current = taskId;
     setPage(1);
   }, [taskId]);
 
@@ -909,7 +913,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
       setLoading(true);
     }, 300);
     return () => clearTimeout(timer);
-  }, [searchText, filter.q]);
+  }, [searchText, filter.q, setPage, setFilter]);
 
   const decide: Decide = async (id, decision) => {
     if (decisionLock.current) return;

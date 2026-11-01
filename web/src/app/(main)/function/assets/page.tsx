@@ -63,6 +63,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { parseCompanyScopeText } from "@/lib/company-scope";
+import { useListState } from "@/lib/list-state";
 import type { Asset, Company, CompanyScopeRule } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -115,6 +116,22 @@ function AssetsContent() {
   const requestedAsset = searchParams.get("asset") ?? "";
   const [assetTarget, setAssetTarget] = React.useState<{ id: number; type: string }>();
   const [assetTargetError, setAssetTargetError] = React.useState("");
+  const [intelligenceAsset, setIntelligenceAsset] = React.useState<number | null>(null);
+  const [rows, setRows] = React.useState<Asset[]>([]);
+  const [total, setTotal] = React.useState(0);
+  const [companies, setCompanies] = React.useState<Company[]>([]);
+  const [counts, setCounts] = React.useState<Record<string, number>>({});
+  const [tab, setTab] = useListState("assets:tab", "company");
+  const [query, setQuery] = useListState("assets:query", "");
+  const [loaded, setLoaded] = React.useState(false);
+  const [loading, setLoading] = React.useState(false);
+  const [page, setPage] = useListState("assets:page", 0);
+  const [size, setSize] = useListState("assets:size", 50);
+  const [dslError, setDslError] = React.useState("");
+  const [refreshKey, setRefreshKey] = React.useState(0);
+  const assetsRequestRef = React.useRef(0);
+  const [rowsTab, setRowsTab] = React.useState("");
+
   React.useEffect(() => {
     let alive = true;
     setAssetTarget(undefined);
@@ -140,22 +157,7 @@ function AssetsContent() {
     return () => {
       alive = false;
     };
-  }, [requestedAsset]);
-  const [intelligenceAsset, setIntelligenceAsset] = React.useState<number | null>(null);
-  const [rows, setRows] = React.useState<Asset[]>([]);
-  const [total, setTotal] = React.useState(0);
-  const [companies, setCompanies] = React.useState<Company[]>([]);
-  const [counts, setCounts] = React.useState<Record<string, number>>({});
-  const [tab, setTab] = React.useState("company");
-  const [query, setQuery] = React.useState("");
-  const [loaded, setLoaded] = React.useState(false);
-  const [loading, setLoading] = React.useState(false);
-  const [page, setPage] = React.useState(0);
-  const [size, setSize] = React.useState(50);
-  const [dslError, setDslError] = React.useState("");
-  const [refreshKey, setRefreshKey] = React.useState(0);
-  const assetsRequestRef = React.useRef(0);
-  const [rowsTab, setRowsTab] = React.useState("");
+  }, [requestedAsset, setTab, setPage]);
 
   // asset selection & delete
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
@@ -262,8 +264,12 @@ function AssetsContent() {
   }, [loadMeta]);
 
   // Reset query + page + selection when switching tabs
+  const tabKey = `${tab}:${assetTarget?.type ?? ""}:${assetTarget?.id ?? ""}`;
+  const previousTab = React.useRef(tabKey);
   // biome-ignore lint/correctness/useExhaustiveDependencies: tab changes intentionally reset tab-local controls.
   React.useEffect(() => {
+    if (previousTab.current === tabKey) return;
+    previousTab.current = tabKey;
     setQuery(assetTarget?.type === tab ? `id==${assetTarget.id}` : "");
     setDslError("");
     setSelected(new Set());
@@ -274,7 +280,13 @@ function AssetsContent() {
   }, [tab, assetTarget]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: these controls intentionally reset server pagination.
-  React.useEffect(() => setPage(0), [tab, size, query]);
+  const pageFilterKey = JSON.stringify([tab, size, query]);
+  const previousPageFilter = React.useRef(pageFilterKey);
+  React.useEffect(() => {
+    if (previousPageFilter.current === pageFilterKey) return;
+    previousPageFilter.current = pageFilterKey;
+    setPage(0);
+  }, [pageFilterKey, setPage]);
 
   const dslMode = query.trim() !== "";
 
@@ -315,10 +327,10 @@ function AssetsContent() {
   }, [tab, page, size, query, refreshKey]);
 
   React.useEffect(() => {
-    if (tab === "company") return;
+    if (tab === "company" || !loaded || rowsTab !== tab) return;
     const lastPage = Math.max(0, Math.ceil(total / size) - 1);
     if (page > lastPage) setPage(lastPage);
-  }, [page, size, tab, total]);
+  }, [loaded, page, rowsTab, size, tab, total, setPage]);
 
   const companyById = React.useMemo(() => {
     const m = new Map<number, string>();

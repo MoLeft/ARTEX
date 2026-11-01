@@ -18,6 +18,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
 import type { FindingSortField } from "@/lib/finding-severity";
+import { useListState } from "@/lib/list-state";
 import { useStoredSortPreference } from "@/lib/sort-preference";
 import { SEVERITY_FILTER_OPTIONS, statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus, FindingsPage, Severity } from "@/lib/types";
@@ -139,10 +140,10 @@ function Row({
 
 export function FindingsTab({ taskId }: { taskId: string }) {
   const [sources, setSources] = React.useState<string[]>([]);
-  const [rawOpen, setRawOpen] = React.useState(false);
-  const [severity, setSeverity] = React.useState<"all" | Severity>("all");
-  const [search, setSearch] = React.useState("");
-  const [query, setQuery] = React.useState("");
+  const [rawOpen, setRawOpen] = useListState(`task-findings:${taskId}:raw-open`, false);
+  const [severity, setSeverity] = useListState<"all" | Severity>(`task-findings:${taskId}:severity`, "all");
+  const [search, setSearch] = useListState(`task-findings:${taskId}:search`, "");
+  const [query, setQuery] = useListState(`task-findings:${taskId}:query`, "");
   const [sortPreference, setSortPreference] = useStoredSortPreference(
     FINDING_SORT_PREFERENCE_KEY,
     FINDING_SORT_FIELDS,
@@ -329,8 +330,9 @@ function TaskFindingRows({
   sort: FindingSortField;
   order: "asc" | "desc";
 }) {
-  const [page, setPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(20);
+  const listKey = `task-findings:${taskId}:${severity}:${query}:${sort}:${order}`;
+  const [page, setPage] = useListState(`${listKey}:page`, 1);
+  const [pageSize, setPageSize] = useListState(`${listKey}:size`, 20);
   const [data, setData] = React.useState<FindingsPage | null>(null);
   const [error, setError] = React.useState(false);
 

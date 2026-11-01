@@ -28,6 +28,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api, type ScheduleInput } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import type { Task, TaskSchedule } from "@/lib/types";
 
 const weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
@@ -443,9 +444,9 @@ export default function SchedulesPage() {
   const [loading, setLoading] = React.useState(true);
   const [editing, setEditing] = React.useState<{ id?: number; value: ScheduleInput } | null>(null);
   const [saving, setSaving] = React.useState(false);
-  const [query, setQuery] = React.useState("");
-  const [page, setPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState("10");
+  const [query, setQuery] = useListState("schedules:query", "");
+  const [page, setPage] = useListState("schedules:page", 1);
+  const [pageSize, setPageSize] = useListState("schedules:size", "10");
   const [selectedIds, setSelectedIds] = React.useState<number[]>([]);
   const [expandedId, setExpandedId] = React.useState<number | null>(null);
   const [timelineById, setTimelineById] = React.useState<Record<number, TaskSchedule>>({});
@@ -486,8 +487,9 @@ export default function SchedulesPage() {
   if (allVisibleSelected) headerSelectionState = true;
   else if (someVisibleSelected) headerSelectionState = "indeterminate";
   React.useEffect(() => {
+    if (loading) return;
     setPage((current) => Math.min(current, totalPages));
-  }, [totalPages]);
+  }, [loading, totalPages, setPage]);
   const updateQuery = (value: string) => {
     setQuery(value);
     setPage(1);

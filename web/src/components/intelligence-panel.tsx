@@ -21,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import { statusMeta } from "@/lib/status";
 import type { IntelligenceKind, IntelligencePage, TaskIntelligence } from "@/lib/types";
 import { copyText } from "@/lib/utils";
@@ -72,11 +73,12 @@ export function IntelligencePanel({
   scopeId: string;
   onNavigate?: () => void;
 }) {
-  const [kind, setKind] = React.useState("all");
-  const [status, setStatus] = React.useState("all");
-  const [search, setSearch] = React.useState("");
-  const [query, setQuery] = React.useState("");
-  const [page, setPage] = React.useState(0);
+  const listKey = `intelligence:${scope}:${scopeId}`;
+  const [kind, setKind] = useListState(`${listKey}:kind`, "all");
+  const [status, setStatus] = useListState(`${listKey}:status`, "all");
+  const [search, setSearch] = useListState(`${listKey}:search`, "");
+  const [query, setQuery] = useListState(`${listKey}:query`, "");
+  const [page, setPage] = useListState(`${listKey}:page`, 0);
   const [data, setData] = React.useState<IntelligencePage | null>(null);
   const [error, setError] = React.useState("");
   const [refresh, setRefresh] = React.useState(0);
@@ -90,11 +92,13 @@ export function IntelligencePanel({
   }, [data]);
   React.useEffect(() => {
     const timer = setTimeout(() => {
-      setQuery(search.trim());
-      setPage(0);
+      if (search.trim() !== query) {
+        setQuery(search.trim());
+        setPage(0);
+      }
     }, 300);
     return () => clearTimeout(timer);
-  }, [search]);
+  }, [search, query, setPage, setQuery]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: refresh explicitly reloads this resource after a user action.
   React.useEffect(() => {
     let alive = true;

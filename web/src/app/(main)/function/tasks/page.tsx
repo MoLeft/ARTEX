@@ -162,6 +162,7 @@ import {
   getLocalStorageValue,
   setLocalStorageValue,
 } from "@/lib/local-storage.client";
+import { useListState } from "@/lib/list-state";
 import {
   type SortDirection,
   useStoredSortPreference,
@@ -418,15 +419,16 @@ function compareTasks(
 }
 
 export default function TasksPage() {
-  const [activeTab, setActiveTab] = React.useState("current");
+  const [activeTab, setActiveTab] = useListState("tasks:tab", "current");
   const [tasks, setTasks] = React.useState<Task[]>([]);
   const [categories, setCategories] = React.useState<TaskCategory[]>([]);
   const [categoriesLoaded, setCategoriesLoaded] = React.useState(false);
-  const [query, setQuery] = React.useState("");
-  const [statusFilter, setStatusFilter] = React.useState<TaskStatus | "all">(
+  const [query, setQuery] = useListState("tasks:query", "");
+  const [statusFilter, setStatusFilter] = useListState<TaskStatus | "all">(
+    "tasks:status",
     "all",
   );
-  const [categoryFilter, setCategoryFilter] = React.useState("all");
+  const [categoryFilter, setCategoryFilter] = useListState("tasks:category", "all");
   const [filtersHydrated, setFiltersHydrated] = React.useState(false);
   const [sortPreference, setSortPreference] = useStoredSortPreference(
     TASK_SORT_PREFERENCE_KEY,
@@ -435,8 +437,8 @@ export default function TasksPage() {
     "desc",
   );
   const { field: sortField, direction: sortDirection } = sortPreference;
-  const [page, setPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(20);
+  const [page, setPage] = useListState("tasks:page", 1);
+  const [pageSize, setPageSize] = useListState("tasks:size", 20);
   const [nowSec, setNowSec] = React.useState(() =>
     Math.floor(Date.now() / 1000),
   );
@@ -498,7 +500,7 @@ export default function TasksPage() {
       }
     }
     setFiltersHydrated(true);
-  }, []);
+  }, [setStatusFilter, setCategoryFilter]);
 
   React.useEffect(() => {
     if (!filtersHydrated) return;
@@ -551,11 +553,15 @@ export default function TasksPage() {
     [setSortPreference],
   );
 
-  // reset to page 1 whenever filters or ordering change
+  // Reset only when the user changes filters or ordering, not when returning to this page.
+  const filterKey = JSON.stringify([query, statusFilter, categoryFilter, sortField, sortDirection]);
+  const previousFilter = React.useRef(filterKey);
   // biome-ignore lint/correctness/useExhaustiveDependencies: both filters intentionally reset pagination.
   React.useEffect(() => {
+    if (!filtersHydrated || previousFilter.current === filterKey) return;
+    previousFilter.current = filterKey;
     setPage(1);
-  }, [query, statusFilter, categoryFilter, sortField, sortDirection]);
+  }, [filterKey, filtersHydrated]);
 
   const paginated = React.useMemo(
     () => ordered.slice((page - 1) * pageSize, page * pageSize),
@@ -684,7 +690,7 @@ export default function TasksPage() {
       return;
     if (!categories.some((category) => String(category.id) === categoryFilter))
       setCategoryFilter("all");
-  }, [categories, categoriesLoaded, categoryFilter]);
+  }, [categories, categoriesLoaded, categoryFilter, setCategoryFilter]);
 
   // 只在确有 running 任务时才每秒 tick——其余情况「运行时长」是静态值,空转的 tick 会白白
   // 重渲染整张表。
@@ -808,7 +814,7 @@ export default function TasksPage() {
         throw error;
       }
     },
-    [load],
+    [load, setActiveTab],
   );
 
   // deleteTasks 逐个删除所选任务:后端没有批量接口,且单次删除会连带清理资产/流量/文件,
@@ -925,7 +931,7 @@ export default function TasksPage() {
     setActiveTab("archived");
     lastRef.current = "";
     load();
-  }, [archivableTaskIDs, load]);
+  }, [archivableTaskIDs, load, setActiveTab]);
 
   const controlSelectedTasks = React.useCallback(
     async (action: "pause" | "resume", ids: string[]) => {
@@ -2186,10 +2192,10 @@ function ArchiveDeleteDialog({
 
 function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
   const [archives, setArchives] = React.useState<TaskArchive[]>([]);
-  const [query, setQuery] = React.useState("");
-  const [stateFilter, setStateFilter] = React.useState("all");
-  const [page, setPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(20);
+  const [query, setQuery] = useListState("task-archives:query", "");
+  const [stateFilter, setStateFilter] = useListState("task-archives:state", "all");
+  const [page, setPage] = useListState("task-archives:page", 1);
+  const [pageSize, setPageSize] = useListState("task-archives:size", 20);
   const [total, setTotal] = React.useState(0);
   const [selected, setSelected] = React.useState<Set<number>>(() => new Set());
   const [loading, setLoading] = React.useState(true);

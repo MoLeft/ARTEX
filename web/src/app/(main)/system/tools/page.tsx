@@ -35,6 +35,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import type { Agent, Tool } from "@/lib/types";
 
 // Traffic tools are host tools gated by the global 流量捕获 switch: bindable, but
@@ -379,7 +380,7 @@ export default function ToolsPage() {
     api.settings().then((s) => setCaptureOn(!!s.traffic_capture)).catch(() => {});
   }, [reload]);
 
-  const [query, setQuery] = React.useState("");
+  const [query, setQuery] = useListState("tools:query", "");
 
   const selected = tools.find((t) => t.key === selectedKey) ?? null;
   const matchTool = React.useCallback((t: Tool) => {

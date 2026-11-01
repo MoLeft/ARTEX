@@ -29,6 +29,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import type {
   AssetInterceptKind,
   AssetInterceptRule,
@@ -130,8 +131,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [modelTokens, setModelTokens] = React.useState<ModelTokenStat[]>([]);
   // 目标管理：目标列表 + 新增表单 + 行内编辑状态。
   const [goals, setGoals] = React.useState<TaskGoal[]>([]);
-  const [goalPage, setGoalPage] = React.useState(1);
-  const [goalPageSize, setGoalPageSize] = React.useState(20);
+  const [goalPage, setGoalPage] = useListState(`task-goals:${taskId}:page`, 1);
+  const [goalPageSize, setGoalPageSize] = useListState(`task-goals:${taskId}:size`, 20);
   const [goalTotal, setGoalTotal] = React.useState(0);
   const goalRequest = React.useRef(0);
   const [goalText, setGoalText] = React.useState("");

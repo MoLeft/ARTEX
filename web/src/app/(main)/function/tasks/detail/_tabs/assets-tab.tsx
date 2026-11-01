@@ -39,6 +39,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import { parseCompanyScopeText } from "@/lib/company-scope";
 import { taskAssetSourceLabel } from "@/lib/task-assets";
 import type { Asset, NewAssetType } from "@/lib/types";
@@ -344,10 +345,10 @@ export function AssetsTab({ taskId }: { taskId: string }) {
   const [total, setTotal] = React.useState(0);
   const [counts, setCounts] = React.useState<Record<string, number>>({});
   const [loaded, setLoaded] = React.useState(false);
-  const [tab, setTab] = React.useState<NewAssetType>("root_domain");
-  const [page, setPage] = React.useState(0);
-  const [size, setSize] = React.useState(50);
-  const [query, setQuery] = React.useState("");
+  const [tab, setTab] = useListState<NewAssetType>(`task-assets:${taskId}:tab`, "root_domain");
+  const [page, setPage] = useListState(`task-assets:${taskId}:page`, 0);
+  const [size, setSize] = useListState(`task-assets:${taskId}:size`, 50);
+  const [query, setQuery] = useListState(`task-assets:${taskId}:query`, "");
   const [loading, setLoading] = React.useState(false);
   const [dslError, setDslError] = React.useState("");
   const [refreshKey, setRefreshKey] = React.useState(0);
@@ -358,22 +359,28 @@ export function AssetsTab({ taskId }: { taskId: string }) {
   const dslMode = query.trim() !== "";
 
   React.useEffect(() => {
-    setPage(0);
     setRows([]);
     setLoaded(false);
   }, []);
 
   // Switching type tabs resets the search (DSL fields differ per type; matches
   // the global asset view).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: tab changes intentionally reset tab-local controls.
+  const previousTab = React.useRef(tab);
   React.useEffect(() => {
+    if (previousTab.current === tab) return;
+    previousTab.current = tab;
     setQuery("");
     setDslError("");
-  }, [tab]);
+  }, [tab, setQuery]);
 
   // Query / tab / page-size changes restart server pagination.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: these controls intentionally reset server pagination.
-  React.useEffect(() => setPage(0), [tab, size, query]);
+  const filterKey = JSON.stringify([tab, size, query]);
+  const previousFilter = React.useRef(filterKey);
+  React.useEffect(() => {
+    if (previousFilter.current === filterKey) return;
+    previousFilter.current = filterKey;
+    setPage(0);
+  }, [filterKey, setPage]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey is an explicit manual-reload trigger.
   React.useEffect(() => {
@@ -424,9 +431,10 @@ export function AssetsTab({ taskId }: { taskId: string }) {
   }, [page, query, refreshKey, size, tab, taskId]);
 
   React.useEffect(() => {
+    if (!loaded) return;
     const maxPage = Math.max(0, Math.ceil(total / size) - 1);
     if (page > maxPage) setPage(maxPage);
-  }, [page, size, total]);
+  }, [loaded, page, size, total, setPage]);
 
   const refresh = React.useCallback(() => {
     setLoaded(false);

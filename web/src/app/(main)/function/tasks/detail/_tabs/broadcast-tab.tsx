@@ -29,6 +29,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import { type Tone, toneClasses, toneDot } from "@/lib/status";
 import { taskAssetTypeLabel } from "@/lib/task-assets";
 import type { Edge, ExploreKind, FindingAsset, NewAssetType, TaskNode } from "@/lib/types";
@@ -432,12 +433,13 @@ function BroadcastRow({
 }
 
 export function BroadcastTab({ taskId }: { taskId: string }) {
-  const [kinds, setKinds] = React.useState<ExploreKind[]>([]);
-  const [queryInput, setQueryInput] = React.useState("");
-  const [query, setQuery] = React.useState("");
-  const [order, setOrder] = React.useState<"asc" | "desc">("desc");
-  const [page, setPage] = React.useState(1);
-  const [size, setSize] = React.useState(20);
+  const listKey = `task-broadcast:${taskId}`;
+  const [kinds, setKinds] = useListState<ExploreKind[]>(`${listKey}:kinds`, []);
+  const [queryInput, setQueryInput] = useListState(`${listKey}:search`, "");
+  const [query, setQuery] = useListState(`${listKey}:query`, "");
+  const [order, setOrder] = useListState<"asc" | "desc">(`${listKey}:order`, "desc");
+  const [page, setPage] = useListState(`${listKey}:page`, 1);
+  const [size, setSize] = useListState(`${listKey}:size`, 20);
   const [live, setLive] = React.useState(true);
 
   const [items, setItems] = React.useState<TaskNode[]>([]);
@@ -466,11 +468,13 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
   // 输入防抖:打字停 300ms 才真正查询,并回到第一页。
   React.useEffect(() => {
     const t = setTimeout(() => {
-      setQuery(queryInput);
-      setPage(1);
+      if (queryInput !== query) {
+        setQuery(queryInput);
+        setPage(1);
+      }
     }, 300);
     return () => clearTimeout(t);
-  }, [queryInput]);
+  }, [queryInput, query, setPage, setQuery]);
 
   React.useEffect(() => {
     let alive = true;
@@ -551,8 +555,9 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
 
   // 换任务或筛选后条数变少时,把越界的页码收回来。
   React.useEffect(() => {
+    if (!loaded) return;
     if (page > pageCount) setPage(pageCount);
-  }, [page, pageCount]);
+  }, [loaded, page, pageCount, setPage]);
 
   // 按天分组:播报流按日期断行,长任务翻页时还能认出「这是哪天的事」。
   const groups: Array<{ day: string; rows: TaskNode[] }> = [];

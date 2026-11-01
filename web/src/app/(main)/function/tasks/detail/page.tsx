@@ -455,28 +455,28 @@ function TaskDetailInner() {
           <SessionsTab key={id} taskId={id} requestedSession={searchParams.get("session") ?? ""} />
         </TabsContent>
         <TabsContent value="traffic" className="mt-0">
-          <TrafficHistory taskId={id} />
+          <TrafficHistory key={id} taskId={id} />
         </TabsContent>
         <TabsContent value="overview" className="mt-0">
-          <OverviewTab taskId={id} />
+          <OverviewTab key={id} taskId={id} />
         </TabsContent>
         <TabsContent value="graph" className="mt-0">
           <GraphTab taskId={id} />
         </TabsContent>
         <TabsContent value="broadcast" className="mt-0">
-          <BroadcastTab taskId={id} />
+          <BroadcastTab key={id} taskId={id} />
         </TabsContent>
         <TabsContent value="intelligence" className="mt-0">
-          <IntelligencePanel scope="tasks" scopeId={id} />
+          <IntelligencePanel key={id} scope="tasks" scopeId={id} />
         </TabsContent>
         <TabsContent value="findings" className="mt-0">
-          <FindingsTab taskId={id} />
+          <FindingsTab key={id} taskId={id} />
         </TabsContent>
         <TabsContent value="retests" className="mt-0">
           <RetestsTab key={id} taskId={id} />
         </TabsContent>
         <TabsContent value="assets" className="mt-0">
-          <AssetsTab taskId={id} />
+          <AssetsTab key={id} taskId={id} />
         </TabsContent>
         <TabsContent value="coverage" className="mt-0">
           <CoverageGraphTab taskId={id} coverageEnabled={task?.coverage_enabled !== false} />

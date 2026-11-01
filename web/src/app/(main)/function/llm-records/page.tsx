@@ -34,6 +34,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { HttpPacketSyntax } from "@/components/http-code-block";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import type { LLMRecordItem, LLMRecordDetail, LLMTask } from "@/lib/types";
 
 function fmtTime(ts: string) {
@@ -117,11 +118,11 @@ function CopyButton({ text }: { text: string }) {
 const PAGE_SIZES = [25, 50, 100];
 
 export default function LLMRecordsPage() {
-  const [page, setPage] = React.useState(0);
-  const [size, setSize] = React.useState(50);
-  const [session, setSession] = React.useState("");
-  const [sessionQ, setSessionQ] = React.useState("");
-  const [model, setModel] = React.useState("");
+  const [page, setPage] = useListState("llm-records:page", 0);
+  const [size, setSize] = useListState("llm-records:size", 50);
+  const [session, setSession] = useListState("llm-records:session", "");
+  const [sessionQ, setSessionQ] = useListState("llm-records:session-debounced", "");
+  const [model, setModel] = useListState("llm-records:model", "");
 
   const [records, setRecords] = React.useState<LLMRecordItem[]>([]);
   const [total, setTotal] = React.useState(0);
@@ -152,7 +153,7 @@ export default function LLMRecordsPage() {
 
   // Per-task delete (task picker + confirm dialog)
   const [tasks, setTasks] = React.useState<LLMTask[]>([]);
-  const [pickedTask, setPickedTask] = React.useState("");
+  const [pickedTask, setPickedTask] = useListState("llm-records:task", "");
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
   const [reloadTick, setReloadTick] = React.useState(0); // manual refetch trigger
@@ -188,12 +189,16 @@ export default function LLMRecordsPage() {
   React.useEffect(() => {
     const t = setTimeout(() => setSessionQ(session.trim()), 300);
     return () => clearTimeout(t);
-  }, [session]);
+  }, [session, setSessionQ]);
 
-  // Reset page on filter change.
+  // Reset page only when a filter actually changes.
+  const filterKey = JSON.stringify([sessionQ, model, size, pickedTask]);
+  const previousFilter = React.useRef(filterKey);
   React.useEffect(() => {
+    if (previousFilter.current === filterKey) return;
+    previousFilter.current = filterKey;
     setPage(0);
-  }, [sessionQ, model, size, pickedTask]);
+  }, [filterKey, setPage]);
 
   // Load list.
   React.useEffect(() => {
@@ -223,7 +228,7 @@ export default function LLMRecordsPage() {
     return () => {
       alive = false;
     };
-  }, [page, size, sessionQ, model, pickedTask, reloadTick]);
+  }, [page, size, sessionQ, model, pickedTask]);
 
   // Delete every LLM record for the picked task, then refetch.
   const confirmDelete = () => {

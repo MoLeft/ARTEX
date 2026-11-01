@@ -11,6 +11,7 @@ import { Card } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import { statusMeta, toneClasses } from "@/lib/status";
 import type { NotificationChannel, NotificationDelivery } from "@/lib/types";
 
@@ -18,9 +19,9 @@ import type { NotificationChannel, NotificationDelivery } from "@/lib/types";
 export function DeliveryList({ channels }: { channels: NotificationChannel[] }) {
   const [rows, setRows] = React.useState<NotificationDelivery[]>([]);
   const [total, setTotal] = React.useState(0);
-  const [page, setPage] = React.useState(1);
-  const [channelID, setChannelID] = React.useState<number | undefined>(undefined);
-  const [state, setState] = React.useState<string | undefined>(undefined);
+  const [page, setPage] = useListState("notify-deliveries:page", 1);
+  const [channelID, setChannelID] = useListState<number | undefined>("notify-deliveries:channel", undefined);
+  const [state, setState] = useListState<string | undefined>("notify-deliveries:state", undefined);
   const [loading, setLoading] = React.useState(false);
   const pageSize = 50;
 

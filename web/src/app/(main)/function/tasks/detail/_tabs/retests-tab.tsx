@@ -17,6 +17,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import { SEVERITY_FILTER_OPTIONS } from "@/lib/status";
 import type { Finding, FindingsPage, Severity } from "@/lib/types";
 
@@ -27,10 +28,10 @@ function findingLabel(finding: Finding) {
 }
 
 export function RetestsTab({ taskId }: { taskId: string }) {
-  const [page, setPage] = React.useState(1);
-  const [severity, setSeverity] = React.useState<"all" | Severity>("all");
-  const [search, setSearch] = React.useState("");
-  const [query, setQuery] = React.useState("");
+  const [page, setPage] = useListState(`task-retests:${taskId}:page`, 1);
+  const [severity, setSeverity] = useListState<"all" | Severity>(`task-retests:${taskId}:severity`, "all");
+  const [search, setSearch] = useListState(`task-retests:${taskId}:search`, "");
+  const [query, setQuery] = useListState(`task-retests:${taskId}:query`, "");
   const [data, setData] = React.useState<
     (FindingsPage & { taskId: string; severity: "all" | Severity; query: string }) | null
   >(null);
@@ -39,10 +40,13 @@ export function RetestsTab({ taskId }: { taskId: string }) {
   const [refreshVersion, setRefreshVersion] = React.useState(0);
   const refresh = React.useCallback(() => setRefreshVersion((version) => version + 1), []);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: Filter changes restart pagination.
+  const filterKey = JSON.stringify([severity, query]);
+  const previousFilter = React.useRef(filterKey);
   React.useEffect(() => {
+    if (previousFilter.current === filterKey) return;
+    previousFilter.current = filterKey;
     setPage(1);
-  }, [severity, query]);
+  }, [filterKey, setPage]);
 
   // Only this task's own findings, including those without graph nodes.
   // Fetch history only for the selection, and wait for each poll to finish.
@@ -82,7 +86,7 @@ export function RetestsTab({ taskId }: { taskId: string }) {
       disposed = true;
       clearTimeout(timer);
     };
-  }, [taskId, page, refreshVersion, severity, query]);
+  }, [taskId, page, refreshVersion, severity, query, setPage]);
 
   const loaded = data?.page === page && data.taskId === taskId && data.severity === severity && data.query === query;
   const findings = loaded ? data.items : [];

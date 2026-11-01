@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { TablePagination } from "@/components/table-pagination";
+import { useListState } from "@/lib/list-state";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -340,7 +341,7 @@ export default function SkillsPage() {
   const [usageCalls, setUsageCalls] = React.useState<SkillCall[]>([]);
   const [usageLoading, setUsageLoading] = React.useState(false);
   const [missing, setMissing] = React.useState<MissingSkill[]>([]);
-  const [missingPage, setMissingPage] = React.useState(1);
+  const [missingPage, setMissingPage] = useListState("skills:missing-page", 1);
   const [missingTotal, setMissingTotal] = React.useState(0);
   const [missingCalls, setMissingCalls] = React.useState(0);
   const [missingRevision, setMissingRevision] = React.useState(0);

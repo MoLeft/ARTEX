@@ -17,6 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import type {
   Finding,
   FindingCase,
@@ -127,8 +128,8 @@ export function FindingCaseMembers({
   nested?: boolean;
   renderRecords?: (items: Finding[]) => React.ReactNode;
 }) {
-  const [page, setPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(20);
+  const [page, setPage] = useListState(`finding-case-members:${contextTask ?? "global"}:${caseId}:page`, 1);
+  const [pageSize, setPageSize] = useListState(`finding-case-members:${contextTask ?? "global"}:${caseId}:size`, 20);
   const [data, setData] = React.useState<{ items: Finding[]; total: number } | null>(null);
   const [error, setError] = React.useState("");
   const [retry, setRetry] = React.useState(0);
@@ -417,14 +418,18 @@ export function FindingCaseList({
   readOnly?: boolean;
   onTotal?: (total: number) => void;
 }) {
-  const [page, setPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(20);
+  const scope = contextTask ?? "global";
+  const [page, setPage] = useListState(`finding-cases:${scope}:page`, 1);
+  const [pageSize, setPageSize] = useListState(`finding-cases:${scope}:size`, 20);
   const [data, setData] = React.useState<FindingCasePage | null>(null);
   const [error, setError] = React.useState("");
   const [refresh, setRefresh] = React.useState(0);
   const key = JSON.stringify(query);
+  const previousKey = React.useRef(key);
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset pagination when the filter fingerprint changes.
   React.useEffect(() => {
+    if (previousKey.current === key) return;
+    previousKey.current = key;
     setPage(1);
   }, [key]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: refresh is an explicit reload requested after grouping/retry.

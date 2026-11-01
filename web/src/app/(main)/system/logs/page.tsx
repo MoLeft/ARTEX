@@ -4,6 +4,7 @@ import * as React from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { openSSE } from "@/lib/api";
+import { useListState } from "@/lib/list-state";
 import { MOCK } from "@/lib/mock/enabled";
 import type { LogLine } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -38,8 +39,8 @@ function fmtTime(ts: string) {
 
 export default function LogsPage() {
   const [lines, setLines] = React.useState<LogLine[]>([]);
-  const [q, setQ] = React.useState("");
-  const [level, setLevel] = React.useState<"all" | LogLine["level"]>("all");
+  const [q, setQ] = useListState("logs:query", "");
+  const [level, setLevel] = useListState<"all" | LogLine["level"]>("logs:level", "all");
   const [paused, setPaused] = React.useState(false);
   const [loadingHistory, setLoadingHistory] = React.useState(false);
   const [hasMore, setHasMore] = React.useState(false);
