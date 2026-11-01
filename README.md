@@ -137,6 +137,8 @@ docker compose up -d          # 拉取 ARTEX 与 PostgreSQL
 
 浏览器 MCP 不再是内置服务。系统配置 →「浏览器 MCP」里有 Chrome 与 Lightpanda 两个开关：打开时按普通 MCP 创建并启用（Chrome 的服务名为 `browser`，Lightpanda 为 `lightpanda`），之后与其它 MCP 完全一样在 MCP 页面管理——可以改名、改命令/参数、调整 Agent 可见性、停用或删除；在 MCP 页面停用或删除后，系统配置里的开关同步关闭，重新打开开关会按默认配置再次创建。同页面的「Agent 浏览器 MCP 优先级」（实验功能）决定两者同时对一个 Agent 可见时，运行时提示词引导它优先用 Chrome 还是 Lightpanda；真实像素截图始终只由 Chrome/Playwright 完成。Lightpanda 测试版 Docker 镜像仍内置 `127.0.0.1:9222` 的 Lightpanda MCP，打开开关即可用；独立运行 ARTEX 二进制时，可设置 `ARTEX_LIGHTPANDA_MCP_URL=http://<Lightpanda主机>:9222/mcp` 指向自行启动的实例。
 
+同页可分别设置 Chrome 与 Lightpanda 的最大并发会话数（实验功能，`0` 表示不限），超过上限的 Agent 运行会等待空位；也可查看占用者、等待数并强制关闭会话。关闭 Lightpanda 会话时会调用其 `session_close` 释放页面；设置上限后，Agent 不能再通过 `session_new` 额外创建会话。Chrome 的内存是其进程树 RSS 估算值；内置 Lightpanda 是共享服务，只显示服务总内存。此限制针对 ARTEX 管理的默认名称 `browser` / `lightpanda` MCP 会话，不限制其他程序或改名后的 MCP，也不限制 Lightpanda 服务自身的后台进程。
+
 ### 方式三：下载预编译二进制（Releases）
 
 到本仓库的 [Releases](https://github.com/MoLeft/ARTEX/releases) 下载对应平台的 zip，解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`。Linux ARM64（包括 ARM64 Kali）选择 `linux-arm64`，x86_64 选择 `linux-amd64`：

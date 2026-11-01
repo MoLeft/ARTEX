@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/Autumn-27/artex/mcphttp"
@@ -16,6 +17,7 @@ const lightpandaURL = "http://127.0.0.1:9222/mcp"
 // so switching back to an older binary removes it with the beta runtime.
 func startLightpanda(ctx context.Context) {
 	if os.Getenv("ARTEX_LIGHTPANDA_MCP_URL") != "" {
+		_ = os.Unsetenv("ARTEX_LIGHTPANDA_PID")
 		return // explicitly configured external MCP
 	}
 	if _, err := exec.LookPath("lightpanda"); err != nil {
@@ -33,6 +35,7 @@ func startLightpanda(ctx context.Context) {
 		done <- err
 		if ctx.Err() == nil {
 			_ = os.Unsetenv("ARTEX_LIGHTPANDA_MCP_URL")
+			_ = os.Unsetenv("ARTEX_LIGHTPANDA_PID")
 			log.Printf("[lightpanda] 进程退出: %v", err)
 		}
 	}()
@@ -49,9 +52,11 @@ func startLightpanda(ctx context.Context) {
 		if err == nil {
 			_ = client.Close()
 			_ = os.Setenv("ARTEX_LIGHTPANDA_MCP_URL", lightpandaURL)
+			_ = os.Setenv("ARTEX_LIGHTPANDA_PID", strconv.Itoa(cmd.Process.Pid))
 			select {
 			case <-done:
 				_ = os.Unsetenv("ARTEX_LIGHTPANDA_MCP_URL")
+				_ = os.Unsetenv("ARTEX_LIGHTPANDA_PID")
 				return
 			default:
 			}

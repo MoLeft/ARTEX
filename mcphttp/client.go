@@ -80,6 +80,13 @@ type Client struct {
 	protocol     string
 }
 
+// SessionID returns the server-assigned Streamable HTTP session identifier.
+func (c *Client) SessionID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sessionID
+}
+
 func normalizeHeaders(headers map[string]string) (map[string]string, error) {
 	out := make(map[string]string, len(headers))
 	for key, value := range headers {
@@ -332,6 +339,20 @@ func (c *Client) Call(ctx context.Context, tool string, args any) (string, error
 	if err != nil {
 		return "", err
 	}
+	return parseToolCallText(raw, tool)
+}
+
+// CallDefault invokes a tool without this client's session header. Some MCP
+// servers require a different session to close the one attached to this client.
+func (c *Client) CallDefault(ctx context.Context, tool string, args any) (string, error) {
+	raw, err := c.callWithSession(ctx, "tools/call", map[string]any{"name": tool, "arguments": args}, true)
+	if err != nil {
+		return "", err
+	}
+	return parseToolCallText(raw, tool)
+}
+
+func parseToolCallText(raw json.RawMessage, tool string) (string, error) {
 	var res struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -355,6 +376,7 @@ func (c *Client) Call(ctx context.Context, tool string, args any) (string, error
 // Close terminates the MCP session best-effort (DELETE with the session id, per the
 // Streamable HTTP spec). Servers that don't track sessions simply ignore it.
 func (c *Client) Close() error {
+	defer c.http.CloseIdleConnections()
 	if c.legacySSE {
 		if c.streamCancel != nil {
 			c.streamCancel()
@@ -374,7 +396,9 @@ func (c *Client) Close() error {
 	if sid == "" {
 		return nil
 	}
-	req, err := http.NewRequest(http.MethodDelete, c.url, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.url, nil)
 	if err != nil {
 		return nil
 	}
@@ -394,11 +418,15 @@ func (c *Client) Close() error {
 // --- JSON-RPC over Streamable HTTP ---
 
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	return c.callWithSession(ctx, method, params, false)
+}
+
+func (c *Client) callWithSession(ctx context.Context, method string, params any, defaultSession bool) (json.RawMessage, error) {
 	c.mu.Lock()
 	c.nextID++
 	id := c.nextID
 	c.mu.Unlock()
-	resp, err := c.roundTrip(ctx, rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}, true)
+	resp, err := c.roundTripWithSession(ctx, rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}, true, defaultSession)
 	if err != nil {
 		return nil, err
 	}
@@ -420,7 +448,14 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 // server replies 202 Accepted with no body. Otherwise the reply is parsed from JSON
 // or from an SSE stream, whichever the server chose.
 func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool) (*rpcResponse, error) {
+	return c.roundTripWithSession(ctx, body, expectResp, false)
+}
+
+func (c *Client) roundTripWithSession(ctx context.Context, body rpcRequest, expectResp bool, defaultSession bool) (*rpcResponse, error) {
 	if c.legacySSE {
+		if defaultSession {
+			return nil, errors.New("default MCP session is unavailable over SSE")
+		}
 		return c.legacyRoundTrip(ctx, body, expectResp)
 	}
 	data, err := json.Marshal(body)
@@ -441,13 +476,16 @@ func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}
+	if defaultSession {
+		req.Header.Del("Mcp-Session-Id")
+	}
 	if host := c.headers["Host"]; host != "" {
 		req.Host = host
 	}
 	c.mu.Lock()
 	sid := c.sessionID
 	c.mu.Unlock()
-	if sid != "" {
+	if sid != "" && !defaultSession {
 		req.Header.Set("Mcp-Session-Id", sid)
 	}
 
@@ -458,7 +496,7 @@ func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool
 	defer resp.Body.Close()
 
 	// Capture the session id the server assigns on initialize.
-	if sid == "" {
+	if sid == "" && !defaultSession {
 		if got := resp.Header.Get("Mcp-Session-Id"); got != "" {
 			c.mu.Lock()
 			c.sessionID = got

@@ -25,7 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { BrowserMCPState, EgressReport, LLMProfile, MCPServer, Settings, WorkerPool } from "@/lib/types";
+import type { BrowserMCPState, BrowserPoolStatus, EgressReport, LLMProfile, MCPServer, Settings, WorkerPool } from "@/lib/types";
 
 import { useEgressIp } from "../../_components/egress-ip-banner";
 import { BasicAuthCard } from "./_components/basic-auth-card";
@@ -95,6 +95,10 @@ export default function SystemSettingsPage() {
   const [browserMCPPriority, setBrowserMCPPriority] = React.useState<"chrome" | "lightpanda">("chrome");
   const [savingBrowserMCP, setSavingBrowserMCP] = React.useState<"chrome" | "lightpanda" | null>(null);
   const [savingPriority, setSavingPriority] = React.useState(false);
+  const [browserLimits, setBrowserLimits] = React.useState({ chrome: "0", lightpanda: "0" });
+  const [browserStats, setBrowserStats] = React.useState<BrowserPoolStatus[] | null>(null);
+  const [savingBrowserLimit, setSavingBrowserLimit] = React.useState<string | null>(null);
+  const [closingBrowser, setClosingBrowser] = React.useState<number | null>(null);
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
   const sendMode = useChatSendMode();
   const {
@@ -131,6 +135,10 @@ export default function SystemSettingsPage() {
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
     setBrowserMCPPriority(s.browser_mcp_priority === "lightpanda" ? "lightpanda" : "chrome");
+    setBrowserLimits({
+      chrome: String(s.browser_chrome_max_instances ?? 0),
+      lightpanda: String(s.browser_lightpanda_max_instances ?? 0),
+    });
   }, []);
 
   const saveWorkers = () => {
@@ -241,6 +249,40 @@ export default function SystemSettingsPage() {
   React.useEffect(() => {
     loadBrowserMCPs();
   }, [loadBrowserMCPs]);
+
+  const loadBrowserStats = React.useCallback(() => {
+    api.browserInstances().then(setBrowserStats).catch(() => setBrowserStats(null));
+  }, []);
+
+  React.useEffect(() => {
+    loadBrowserStats();
+    const timer = window.setInterval(loadBrowserStats, 5000);
+    return () => window.clearInterval(timer);
+  }, [loadBrowserStats]);
+
+  const saveBrowserLimit = (kind: "chrome" | "lightpanda") => {
+    const value = Number(browserLimits[kind]);
+    if (!browserLimits[kind].trim() || !Number.isInteger(value) || value < 0 || value > 100) {
+      toast.error("实例上限请输入 0–100 的整数，0 表示不限");
+      return;
+    }
+    setSavingBrowserLimit(kind);
+    api.setSettings({ [kind === "chrome" ? "browser_chrome_max_instances" : "browser_lightpanda_max_instances"]: value })
+      .then(() => { toast.success("浏览器实例上限已保存"); loadBrowserStats(); })
+      .catch((e) => toast.error(String(e)))
+      .finally(() => setSavingBrowserLimit(null));
+  };
+
+  const closeBrowserInstance = (id: number) => {
+    if (!window.confirm("强制关闭此浏览器会话？正在使用它的 Agent 工具调用可能失败。")) return;
+    setClosingBrowser(id);
+    api.closeBrowserInstance(id)
+      .then((result) => { if (result.warning) toast.warning(result.warning); else toast.success("浏览器会话已关闭"); loadBrowserStats(); })
+      .catch((e) => toast.error(String(e)))
+      .finally(() => setClosingBrowser(null));
+  };
+
+  const browserMemory = (bytes: number | null) => bytes === null ? "无法读取" : `${(bytes / 1048576).toFixed(1)} MB`;
 
   const applyBrowserMCPState = (states: BrowserMCPState[]) => {
     setMcpServers((current) => {
@@ -802,7 +844,7 @@ export default function SystemSettingsPage() {
             </Card>
 
             <Card
-              className={`${isSettingVisible("browser", "浏览器 MCP Chrome Playwright Lightpanda 优先级 实验") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
+              className={`${isSettingVisible("browser", "浏览器 MCP Chrome Playwright Lightpanda 优先级 实例上限 内存 实验") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
             >
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base">
@@ -831,30 +873,56 @@ export default function SystemSettingsPage() {
                   },
                 ].map((item) => {
                   const server = browserMCP(item.name);
+                  const stats = browserStats?.find((s) => s.kind === item.kind);
                   const status = server ? (server.enabled ? "已启用" : "已停用") : "未创建";
                   return (
-                    <div key={item.kind} className="flex items-center justify-between gap-4 py-3 first:pt-0">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <Label htmlFor={`browser-mcp-${item.kind}`} className="text-sm font-medium">
-                            {item.title}
-                          </Label>
-                          <Badge variant={server?.enabled ? "secondary" : "outline"}>{status}</Badge>
+                    <div key={item.kind} className="py-3 first:pt-0">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Label htmlFor={`browser-mcp-${item.kind}`} className="text-sm font-medium">
+                              {item.title}
+                            </Label>
+                            <Badge variant={server?.enabled ? "secondary" : "outline"}>{status}</Badge>
+                          </div>
+                          <p className="text-muted-foreground mt-1 text-xs">
+                            {item.hint}
+                            {server?.tools?.length ? ` · 已发现 ${server.tools.length} 个工具` : ""}
+                          </p>
                         </div>
-                        <p className="text-muted-foreground mt-1 text-xs">
-                          {item.hint}
-                          {server?.tools?.length ? ` · 已发现 ${server.tools.length} 个工具` : ""}
-                        </p>
+                        <Switch
+                          id={`browser-mcp-${item.kind}`}
+                          checked={!!server?.enabled}
+                          disabled={!loaded || savingBrowserMCP !== null}
+                          onCheckedChange={(value) => toggleBrowserMCP(item.kind, value)}
+                        />
                       </div>
-                      <Switch
-                        id={`browser-mcp-${item.kind}`}
-                        checked={!!server?.enabled}
-                        disabled={!loaded || savingBrowserMCP !== null}
-                        onCheckedChange={(value) => toggleBrowserMCP(item.kind, value)}
-                      />
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Label htmlFor={`browser-max-${item.kind}`} className="text-xs">最大会话数</Label>
+                        <Input
+                          id={`browser-max-${item.kind}`}
+                          type="number"
+                          min={0}
+                          max={100}
+                          step={1}
+                          className="w-24"
+                          value={browserLimits[item.kind]}
+                          onChange={(e) => setBrowserLimits((current) => ({ ...current, [item.kind]: e.target.value }))}
+                        />
+                        <Button size="sm" variant="outline" disabled={!loaded || savingBrowserLimit !== null} onClick={() => saveBrowserLimit(item.kind)}>保存上限</Button>
+                        <Badge variant="outline">实验性</Badge>
+                        <span className="text-muted-foreground text-xs">0 为不限；已开启 {stats?.active ?? "—"}，等待 {stats?.waiting ?? "—"}</span>
+                        {item.kind === "lightpanda" && <Badge variant="secondary">共享进程内存 {browserMemory(stats?.shared_memory_bytes ?? null)}</Badge>}
+                      </div>
+                      {item.kind === "lightpanda" && <p className="text-muted-foreground mt-2 text-xs">单个 HTTP 会话没有独立进程内存。设置上限后不可额外创建会话。</p>}
+                      {stats?.instances.map((instance) => <div key={instance.id} className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-xs">
+                        <span>#{instance.id} · {instance.owner}{instance.task_id ? ` · 任务 ${instance.task_id}` : ""}{instance.intent_id ? ` · 意图 ${instance.intent_id}` : ""}{instance.session_id ? ` · 对话 ${instance.session_id}` : ""} · {item.kind === "chrome" ? `进程树 RSS ${browserMemory(instance.memory_bytes)}` : "使用共享服务"}</span>
+                        <Button size="sm" variant="destructive" aria-label={`强制关闭 ${item.title} 会话 #${instance.id}`} disabled={closingBrowser !== null} onClick={() => closeBrowserInstance(instance.id)}>强制关闭</Button>
+                      </div>)}
                     </div>
                   );
                 })}
+                <p className="text-muted-foreground py-3 text-xs">上限约束 ARTEX 管理的 Agent 浏览器会话，空位释放后等待的运行会继续；状态每 5 秒更新。工具发现也计入上限。Chrome 内存为进程树 RSS 估算。</p>
                 <div className="flex flex-col gap-2 py-3 last:pb-0">
                   <div className="flex items-center gap-2">
                     <Label htmlFor="browser-mcp-priority" className="text-sm font-medium">

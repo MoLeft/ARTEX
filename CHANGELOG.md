@@ -6,6 +6,8 @@
 
 ### 浏览器 MCP
 
+- 新增实验性浏览器会话上限：Chrome / Lightpanda 分别配置最大并发数，超出后等待；设置页显示会话使用者、等待数、可读取的内存与强制关闭操作。默认不限，Chrome 内存按进程树 RSS 估算，Lightpanda 显示共享服务内存。
+
 - 浏览器 MCP 改为可选：不再随启动创建，也不再标记「内置」；Chrome（Playwright）与 Lightpanda 都是可改名、可停用、可删除的普通 MCP。
 - 系统配置新增「浏览器 MCP」分类：打开开关即调用 MCP 创建接口建立对应的普通 MCP 并启用，在 MCP 页面停用或删除后开关同步关闭。
 - 新增实验性「Agent 浏览器 MCP 优先级」：两者同时对一个 Agent 可见时，运行时提示词按所选优先级引导优先使用 Chrome 或 Lightpanda；真实像素截图仍只由 Chrome MCP 完成。

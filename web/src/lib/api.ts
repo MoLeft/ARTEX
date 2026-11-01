@@ -20,6 +20,7 @@ import type {
   BatchCategoryItem,
   BatchControlItem,
   BrowserMCPState,
+  BrowserPoolStatus,
   ChatAttachment,
   CommandRecord,
   Company,
@@ -1016,6 +1017,8 @@ export const api = {
   // 浏览器 MCP（Chrome / Lightpanda）：按普通 MCP 行创建/启停，状态以 MCP 列表为准。
   setBrowserMCP: (kind: "chrome" | "lightpanda", enabled: boolean) =>
     post<{ servers: BrowserMCPState[] }>("/settings/browser-mcp", { kind, enabled }),
+  browserInstances: () => get<{ browsers: BrowserPoolStatus[] }>("/settings/browser-instances").then((r) => r.browsers),
+  closeBrowserInstance: (id: number) => del<{ closed: number; warning?: string }>(`/settings/browser-instances/${id}`),
   // Run a real "test" search with the given (or saved) config to verify it works.
   testWebSearch: (patch: {
     web_search_backend?: string;

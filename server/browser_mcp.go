@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -184,6 +185,34 @@ func (s *Server) postBrowserMCP(w http.ResponseWriter, r *http.Request) {
 		s.m.syncBrowserMCPProxy()
 	}
 	writeJSON(w, 200, map[string]any{"servers": browserMCPStates(pg)})
+}
+
+func (s *Server) getBrowserInstances(w http.ResponseWriter, r *http.Request) {
+	if s.pg(w) == nil {
+		return
+	}
+	writeJSON(w, 200, map[string]any{"browsers": s.browserPool.status()})
+}
+
+func (s *Server) deleteBrowserInstance(w http.ResponseWriter, r *http.Request) {
+	if s.pg(w) == nil {
+		return
+	}
+	id, ok := pathInt(r, "id")
+	if !ok || id < 1 {
+		writeErr(w, 400, "无效的浏览器实例 ID")
+		return
+	}
+	closed, closeErr := s.browserPool.closeID(id)
+	if !closed {
+		writeErr(w, 404, "浏览器实例已结束")
+		return
+	}
+	result := map[string]any{"closed": id}
+	if closeErr != nil {
+		result["warning"] = fmt.Sprintf("ARTEX 已断开会话，但浏览器侧释放未确认：%v", closeErr)
+	}
+	writeJSON(w, 200, result)
 }
 
 // browserMCPPrompt is the runtime hint injected when more than one browser MCP

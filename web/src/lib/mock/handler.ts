@@ -2442,6 +2442,17 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     Object.assign(D.settings, next);
     return next;
   }
+  if (path === "/settings/browser-instances" && m === "GET")
+    return { browsers: (["chrome", "lightpanda"] as const).map((kind) => ({
+      kind,
+      limit: Number(D.settings[kind === "chrome" ? "browser_chrome_max_instances" : "browser_lightpanda_max_instances"] ?? 0),
+      active: 0,
+      waiting: 0,
+      shared_memory_bytes: null,
+      instances: [],
+    })) };
+  if (path.startsWith("/settings/browser-instances/") && m === "DELETE")
+    throw new Error("演示模式没有正在运行的浏览器实例");
   if (path === "/settings/basic-auth" && m === "GET") return { enabled: false, username: "", password_set: false };
   if (path === "/settings/basic-auth" && m === "PUT")
     throw new Error("演示模式不支持修改 HTTP Basic Auth，请在实际部署中配置");

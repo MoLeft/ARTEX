@@ -23,7 +23,7 @@ import (
 // hostTools, if set, returns runtime host tools (currently the traffic tools when
 // capture is on) to add to EVERY agent's base list — the DB tools table then
 // filters them per-agent binding. Empty/nil → no host tools this run (capture off).
-func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string)) {
+func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string), pool *browserPool) {
 	agent.ToolAugment = func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
 		a, err := pg.GetAgentByKey(agentKey)
 		if err != nil || a == nil {
@@ -84,17 +84,18 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
 				}
-				cl, err := connectMCP(ctx, m)
+				cl, err := pool.connect(ctx, m, agentKey, agent.RunInfoFrom(ctx))
 				if err != nil {
 					log.Printf("[mcp] %s 连接失败: %v", m.Name, err)
 					continue
 				}
-				closers = append(closers, cl)
 				ts, err := cl.Tools(ctx)
 				if err != nil {
 					log.Printf("[mcp] %s tools/list 失败: %v", m.Name, err)
+					_ = cl.Close()
 					continue
 				}
+				closers = append(closers, cl)
 				for _, t := range ts {
 					// Playwright exposes the screenshot capability as a separate tool. Keep
 					// it opt-in so a normal browser MCP session does not unexpectedly send
@@ -174,7 +175,9 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 
 		cleanup := func() {
 			for _, c := range closers {
-				_ = c.Close()
+				if err := c.Close(); err != nil {
+					log.Printf("[mcp] 关闭会话失败: %v", err)
+				}
 			}
 		}
 		def := agent.DeferredInfo{

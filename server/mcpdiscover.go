@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/mcphttp"
 	"github.com/Autumn-27/norma/mcp"
@@ -47,7 +48,7 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 // discoverAndCacheMCP connects to one MCP, lists its tools, and persists the tool
 // names to mcp_tools_cache so the UI shows them without a live connection.
 func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error {
-	cl, err := connectMCP(ctx, m)
+	cl, err := s.browserPool.connect(ctx, m, "工具发现", agent.RunInfo{})
 	if err != nil {
 		return err
 	}

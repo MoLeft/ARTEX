@@ -39,14 +39,15 @@ var BuildVersion = "dev"
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
-	scheduleMu sync.Mutex
-	m          *Manager
-	engine     *Engine
-	ctx        context.Context
-	dataDir    string
-	metricsMu  sync.Mutex
-	lastCPUUse uint64
-	lastCPUAt  time.Time
+	scheduleMu  sync.Mutex
+	m           *Manager
+	engine      *Engine
+	ctx         context.Context
+	dataDir     string
+	browserPool *browserPool
+	metricsMu   sync.Mutex
+	lastCPUUse  uint64
+	lastCPUAt   time.Time
 
 	skillDir     string // root directory for skill subdirectories
 	jwtKey       []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
@@ -162,7 +163,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
 	}
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, dataDir: dataDir, jwtKey: key, chatBusy: map[string]bool{},
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, dataDir: dataDir, jwtKey: key, browserPool: newBrowserPool(m.pg), chatBusy: map[string]bool{},
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
@@ -262,7 +263,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			}
 			return a.TaskTimeoutWrapupMaxTurns, true
 		}
-		wireAgentAugment(m.pg, s.skillDir, s.hostTools) // 可见 skills/MCP + 流量/编排 host 工具装配进 agent 工具集
+		wireAgentAugment(m.pg, s.skillDir, s.hostTools, s.browserPool) // 可见 skills/MCP + 流量/编排 host 工具装配进 agent 工具集
 		domainReg := buildDomainReg(m.Assets())
 		wireTools(m.pg, domainReg) // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
 		seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
@@ -943,6 +944,8 @@ func (s *Server) Handler() http.Handler {
 	// 浏览器 MCP（Chrome / Lightpanda）开关：按普通 MCP 行创建/启停，MCP 页面仍是
 	// 唯一管理入口，两边状态同步（存在即「已创建」，enabled 即开关）。
 	mux.HandleFunc("POST /api/settings/browser-mcp", s.postBrowserMCP)
+	mux.HandleFunc("GET /api/settings/browser-instances", s.getBrowserInstances)
+	mux.HandleFunc("DELETE /api/settings/browser-instances/{id}", s.deleteBrowserInstance)
 	// 漏洞 IM 推送。渠道是「多实例 + 各自过滤规则」的资源，因此独立成一组
 	// REST 接口，而不是塞进扁平的 /api/settings 键值里。
 	mux.HandleFunc("GET /api/notify/meta", s.notifyMeta)
@@ -3578,6 +3581,8 @@ func (s *Server) settingsPayload() map[string]any {
 		"opsec_enabled":                        s.m.pg.GetBool(settingOpsecEnabled, false),
 		// 实验功能：多个浏览器 MCP 都可用时 Agent 优先用哪个（chrome|lightpanda）。
 		"browser_mcp_priority":             browserMCPPriority(s.m.pg),
+		"browser_chrome_max_instances":     s.browserPool.limit(browserMCPKindChrome),
+		"browser_lightpanda_max_instances": s.browserPool.limit(browserMCPKindLightpanda),
 		"agent_traffic_binding":            s.m.pg.GetBool(settingAgentTrafficBinding, false),
 		"task_intelligence_enabled":        s.m.pg.GetBool(db.SettingTaskIntelligence, false),
 		db.SettingTaskAutoTitle:            s.m.pg.GetBool(db.SettingTaskAutoTitle, false),
@@ -3661,14 +3666,16 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		ScreenshotTimestamp *bool `json:"browser_screenshot_timestamp_enabled"`
 		OpsecEnabled        *bool `json:"opsec_enabled"`
 		// 实验功能：浏览器 MCP 优先级（chrome|lightpanda）。影响 Agent 运行时提示词。
-		BrowserMCPPriority  *string `json:"browser_mcp_priority"`
-		AgentTrafficBinding *bool   `json:"agent_traffic_binding"`
-		TaskIntelligence    *bool   `json:"task_intelligence_enabled"`
-		TaskAutoTitle       *bool   `json:"task_auto_title_enabled"`
-		ChatAutoTitle       *bool   `json:"chat_auto_title_enabled"`
-		CredentialAgent     *bool   `json:"credential_agent_enabled"`
-		CredentialTraffic   *bool   `json:"credential_traffic_binding"`
-		LLMRecord           *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
+		BrowserMCPPriority   *string `json:"browser_mcp_priority"`
+		BrowserChromeMax     *int    `json:"browser_chrome_max_instances"`
+		BrowserLightpandaMax *int    `json:"browser_lightpanda_max_instances"`
+		AgentTrafficBinding  *bool   `json:"agent_traffic_binding"`
+		TaskIntelligence     *bool   `json:"task_intelligence_enabled"`
+		TaskAutoTitle        *bool   `json:"task_auto_title_enabled"`
+		ChatAutoTitle        *bool   `json:"chat_auto_title_enabled"`
+		CredentialAgent      *bool   `json:"credential_agent_enabled"`
+		CredentialTraffic    *bool   `json:"credential_traffic_binding"`
+		LLMRecord            *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
 		// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 		// are optional — omit (null) to leave a stored key untouched, send "" to clear.
 		WebSearchEnabled       *bool         `json:"web_search_enabled"`
@@ -3897,6 +3904,30 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		changed = true
+	}
+	browserLimits := map[string]string{}
+	for _, item := range []struct {
+		value *int
+		kind  string
+	}{{req.BrowserChromeMax, browserMCPKindChrome}, {req.BrowserLightpandaMax, browserMCPKindLightpanda}} {
+		if item.value == nil {
+			continue
+		}
+		if *item.value < 0 || *item.value > 100 {
+			writeErr(w, 400, "浏览器实例上限必须是 0–100（0 为不限）")
+			return
+		}
+		browserLimits[browserLimitKey(item.kind)] = strconv.Itoa(*item.value)
+	}
+	if err := s.m.pg.SetSettingsAtomic(r.Context(), browserLimits); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if req.BrowserChromeMax != nil {
+		s.browserPool.setLimit(browserMCPKindChrome, *req.BrowserChromeMax)
+	}
+	if req.BrowserLightpandaMax != nil {
+		s.browserPool.setLimit(browserMCPKindLightpanda, *req.BrowserLightpandaMax)
 	}
 	if req.TrafficCapture != nil {
 		if err := s.m.SetTrafficEnabled(*req.TrafficCapture); err != nil {

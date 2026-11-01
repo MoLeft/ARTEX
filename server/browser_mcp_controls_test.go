@@ -29,7 +29,7 @@ func TestBrowserMCPControls(t *testing.T) {
 	defer m.Close()
 	// Keep reruns idempotent.
 	m.pg.Exec(`DELETE FROM mcp_servers WHERE name IN ('browser','lightpanda')`)
-	m.pg.Exec(`DELETE FROM settings WHERE key IN ('browser_mcp_priority','browser_screenshot_enabled')`)
+	m.pg.Exec(`DELETE FROM settings WHERE key IN ('browser_mcp_priority','browser_screenshot_enabled','browser_chrome_max_instances','browser_lightpanda_max_instances')`)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -233,10 +233,19 @@ func TestBrowserMCPControls(t *testing.T) {
 	if code, _ := call(http.MethodPut, "/api/settings", map[string]any{"browser_mcp_priority": "firefox"}); code != 400 {
 		t.Fatalf("invalid priority should be rejected, got %d", code)
 	}
+	if code, out := call(http.MethodPut, "/api/settings", map[string]any{"browser_chrome_max_instances": 3, "browser_lightpanda_max_instances": 2}); code != 200 || out["browser_chrome_max_instances"] != float64(3) || out["browser_lightpanda_max_instances"] != float64(2) {
+		t.Fatalf("browser limits not persisted: %d %v", code, out)
+	}
+	if code, out := call(http.MethodGet, "/api/settings/browser-instances", nil); code != 200 || len(out["browsers"].([]any)) != 2 {
+		t.Fatalf("browser status unavailable: %d %v", code, out)
+	}
+	if code, _ := call(http.MethodPut, "/api/settings", map[string]any{"browser_chrome_max_instances": -1}); code != 400 {
+		t.Fatalf("negative browser limit should be rejected, got %d", code)
+	}
 	if code, _ := call(http.MethodPost, "/api/settings/browser-mcp", map[string]any{"kind": "firefox", "enabled": true}); code != 400 {
 		t.Fatalf("unknown browser MCP kind should be rejected, got %d", code)
 	}
 
 	// Cleanup so the control test leaves the database as it found it.
-	m.pg.Exec(`DELETE FROM settings WHERE key IN ('browser_mcp_priority','browser_screenshot_enabled')`)
+	m.pg.Exec(`DELETE FROM settings WHERE key IN ('browser_mcp_priority','browser_screenshot_enabled','browser_chrome_max_instances','browser_lightpanda_max_instances')`)
 }

@@ -988,6 +988,8 @@ export interface Settings {
    * 只影响运行时提示词；两个 MCP 本身都是普通 MCP，在 MCP 页面管理。
    */
   browser_mcp_priority?: "chrome" | "lightpanda";
+  browser_chrome_max_instances?: number; // 0 = 不限
+  browser_lightpanda_max_instances?: number; // 0 = 不限
   credential_agent_enabled: boolean;
   credential_traffic_binding: boolean;
   task_intelligence_enabled: boolean; // 默认关闭；关闭不注入情报工具或提示
@@ -1286,6 +1288,22 @@ export interface BrowserMCPState {
   created: boolean; // MCP 页面里存在这一行
   enabled: boolean; // 该行当前是否启用
   id?: number;
+}
+
+export interface BrowserPoolStatus {
+  kind: "chrome" | "lightpanda";
+  limit: number;
+  active: number;
+  waiting: number;
+  shared_memory_bytes: number | null;
+  instances: {
+    id: number;
+    owner: string;
+    task_id?: number;
+    intent_id?: number;
+    session_id?: string;
+    memory_bytes: number | null;
+  }[];
 }
 
 // ---- Skills ----
