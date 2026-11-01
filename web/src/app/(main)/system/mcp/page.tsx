@@ -333,7 +333,7 @@ export default function MCPPage() {
       <div className="flex flex-col gap-3 py-4">
         <div className="flex items-center justify-between">
           <span className="text-muted-foreground text-sm">{tools.length} 个工具</span>
-          <Button size="sm" variant="outline" disabled={refreshing} onClick={refreshTools}>
+          <Button size="sm" variant="outline" disabled={refreshing || editing?.builtin} onClick={refreshTools}>
             <RefreshCwIcon className={refreshing ? "animate-spin" : ""} /> 刷新
           </Button>
         </div>
@@ -385,11 +385,12 @@ export default function MCPPage() {
             <CardHeader>
               <div className="flex items-center gap-2">
                 <ServerIcon className="text-muted-foreground size-4 shrink-0" />
-                <CardTitle className="truncate text-base">{s.name}</CardTitle>
+                <CardTitle className="truncate text-base">{s.builtin ? "Lightpanda（页面阅读）" : s.name}</CardTitle>
                 <Badge variant="outline" className="uppercase">
                   {s.transport}
                 </Badge>
-                <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                {s.builtin && <Badge variant="secondary">内置</Badge>}
+                {!s.builtin && <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                   <Switch
                     checked={s.enabled}
                     onCheckedChange={() => toggleEnabled(s)}
@@ -403,7 +404,7 @@ export default function MCPPage() {
                   >
                     <Trash2Icon className="text-destructive" />
                   </Button>
-                </div>
+                </div>}
               </div>
             </CardHeader>
             <CardContent className="grid gap-3">
@@ -417,6 +418,7 @@ export default function MCPPage() {
                     <label key={a.key} className="flex items-center gap-2 text-sm">
                       <Checkbox
                         checked={(visibility[s.id] ?? []).includes(a.id)}
+                        disabled={s.builtin}
                         onCheckedChange={() => toggleVisibility(s.id, a.id, a.name)}
                       />
                       {a.name}
@@ -435,7 +437,7 @@ export default function MCPPage() {
           className="w-full data-[side=right]:sm:max-w-lg"
         >
           <SheetHeader>
-            <SheetTitle>{editing ? editing.name : "添加 MCP 服务器"}</SheetTitle>
+            <SheetTitle>{editing ? (editing.builtin ? "Lightpanda（页面阅读）" : editing.name) : "添加 MCP 服务器"}</SheetTitle>
             <SheetDescription>
               stdio（本地起进程）或 http（远程 Streamable HTTP）
             </SheetDescription>
@@ -454,12 +456,14 @@ export default function MCPPage() {
                 </TabsTrigger>
               </TabsList>
               <TabsContent value="config" className="min-h-0 flex-1 overflow-y-auto">
-                {renderForm()}
+                {editing.builtin ? (
+                  <p className="text-muted-foreground py-4 text-sm">此 MCP 随当前版本自动启用，仅供报告智能体读取已登记证据页面。切回旧版本时会自动移除。</p>
+                ) : <>{renderForm()}
                 <div className="flex gap-2 pt-2 pb-6">
                   <Button onClick={saveForm} disabled={saving}>
                     保存
                   </Button>
-                </div>
+                </div></>}
               </TabsContent>
               <TabsContent value="tools" className="min-h-0 flex-1 overflow-y-auto">
                 {renderTools()}

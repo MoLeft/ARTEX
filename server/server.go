@@ -213,7 +213,13 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			}
 			t, err := m.pg.CurrentPrompt(a.ID)
 			if err != nil || t == "" {
-				return "", false
+				if key != "reporter" {
+					return "", false
+				}
+				t = agent.ReporterDefaultPrompt
+			}
+			if key == "reporter" && os.Getenv("ARTEX_LIGHTPANDA_MCP_URL") != "" {
+				t += reporterLightpandaPrompt
 			}
 			if key == "reporter" && m.pg.GetBool(settingBrowserScreenshot, false) {
 				t += `
