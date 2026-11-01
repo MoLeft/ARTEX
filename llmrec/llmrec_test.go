@@ -2,15 +2,59 @@ package llmrec
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
 	"github.com/google/uuid"
 )
+
+type failingProvider struct {
+	err     error
+	started bool
+}
+
+func (p failingProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		if p.started && !yield(llm.StreamEvent{Type: llm.SEMessageStart}, nil) {
+			return
+		}
+		yield(llm.StreamEvent{}, p.err)
+	}
+}
+
+func (p failingProvider) Complete(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	return llm.Message{}, "", llm.Usage{}, p.err
+}
+
+func TestFailedCallIdentifiesActualProfile(t *testing.T) {
+	upstream := errors.New("anthropic: Internal server error. (500)")
+	primary := Wrap(failingProvider{err: errors.New("anthropic: status 500")}, nil, "MiniMax-M3.1-Flash", "MiniMax", "", "", func() bool { return false })
+	backup := Wrap(failingProvider{err: upstream, started: true}, nil, "glm-5.3-flash", "卡扣GLM", "", "", func() bool { return false })
+	pool := llmpool.New([]*llmpool.Member{
+		{ID: 1, Name: "MiniMax", Model: "MiniMax-M3.1-Flash", Rank: 2, Prov: primary},
+		{ID: 2, Name: "卡扣GLM", Model: "glm-5.3-flash", Rank: 1, Prov: backup},
+	}, nil)
+	var got error
+	for _, err := range pool.Stream(context.Background(), llm.CompletionRequest{}) {
+		if err != nil {
+			got = err
+		}
+	}
+	if !errors.Is(got, upstream) || !strings.Contains(got.Error(), "卡扣GLM") || !strings.Contains(got.Error(), "glm-5.3-flash") || strings.Contains(got.Error(), "MiniMax-M3.1-Flash") {
+		t.Fatalf("stream error lost actual source or cause: %v", got)
+	}
+	_, _, _, got = backup.Complete(context.Background(), llm.CompletionRequest{})
+	if !errors.Is(got, upstream) || !strings.Contains(got.Error(), "卡扣GLM") || !strings.Contains(got.Error(), "glm-5.3-flash") {
+		t.Fatalf("non-stream error lost actual source or cause: %v", got)
+	}
+}
 
 type completeProvider struct{}
 

@@ -661,11 +661,7 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
           (step.is_error ? "text-sm text-red-600 dark:text-red-400" : "")
         }
       >
-        {step.is_error ? (
-          <span className="whitespace-pre-wrap">{full ?? step.summary}</span>
-        ) : (
-          <Markdown text={full ?? step.summary} />
-        )}
+        <Markdown text={full ?? step.summary} />
       </div>
       <ActivityTime ts={step.ts} />
     </div>

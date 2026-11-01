@@ -6,6 +6,7 @@ package llmrec
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"iter"
 	"log"
 	"strings"
@@ -83,6 +84,16 @@ func Wrap(inner llm.Provider, pg *db.DB, model, profName, thinkingType, reasonin
 		inner: inner, pg: pg, model: model, prof: profName,
 		thinkingType: thinkingType, reasoningEffort: reasoningEffort, enabled: enabled,
 	}
+}
+
+func (r *Recorder) sourceError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if r.prof != "" {
+		return fmt.Errorf("LLM 配置 %q（模型 %q）: %w", r.prof, r.model, err)
+	}
+	return fmt.Errorf("LLM 模型 %q: %w", r.model, err)
 }
 
 // parseSession extracts task id and worker role from session strings like
@@ -179,7 +190,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			if err != nil {
 				streamErr = err
 				finish(streamErr)
-				if !yield(ev, err) {
+				if !yield(ev, r.sourceError(err)) {
 					return
 				}
 				return
@@ -249,7 +260,7 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	if recordBodies {
 		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
 	}
-	return msg, stopReason, usage, err
+	return msg, stopReason, usage, r.sourceError(err)
 }
 
 func thinkingText(msg llm.Message) string {
