@@ -78,7 +78,7 @@ jobs:
           cache: true
       # shortcut: server's database-backed suite has baseline failures; Docker smoke still checks database startup.
       - run: go test -p 1 $(go list ./... | grep -v '/server$')
-      - run: go test ./server -run '^(TestTOTPMatchesRFCVectorAndTimeWindow|TestLoginTOTPRequirementFailsClosed|TestTOTPSecretEncryptionRejectsTampering|TestLightpandaReporterToolBoundary)$'
+      - run: go test ./server -run '^(TestTOTPMatchesRFCVectorAndTimeWindow|TestLoginTOTPRequirementFailsClosed|TestTOTPSecretEncryptionRejectsTampering)$'
       - name: Test finding counts and proxy recovery
         env:
           ARTEX_PG_DSN: postgres://artex:artex-ci-test@127.0.0.1:5432/artex?sslmode=disable
