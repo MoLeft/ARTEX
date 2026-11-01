@@ -101,6 +101,16 @@ type taskLLMStreamHooks struct {
 	current    func() (taskLLMSelection, error)
 	exhaust    func(taskLLMSelection, error) (db.TaskLLMTransition, error)
 	transition func(taskLLMSelection, db.TaskLLMTransition, error)
+	// global reports whether a global fallback provider resolves. A task chain
+	// that just ran dry uses it to decide between looping into the global pool
+	// and surfacing model_error, so a single-entry chain no longer dies on its
+	// own first throttle.
+	global func() bool
+	// alternate returns a failover chain over the OTHER configured profiles, for
+	// a run whose own profile failed transiently (429 / 5xx / network) after the
+	// same-provider retries were spent. nil when failover is off or there is
+	// nothing else to try.
+	alternate func(taskLLMSelection) llm.Provider
 }
 
 // current resolves the provider this role runs on. Pinned workers use only their
@@ -111,15 +121,20 @@ type taskLLMStreamHooks struct {
 // 应该推进任务的故障转移状态（绑定/全局路径不改任务链状态，沿用既有语义）。
 func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 	if r.pinProfileID != nil {
-		// Pinned worker runtimes are exclusive: resolve their profile before
-		// touching bindings or the task failover state. A missing or invalid
-		// profile is an error, never an invitation to use another model.
+		// Pinned worker runtimes resolve their profile before touching bindings
+		// or the task failover state. A missing or invalid profile is an error,
+		// never an invitation to use another model.
 		prov, cfg, ok := r.s.providerForProfile(*r.pinProfileID)
 		if !ok {
 			return taskLLMSelection{}, fmt.Errorf("LLM profile #%d is missing or invalid", *r.pinProfileID)
 		}
 		t, _ := r.s.m.Task(r.taskID)
-		return taskLLMSelection{task: t, provider: prov, retry: cfg.Retry}, nil
+		// poolForBinding is a no-op unless the failover master switch and the
+		// bound-fallback switch are both on, so a pin still means "this profile
+		// only" by default. When the operator opts in, the pin leads the chain
+		// instead of failing outright — otherwise every pinned worker dies with
+		// model_error the moment its one profile is throttled or out of credit.
+		return taskLLMSelection{task: t, provider: r.s.poolForBinding(*r.pinProfileID, prov, cfg), retry: cfg.Retry}, nil
 	}
 	taskNum, err := parseTaskID(r.taskID)
 	if err != nil {
@@ -141,6 +156,15 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 	}
 	if len(pt.LLMProfileIDs) > 0 {
 		if pt.ActiveLLMProfileID == nil {
+			// The chain is fully marked quota_exhausted. Falling through to the
+			// global pool is the difference between "the task stalls until a human
+			// edits it" and "the task keeps running on a backup key". Only taken
+			// when a global provider actually resolves; otherwise the historical
+			// hard stop stands.
+			if gp, gcfg, ok := r.s.globalProvider(); ok {
+				sel.provider, sel.retry = gp, gcfg.Retry
+				return sel, nil
+			}
 			return sel, &taskLLMError{taskID: r.taskID, chainExhausted: true, cause: errors.New("all selected profiles are quota exhausted")}
 		}
 		sel.profileID = *pt.ActiveLLMProfileID
@@ -233,6 +257,16 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 		transition: func(selection taskLLMSelection, transition db.TaskLLMTransition, cause error) {
 			r.s.emitTaskLLMTransition(selection.task, transition, cause)
 		},
+		global: func() bool {
+			_, _, ok := r.s.globalProvider()
+			return ok
+		},
+		alternate: func(selection taskLLMSelection) llm.Provider {
+			if selection.profileID == 0 {
+				return nil // already off the task chain; nothing to step away from
+			}
+			return r.s.poolAlternates(selection.profileID)
+		},
 	}
 }
 
@@ -252,39 +286,33 @@ func (r *taskLLMRuntime) Complete(ctx context.Context, req llm.CompletionRequest
 }
 
 func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) (llm.Message, string, llm.Usage, error) {
+	alternateTried := false
 	for {
 		selection, err := hooks.current()
 		if err != nil {
 			return llm.Message{}, "", llm.Usage{}, err
 		}
-		var (
-			msg     llm.Message
-			sr      string
-			usage   llm.Usage
-			callErr error
-		)
-		// 同 provider 安全窗口重试:非流式调用要么整体成功、要么整体失败,没有
-		// 中途已交付输出的问题,所以任何瞬时失败都可原样重试。
-		retries, backoffOf := sameProviderRetryPolicy(selection.retry)
-		for attempt := 0; ; attempt++ {
-			msg, sr, usage, callErr = selection.provider.Complete(ctx, req)
-			if callErr != nil && ctx.Err() == nil &&
-				attempt < retries && isRetryableStreamError(callErr) {
-				backoff := backoffOf(attempt)
-				log.Printf("[task-llm] task %s 非流式调用失败,%v 后同 provider 重试 (%d/%d): %v",
-					taskID, backoff, attempt+1, retries, callErr)
-				if sleepCtx(ctx, backoff) {
-					break // 退避期间 ctx 取消 → 停止重试
-				}
-				continue
-			}
-			break
-		}
+		msg, sr, usage, callErr := completeAttempt(ctx, taskID, req, selection)
 		if callErr == nil {
 			return msg, sr, usage, nil
 		}
 		// profileID=0: 显式链已被清空;非额度错误:透传。二者都不改任务 failover 状态。
 		if selection.profileID == 0 || !isQuotaExhaustedError(callErr) {
+			// 瞬时故障(429/5xx/网络)在同一 provider 上的重试已经耗尽。普通限流是按
+			// key 计的,换一台备用配置往往立刻可用;不换就直接把整轮任务判成
+			// model_error。整条请求只借备用链一次,避免对着同一个确定性错误轮流
+			// 烧光所有配置的额度。
+			if !alternateTried && hooks.alternate != nil && isRetryableStreamError(callErr) {
+				if alt := hooks.alternate(selection); alt != nil {
+					alternateTried = true
+					log.Printf("[task-llm] task %s 同配置重试已耗尽，改用备用配置再试: %v", taskID, callErr)
+					selection.provider = alt
+					msg, sr, usage, callErr = completeAttempt(ctx, taskID, req, selection)
+					if callErr == nil {
+						return msg, sr, usage, nil
+					}
+				}
+			}
 			return llm.Message{}, "", llm.Usage{}, callErr
 		}
 		transition, markErr := hooks.exhaust(selection, callErr)
@@ -295,64 +323,61 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 			hooks.transition(selection, transition, callErr)
 		}
 		if !transition.Stale && transition.NextProfileID == nil {
+			// The chain just ran dry. Loop once more so current() can fall through
+			// to the global provider; returning here would strand the task on the
+			// very round that exhausted its last profile, which is exactly the
+			// "retried until it died without ever trying a backup" failure.
+			// A non-streaming call delivers nothing on failure, so replaying is safe.
+			if hooks.global != nil && hooks.global() {
+				log.Printf("[task-llm] task %s 任务配置链已耗尽，回落到全局配置继续", taskID)
+				continue
+			}
 			return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: callErr}
 		}
 		// 没有任何输出交付给调用方,换下一个 profile 重放同一逻辑请求是安全的。
 	}
 }
 
+// completeAttempt runs one selection's same-provider retry loop. Non-streaming
+// calls are atomic — they either succeed whole or fail whole — so any transient
+// failure can be replayed as-is without risking duplicated output.
+func completeAttempt(ctx context.Context, taskID string, req llm.CompletionRequest, selection taskLLMSelection) (llm.Message, string, llm.Usage, error) {
+	var (
+		msg     llm.Message
+		sr      string
+		usage   llm.Usage
+		callErr error
+	)
+	retries, backoffOf := sameProviderRetryPolicy(selection.retry)
+	for attempt := 0; ; attempt++ {
+		msg, sr, usage, callErr = selection.provider.Complete(ctx, req)
+		if callErr != nil && ctx.Err() == nil &&
+			attempt < retries && isRetryableStreamError(callErr) {
+			backoff := backoffOf(attempt)
+			log.Printf("[task-llm] task %s 非流式调用失败,%v 后同 provider 重试 (%d/%d): %v",
+				taskID, backoff, attempt+1, retries, callErr)
+			if sleepCtx(ctx, backoff) {
+				break // 退避期间 ctx 取消 → 停止重试
+			}
+			continue
+		}
+		break
+	}
+	return msg, sr, usage, callErr
+}
+
 func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
+		alternateTried := false
 		for {
 			selection, err := hooks.current()
 			if err != nil {
 				yield(llm.StreamEvent{}, err)
 				return
 			}
-			committed := false
-			var pending []llm.StreamEvent
-			var streamErr error
-			retries, backoffOf := sameProviderRetryPolicy(selection.retry)
-			// 同 provider 安全窗口重试:committed 之前(还没向调用方交付任何输出)
-			// 的瞬时失败可以原样重放,不会重复模型输出或工具执行。committed 之后、
-			// ctx 取消、或确定性/额度错误则跳出,交给下方原有的透传/故障转移逻辑。
-			for attempt := 0; ; attempt++ {
-				committed = false
-				pending = nil
-				streamErr = nil
-				for event, err := range selection.provider.Stream(ctx, req) {
-					if err != nil {
-						streamErr = err
-						break
-					}
-					if !committed && !streamEventCommitsOutput(event) {
-						pending = append(pending, event)
-						continue
-					}
-					if !committed {
-						for _, buffered := range pending {
-							if !yield(buffered, nil) {
-								return
-							}
-						}
-						pending = nil
-						committed = true
-					}
-					if !yield(event, nil) {
-						return
-					}
-				}
-				if streamErr != nil && !committed && ctx.Err() == nil &&
-					attempt < retries && isRetryableStreamError(streamErr) {
-					backoff := backoffOf(attempt)
-					log.Printf("[task-llm] task %s 提交前流失败,%v 后同 provider 重试 (%d/%d): %v",
-						taskID, backoff, attempt+1, retries, streamErr)
-					if sleepCtx(ctx, backoff) {
-						break // 退避期间 ctx 取消 → 停止重试
-					}
-					continue
-				}
-				break
+			committed, pending, streamErr, stopped := streamAttempt(ctx, taskID, req, selection, yield)
+			if stopped {
+				return
 			}
 			if streamErr == nil {
 				for _, buffered := range pending {
@@ -366,6 +391,28 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 			// bundle was still in use. Agent/global fallback errors follow the legacy
 			// behavior and never mutate task failover state.
 			if selection.profileID == 0 || !isQuotaExhaustedError(streamErr) {
+				// 瞬时故障(429/5xx/网络)在同一 provider 上的重试已经耗尽。普通限流是
+				// 按 key 计的,换一台备用配置往往立刻可用;不换就直接把整轮任务判成
+				// model_error。整条请求只借备用链一次。
+				if !committed && !alternateTried && hooks.alternate != nil && isRetryableStreamError(streamErr) {
+					if alt := hooks.alternate(selection); alt != nil {
+						alternateTried = true
+						log.Printf("[task-llm] task %s 同配置重试已耗尽，改用备用配置再试: %v", taskID, streamErr)
+						selection.provider = alt
+						committed, pending, streamErr, stopped = streamAttempt(ctx, taskID, req, selection, yield)
+						if stopped {
+							return
+						}
+						if streamErr == nil {
+							for _, buffered := range pending {
+								if !yield(buffered, nil) {
+									return
+								}
+							}
+							return
+						}
+					}
+				}
 				for _, buffered := range pending {
 					if !yield(buffered, nil) {
 						return
@@ -390,7 +437,18 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 			if transition.Advanced && !transition.Stale && hooks.transition != nil {
 				hooks.transition(selection, transition, streamErr)
 			}
-			if committed || (!transition.Stale && transition.NextProfileID == nil) {
+			if committed {
+				yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: streamErr})
+				return
+			}
+			if !transition.Stale && transition.NextProfileID == nil {
+				// Nothing reached the caller yet, so falling through to the global
+				// provider cannot duplicate output. Only an exhausted chain can get
+				// here, and only once — current() returns the global provider next.
+				if hooks.global != nil && hooks.global() {
+					log.Printf("[task-llm] task %s 任务配置链已耗尽，回落到全局配置继续", taskID)
+					continue
+				}
 				yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: streamErr})
 				return
 			}
@@ -398,6 +456,57 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 			// the next profile cannot duplicate model output or tool execution.
 		}
 	}
+}
+
+// streamAttempt runs one selection's same-provider retry loop, forwarding events
+// to yield as soon as an attempt commits output. Before that point nothing has
+// reached the caller, so a transient failure can be replayed verbatim without
+// duplicating model output or tool execution.
+//
+// stopped reports that the caller stopped consuming, in which case the whole
+// stream must end.
+func streamAttempt(ctx context.Context, taskID string, req llm.CompletionRequest, selection taskLLMSelection,
+	yield func(llm.StreamEvent, error) bool) (committed bool, pending []llm.StreamEvent, streamErr error, stopped bool) {
+	retries, backoffOf := sameProviderRetryPolicy(selection.retry)
+	for attempt := 0; ; attempt++ {
+		committed = false
+		pending = nil
+		streamErr = nil
+		for event, err := range selection.provider.Stream(ctx, req) {
+			if err != nil {
+				streamErr = err
+				break
+			}
+			if !committed && !streamEventCommitsOutput(event) {
+				pending = append(pending, event)
+				continue
+			}
+			if !committed {
+				for _, buffered := range pending {
+					if !yield(buffered, nil) {
+						return committed, pending, nil, true
+					}
+				}
+				pending = nil
+				committed = true
+			}
+			if !yield(event, nil) {
+				return committed, pending, nil, true
+			}
+		}
+		if streamErr != nil && !committed && ctx.Err() == nil &&
+			attempt < retries && isRetryableStreamError(streamErr) {
+			backoff := backoffOf(attempt)
+			log.Printf("[task-llm] task %s 提交前流失败,%v 后同 provider 重试 (%d/%d): %v",
+				taskID, backoff, attempt+1, retries, streamErr)
+			if sleepCtx(ctx, backoff) {
+				break // 退避期间 ctx 取消 → 停止重试
+			}
+			continue
+		}
+		break
+	}
+	return committed, pending, streamErr, false
 }
 
 func streamEventCommitsOutput(event llm.StreamEvent) bool {
@@ -551,6 +660,12 @@ func (s *Server) taskRuntimeAvailable(t *Task, agentKeys ...string) bool {
 	if len(state.ProfileIDs) > 0 {
 		if state.ActiveID != nil {
 			_, _, unboundReady = s.providerForProfile(*state.ActiveID)
+		}
+		// An exhausted chain still has the global provider to fall back on, which
+		// is what current() does — keep this predicate in step with it or the task
+		// is reported unrunnable while it would in fact run fine.
+		if !unboundReady {
+			_, _, unboundReady = s.globalProvider()
 		}
 	} else {
 		_, _, unboundReady = s.globalProvider()

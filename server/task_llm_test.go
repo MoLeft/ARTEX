@@ -593,8 +593,16 @@ func TestTaskRuntimeAvailableUnboundRoleFollowsChainThenGlobal(t *testing.T) {
 
 	profileID := int64(11)
 	task.setLLMState(&profileID, nil, []int64{profileID}, 1, "chain_exhausted", "quota exhausted")
+	// An exhausted chain still has the global provider to fall through to, which
+	// is exactly what current() does — reporting it unrunnable would strand the
+	// task on the round its last profile ran dry.
+	if !s.taskRuntimeAvailable(task, "worker") {
+		t.Fatal("an exhausted chain must still run on the global provider")
+	}
+	// With no global provider there is genuinely nothing left to try.
+	s.llmOn, s.llmProv = false, nil
 	if s.taskRuntimeAvailable(task, "worker") {
-		t.Fatal("exhausted chain must not fall back to the global provider")
+		t.Fatal("exhausted chain without a global provider must not report as runnable")
 	}
 }
 
@@ -711,5 +719,103 @@ func TestProfileDeleteRestoresQuotaBlockedIntentWhenFallbackAvailable(t *testing
 	state := task.llmStateSnapshot()
 	if len(state.ProfileIDs) != 0 || state.FailoverState != "default" {
 		t.Fatalf("task did not return to fallback state: %+v", state)
+	}
+}
+
+// TestTaskLLMStreamFallsBackToGlobalWhenChainExhausts pins the wiring that a
+// single-entry task chain used to lack: when the last profile reports quota
+// exhaustion, the router must keep going on the global provider instead of
+// returning model_error on that very round.
+func TestTaskLLMStreamFallsBackToGlobalWhenChainExhausts(t *testing.T) {
+	t.Parallel()
+	quota := errors.New(`anthropic: status 429: {"type":"error","error":{"type":"rate_limit_error","message":"已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。(2056)"}}`)
+	chain := &scriptedLLMProvider{err: quota}
+	fallback := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "from global"}}}
+	onChain := true
+	exhausted := 0
+	hooks := taskLLMStreamHooks{
+		current: func() (taskLLMSelection, error) {
+			if onChain {
+				return taskLLMSelection{profileID: 11, provider: chain}, nil
+			}
+			// profileID 0 means "not the task chain any more", so the router stops
+			// mutating task failover state from here on.
+			return taskLLMSelection{provider: fallback}, nil
+		},
+		exhaust: func(taskLLMSelection, error) (db.TaskLLMTransition, error) {
+			exhausted++
+			onChain = false
+			return db.TaskLLMTransition{PreviousProfileID: 11, ChainExhausted: true, Advanced: true}, nil
+		},
+		global: func() bool { return true },
+	}
+
+	events, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	if err != nil {
+		t.Fatalf("chain exhaustion did not fall through to the global provider: %v", err)
+	}
+	if len(events) != 1 || events[0].Text != "from global" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+	if chain.calls != 1 || fallback.calls != 1 || exhausted != 1 {
+		t.Fatalf("chain=%d fallback=%d exhaust=%d", chain.calls, fallback.calls, exhausted)
+	}
+}
+
+// TestTaskLLMStreamChainExhaustionIsTerminalWithoutGlobal keeps the historical
+// hard stop for deployments that have no global provider at all.
+func TestTaskLLMStreamChainExhaustionIsTerminalWithoutGlobal(t *testing.T) {
+	t.Parallel()
+	chain := &scriptedLLMProvider{err: errors.New("openai: status 402: insufficient_quota")}
+	hooks := taskLLMStreamHooks{
+		current: func() (taskLLMSelection, error) {
+			return taskLLMSelection{profileID: 11, provider: chain}, nil
+		},
+		exhaust: func(taskLLMSelection, error) (db.TaskLLMTransition, error) {
+			return db.TaskLLMTransition{PreviousProfileID: 11, ChainExhausted: true, Advanced: true}, nil
+		},
+		global: func() bool { return false },
+	}
+
+	if _, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks)); err == nil || !isTaskLLMChainExhausted(err) {
+		t.Fatalf("expected chain-exhausted error, got %v", err)
+	}
+}
+
+// TestTaskLLMStreamSwitchesToAlternateAfterTransientRetries covers the second
+// wiring gap: a plain 429 used to be retried on the same profile until the run
+// died with model_error, even with healthy backups sitting idle in the pool.
+func TestTaskLLMStreamSwitchesToAlternateAfterTransientRetries(t *testing.T) {
+	// Not parallel: overrides the package-level backoff so retries don't sleep.
+	defer withZeroRetryBackoff()()
+	primary := &scriptedLLMProvider{err: errors.New("openai: status 429: rate limit exceeded")}
+	backup := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "from backup"}}}
+	alternates := 0
+	hooks := taskLLMStreamHooks{
+		current: func() (taskLLMSelection, error) {
+			return taskLLMSelection{profileID: 11, provider: primary}, nil
+		},
+		exhaust: func(taskLLMSelection, error) (db.TaskLLMTransition, error) {
+			t.Fatal("a transient failure must not mark the profile quota exhausted")
+			return db.TaskLLMTransition{}, nil
+		},
+		alternate: func(taskLLMSelection) llm.Provider {
+			alternates++
+			return backup
+		},
+	}
+
+	events, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	if err != nil {
+		t.Fatalf("transient failure never reached the backup chain: %v", err)
+	}
+	if len(events) != 1 || events[0].Text != "from backup" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+	if want := sameProviderStreamRetries + 1; primary.calls != want {
+		t.Fatalf("primary calls=%d, want %d", primary.calls, want)
+	}
+	if backup.calls != 1 || alternates != 1 {
+		t.Fatalf("backup calls=%d alternates=%d, want 1/1", backup.calls, alternates)
 	}
 }

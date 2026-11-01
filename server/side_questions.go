@@ -271,9 +271,18 @@ func (s *Server) sideProvider(model sidequestion.Model) (llm.Provider, error) {
 			return nil, errors.New("模型配置已删除或变化，请先运行主 Agent 更新上下文")
 		}
 		p, cfg, ok = s.providerForProfile(model.ProfileID)
+		if ok {
+			// A side question is a read-only replay of context the parent run
+			// already produced; failing it because the parent's one profile is
+			// throttled buys nothing. poolForBinding stays a no-op unless the
+			// operator turned bound-profile fallback on.
+			p = s.poolForBinding(model.ProfileID, p, cfg)
+		}
 	} else {
 		s.cfgMu.Lock()
-		p, cfg, ok = s.llmDirect, s.llmCfg, s.llmOn
+		// llmProv, not llmDirect: the global path's failover chain is the only
+		// reason a /btw question survives a provider that is out of credit.
+		p, cfg, ok = s.llmProv, s.llmCfg, s.llmOn
 		s.cfgMu.Unlock()
 	}
 	if !ok || p == nil || sideModel(cfg, model.ProfileID, model.Name).Identity != model.Identity {

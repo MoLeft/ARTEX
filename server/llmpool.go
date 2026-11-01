@@ -154,6 +154,43 @@ func (s *Server) poolForBinding(id int64, prov llm.Provider, cfg agent.Config) l
 	return prov
 }
 
+// poolAlternates builds a chain from every profile EXCEPT excludeID. It exists
+// for a run whose own profile failed transiently (429 / 5xx / network) after the
+// same-provider retries were spent: a per-key throttle usually clears the moment
+// a different key is used, and dying there wastes a whole task round.
+//
+// Returns nil when failover is off or there is nothing else to try, so callers
+// keep the historical "surface the error" behavior.
+func (s *Server) poolAlternates(excludeID int64) llm.Provider {
+	if s == nil || s.m == nil || s.m.pg == nil || !s.m.LLMPoolEnabled() {
+		return nil
+	}
+	profs, err := s.m.pg.PoolProfiles()
+	if err != nil {
+		log.Printf("[llmpool] 读取备用配置链失败: %v", err)
+		return nil
+	}
+	members := make([]*llmpool.Member, 0, len(profs))
+	for _, p := range profs {
+		if p.ID == excludeID {
+			continue
+		}
+		// No head is pinned here, so the globally active profile leads whenever
+		// it is not the one that already failed.
+		rank := p.Priority
+		if p.IsDefault {
+			rank = llmpool.RankActive - 1
+		}
+		if m := s.poolMember(p, rank); m != nil {
+			members = append(members, m)
+		}
+	}
+	if len(members) == 0 {
+		return nil
+	}
+	return llmpool.New(members, s.llmHealth)
+}
+
 // LLMPoolMemberStatus is one chain entry as shown in the UI.
 type LLMPoolMemberStatus struct {
 	ProfileID string `json:"profile_id"`

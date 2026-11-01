@@ -25,6 +25,10 @@ func TestIsQuotaExhaustedMessage(t *testing.T) {
 		`billing_not_active`,
 		`credit balance is too low`,
 		`账户余额不足，请充值`,
+		// MiniMax 2056: a 429 whose payload means the plan allowance is spent.
+		// This is the exact body from the failing worker runs.
+		`anthropic: status 429: {"type":"error","error":{"type":"rate_limit_error","message":"已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。(2056)"},"request_id":"07361892437e2730ae9d1d86831df4e7"}`,
+		`{"code":2056,"msg":"insufficient quota"}`,
 	}
 	for _, message := range positive {
 		if !IsQuotaExhaustedMessage(message) {
@@ -46,6 +50,9 @@ func TestIsQuotaExhaustedMessage(t *testing.T) {
 		`status 500: internal server error`,
 		`status=503: insufficient_quota`,
 		`context length exceeded`,
+		// MiniMax 2062: a real per-minute throttle sharing 2056's "Token Plan
+		// 套餐" wording. It must stay on the same provider and retry.
+		`anthropic: status 429: {"type":"error","error":{"type":"rate_limit_error","message":"已达到 Token Plan 速率限制：请升级 Token Plan 套餐或按量付费 API 用量。(2062)"},"request_id":"0736187b0cade66f6bd39e6886f7e495"}`,
 	}
 	for _, message := range negative {
 		if IsQuotaExhaustedMessage(message) {

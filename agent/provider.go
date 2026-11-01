@@ -304,6 +304,39 @@ func (c Config) newProvider(client *http.Client, limiter *RequestLimiter) (llm.P
 var nonFailoverHTTPStatus = regexp.MustCompile(`(?:status(?:\s+code)?|http(?:\s+status)?)\s*[=:]?\s*(?:401|403|5\d\d)\b`)
 var transientQuotaLimit = regexp.MustCompile(`(?i)(?:\b(?:rpm|tpm|rpd|qps)\b|quota[_\s-]*metric|rate[_\s-]*limit|too many requests|(?:requests?|tokens?)\s+(?:per|/)\s*(?:second|minute)|(?:per|/)\s*(?:second|minute)\s+(?:requests?|tokens?)|generate[_\s-]*requests[_\s-]*per[_\s-]*(?:minute|second)|tokens?[_\s-]*per[_\s-]*(?:minute|second))`)
 
+// hardQuotaExhaustionMarkers name an unusable account, not a spent window:
+// balance, billing, credit, payment, or a plan allowance that only an upgrade
+// refills. They are tested BEFORE transientQuotaLimit because
+// Anthropic/OpenAI-compatible gateways serialize every 429 with
+// type=rate_limit_error, so a body such as MiniMax's
+// "已达到 Token Plan 用量上限 … (2056)" matches the rate-limit regex and used to be
+// treated as a recoverable throttle — retrying the same drained key until the run
+// died with model_error. The message text, not the JSON error type, decides.
+var hardQuotaExhaustionMarkers = []string{
+	"insufficient_quota", "quota_exhausted",
+	"exceeded your current quota",
+	"billing_hard_limit_reached", "billing hard limit", "billing_not_active",
+	"credit balance", "insufficient credit", "insufficient balance", "balance is too low",
+	"payment required", "status 402",
+	"余额不足", "额度不足", "额度已用尽", "欠费",
+	// MiniMax: 429 code 2056 = the plan's token allowance is spent. Its sibling
+	// 2062 is a genuine per-minute throttle, so only phrases unique to 2056 are
+	// listed here — both bodies mention "Token Plan 套餐".
+	"用量上限", "token plan 用量", "购买积分",
+}
+
+// hardQuotaCodes matches provider error codes that unambiguously mean "this
+// account is out of allowance". Parenthesised form is MiniMax's
+// "…。 (2056)" suffix; the JSON form covers structured bodies.
+var hardQuotaCodes = regexp.MustCompile(`\(2056\)|"code"\s*:\s*"?2056"?`)
+
+// softQuotaMarkers are ambiguous on their own: Google-style APIs say "quota
+// exceeded" for an ordinary per-minute window. Only consulted after the
+// transient filter has had its say.
+var softQuotaMarkers = []string{
+	"quota exceeded", "quota_exceeded",
+}
+
 func IsQuotaExhaustedMessage(message string) bool {
 	message = strings.ToLower(message)
 	// Authentication/authorization and provider-side 5xx failures never rotate,
@@ -311,20 +344,24 @@ func IsQuotaExhaustedMessage(message string) bool {
 	if nonFailoverHTTPStatus.MatchString(message) {
 		return false
 	}
+	// Explicit exhaustion wins over the transient-throttle filter: both can
+	// appear in one body (rate_limit_error + "用量上限"), and the permanent one
+	// decides what happens next.
+	for _, marker := range hardQuotaExhaustionMarkers {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	if hardQuotaCodes.MatchString(message) {
+		return true
+	}
 	// Provider APIs frequently describe an ordinary rate limit as "quota
 	// exceeded", especially Google-style responses containing a quota metric.
 	// These limits recover with time and must stay on the current provider.
 	if transientQuotaLimit.MatchString(message) {
 		return false
 	}
-	markers := []string{
-		"insufficient_quota", "quota_exceeded", "quota exceeded", "quota exhausted",
-		"exceeded your current quota", "billing_hard_limit_reached",
-		"billing hard limit", "billing_not_active", "credit balance", "insufficient credit",
-		"insufficient balance", "balance is too low", "payment required", "status 402",
-		"余额不足", "额度不足", "额度已用尽", "欠费",
-	}
-	for _, marker := range markers {
+	for _, marker := range softQuotaMarkers {
 		if strings.Contains(message, marker) {
 			return true
 		}

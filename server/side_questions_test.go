@@ -153,7 +153,11 @@ func newSideHTTPFixture(t *testing.T) *sideHTTPFixture {
 	s.cfgMu.Lock()
 	s.llmCfg = cfg
 	s.llmOn = true
-	s.llmDirect = bindSideProvider(p, cfg, 0, "fixture")
+	// sideProvider reads llmProv (the decorated provider carrying the failover
+	// chain) on the global path, so the fixture must install both halves.
+	bound := bindSideProvider(p, cfg, 0, "fixture")
+	s.llmDirect = bound
+	s.llmProv = bound
 	s.cfgMu.Unlock()
 	if active, err := m.pg.ActiveProfile(); err == nil && active != nil {
 		if activeCfg, ok := s.loadProfileConfig(active.ID); ok {
@@ -641,7 +645,7 @@ func TestSideCheckpointPersistsBeforeAdmissionAndRestart(t *testing.T) {
 	}
 	ctx2, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	restarted := &Server{m: f.m, ctx: ctx2, llmCfg: f.s.llmCfg, llmDirect: bound, llmOn: true}
+	restarted := &Server{m: f.m, ctx: ctx2, llmCfg: f.s.llmCfg, llmDirect: bound, llmProv: bound, llmOn: true}
 	restarted.initSideQuestions()
 	if got := waitSide(t, f.m.pg, orphan.ID, "interrupted"); got.Answer != "saved before crash" {
 		t.Fatal("restart discarded partial answer")
