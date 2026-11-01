@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -76,24 +75,11 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			mcpIDs, _ := pg.AgentVisible(a.ID, "mcp")
 			want := idSet(mcpIDs)
 			all, _ := pg.ListMCP()
-			if agentKey == "reporter" {
-				if url := strings.TrimSpace(os.Getenv("ARTEX_LIGHTPANDA_MCP_URL")); url != "" {
-					found := false
-					for _, m := range all {
-						found = found || m.Name == lightpandaReaderMCPName
-					}
-					if !found {
-						all = append(all, &db.MCPServer{
-							Name: lightpandaReaderMCPName, Transport: "http", URL: url, Env: json.RawMessage(`{"Host":"127.0.0.1"}`), Enabled: true,
-						})
-					}
-				}
-			}
 			for _, m := range all {
-				if !m.Enabled || (m.Name == lightpandaReaderMCPName && agentKey != "reporter") {
+				if !m.Enabled {
 					continue
 				}
-				directVisible := want[m.ID] || (agentKey == "reporter" && m.Name == lightpandaReaderMCPName && m.ID == 0)
+				directVisible := want[m.ID]
 				skillGated := gated[m.Name]
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
@@ -110,9 +96,6 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 					continue
 				}
 				for _, t := range ts {
-					if m.Name == lightpandaReaderMCPName && !isReporterLightpandaTool(t.Name()) {
-						continue
-					}
 					// Playwright exposes the screenshot capability as a separate tool. Keep
 					// it opt-in so a normal browser MCP session does not unexpectedly send
 					// image payloads to the model or consume extra tokens.

@@ -122,7 +122,7 @@ cd ARTEX
 git clone https://github.com/MoLeft/ARTEX.git
 cd ARTEX
 cp .env.example .env          # 填 POSTGRES_PASSWORD、可选 ANTHROPIC_API_KEY
-docker compose up -d          # 拉取 ARTEX、PostgreSQL 与独立的 Lightpanda 阅读服务
+docker compose up -d          # 拉取 moleftcn/artex 镜像 + postgres
 # → http://localhost:8787
 ```
 
@@ -134,8 +134,6 @@ docker compose up -d          # 拉取 ARTEX、PostgreSQL 与独立的 Lightpand
 旧版 SSE 服务通常使用 `GET /sse` 建立事件流，再通过服务返回的
 `/message?sessionId=...` 接收 JSON-RPC 请求；配置时将 URL 填为 `/sse`，请求头按
 `Authorization=Bearer <token>` 填写。
-
-Compose 同时启动固定版本的 Lightpanda。报告撰写智能体仅能用它读取已登记证据页面的文字、结构和链接；真实截图仍由原有 Chrome/Playwright MCP 完成。Lightpanda 的截图、点击、填表和脚本工具不会提供给该智能体。独立运行 ARTEX 时，可设置 `ARTEX_LIGHTPANDA_MCP_URL=http://<Lightpanda主机>:9222/mcp` 接入自行启动的 `lightpanda mcp --host 0.0.0.0 --port 9222`；未设置时保持原有行为。Lightpanda 只在内网提供 MCP，不需要映射公网端口。
 
 ### 方式三：下载预编译二进制（Releases）
 
