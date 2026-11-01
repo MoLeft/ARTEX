@@ -66,12 +66,13 @@ func TestFetchLatestBetaSelectsNewestVersion(t *testing.T) {
 			{"tag_name":"v0.26.10.31.001", "prerelease":false},
 			{"tag_name":"v0.26.10.31.002-beta2", "prerelease":true},
 			{"tag_name":"v0.26.10.31.003", "draft":true},
-			{"tag_name":"v0.26.10.31.002-beta1", "prerelease":true}
+			{"tag_name":"v0.26.10.31.002-beta1", "prerelease":true},
+			{"tag_name":"v0.26.10.31.004-beta", "prerelease":true}
 		]`
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
 	rel, err := FetchLatestBeta(context.Background(), client)
-	if err != nil || rel.TagName != "v0.26.10.31.002-beta2" {
+	if err != nil || rel.TagName != "v0.26.10.31.004-beta" {
 		t.Fatalf("latest beta = %+v, %v", rel, err)
 	}
 }

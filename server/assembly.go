@@ -75,17 +75,15 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			mcpIDs, _ := pg.AgentVisible(a.ID, "mcp")
 			want := idSet(mcpIDs)
 			all, _ := pg.ListMCP()
-			if agentKey == "reporter" {
-				if m := lightpandaMCP(); m != nil {
-					all = append(all, m)
-				}
+			if m := lightpandaMCP(pg); m != nil {
+				all = append(all, m)
 			}
 			for _, m := range all {
-				if !m.Enabled || (m.Name == lightpandaReaderMCPName && agentKey != "reporter") {
+				if !m.Enabled || (m.ID == lightpandaReaderMCPID && !lightpandaAgentAllowed(agentKey)) {
 					continue
 				}
-				directVisible := want[m.ID] || (agentKey == "reporter" && m.ID == lightpandaReaderMCPID)
-				skillGated := gated[m.Name]
+				directVisible := want[m.ID]
+				skillGated := m.ID != lightpandaReaderMCPID && gated[m.Name]
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
 				}
@@ -101,7 +99,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 					continue
 				}
 				for _, t := range ts {
-					if m.Name == lightpandaReaderMCPName && !isReporterLightpandaTool(t.Name()) {
+					if m.ID == lightpandaReaderMCPID && !isLightpandaReadTool(t.Name()) {
 						continue
 					}
 					// Playwright exposes the screenshot capability as a separate tool. Keep

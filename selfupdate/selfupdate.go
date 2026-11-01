@@ -145,7 +145,7 @@ type releaseVersion struct {
 	beta  int // 0 为正式版；同一版本的 beta 始终低于正式版。
 }
 
-// parseVersion 同时接受旧三段版本与 fork 的 0.YY.MM.DD.SSS[-betaN]。
+// parseVersion 同时接受旧三段版本与 fork 的 0.YY.MM.DD.SSS[-beta|-betaN]。
 // git describe 的提交后缀必须保持不可比较，避免覆盖开发构建。
 func parseVersion(s string) (releaseVersion, bool) {
 	s = strings.TrimSpace(s)
@@ -161,7 +161,7 @@ func parseVersion(s string) (releaseVersion, bool) {
 	if len(parts) != 3 && len(parts) != 5 {
 		return releaseVersion{}, false
 	}
-	if hasSuffix && (len(parts) != 5 || suffix == "" || suffix[0] == '0') {
+	if hasSuffix && (len(parts) != 5 || (suffix != "" && suffix[0] == '0')) {
 		return releaseVersion{}, false
 	}
 	var out releaseVersion
@@ -184,6 +184,10 @@ func parseVersion(s string) (releaseVersion, bool) {
 		}
 	}
 	if hasSuffix {
+		if suffix == "" {
+			out.beta = 1
+			return out, true
+		}
 		if strings.Trim(suffix, "0123456789") != "" {
 			return releaseVersion{}, false
 		}

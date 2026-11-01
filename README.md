@@ -135,7 +135,7 @@ docker compose up -d          # 拉取 ARTEX 与 PostgreSQL
 `/message?sessionId=...` 接收 JSON-RPC 请求；配置时将 URL 填为 `/sse`，请求头按
 `Authorization=Bearer <token>` 填写。
 
-Lightpanda 测试版 Docker 镜像内置 Lightpanda：ARTEX 启动后自动运行本机 MCP，在系统 MCP 页面展示只读的内置项，并为报告撰写智能体临时追加浏览器选择提示词。切回不含此功能的旧版本后，内置 MCP 和追加提示词会自动消失，不改动数据库中的用户提示词或 MCP 设置。报告智能体仅能用它读取已登记证据页面的文字、结构和链接；真实截图仍由 Chrome/Playwright MCP 完成。Lightpanda 的截图、点击、填表和脚本工具不会提供给该智能体。独立运行 ARTEX 二进制时，可设置 `ARTEX_LIGHTPANDA_MCP_URL=http://<Lightpanda主机>:9222/mcp` 接入自行启动的 Lightpanda；未设置时保持原有行为。
+Lightpanda 测试版 Docker 镜像内置 Lightpanda：ARTEX 启动后自动运行本机 MCP。系统 MCP 页面中的 browser（Chrome/Playwright）与 Lightpanda 都标为「内置」，可以开关、调整 Agent 可见性，但不能删除。Lightpanda 的页面阅读工具只可授权给报告撰写和资产梳理 Agent；关闭时工具与对应运行时提示词立即停用，重新开启后恢复已保存的授权。切回不含此功能的旧版本后，Lightpanda 工具和追加提示词自动消失，原有提示词不被改写。真实截图仍由 Chrome/Playwright MCP 完成；Lightpanda 的截图、点击、填表和脚本工具不提供给 Agent。独立运行 ARTEX 二进制时，可设置 `ARTEX_LIGHTPANDA_MCP_URL=http://<Lightpanda主机>:9222/mcp` 接入自行启动的 Lightpanda；未设置时保持原有行为。
 
 ### 方式三：下载预编译二进制（Releases）
 
@@ -194,19 +194,22 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 - **失败不会留下坏程序**：校验或冒烟不通过就丢弃暂存件、继续跑当前版本；换装后的新版若连续 3 次启动失败，会自动回滚到 `artex.old`（失败的那个留作 `artex.failed` 供排查）。
 - **随时可回退**：上一版本保留为 `artex.old`，卡片上有「回滚到上一版本」。注意数据库结构不会回退。
 - **更新会中断正在运行的任务**——更新即重启，请在空闲时进行。
-- **开发构建不给更新**：版本号是 `dev` 或 `git describe` 带后缀时禁用，避免正式版覆盖掉本地调试的二进制。
+- **未提交的开发构建不给更新**：`dev` 或带 `-dirty` 后缀的版本禁用一键更新；干净的主分支提交有独立版本号，但只有发布为 Release 后才可供他人在线安装。
 - **Docker 下只换程序、不换镜像**：镜像里的 playwright / nmap 等工具链不会跟着升级，且 `docker compose up -d` 重建容器后会退回镜像自带的版本。要连镜像一起升级仍请用 `docker compose pull artex && docker compose up -d artex`。
 - **更新代理（可选）**与其他代理设置使用相同的「地址输入框 + 保存」方式。填写独立更新代理后保存，例如 `http://127.0.0.1:7897`；支持 `http://`、`https://`、`socks5://`、`socks5h://` 及用户名密码认证。清空并保存即为直连，不受全局代理或 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量影响。保存后自动重新检查，检查版本、校验和下载和发布包下载使用同一个出口。更新只从 GitHub 域名下载并强制 HTTPS。
 - 代理地址由 **ARTEX 服务端**访问。Docker 内的 `127.0.0.1` 指容器自身；代理运行在宿主机时，应使用容器可达地址（Docker Desktop 通常为 `http://host.docker.internal:7897`），并允许容器访问代理端口。
 
 ### 维护者：通过 GitHub Actions 发布在线更新
 
-`ci.yml` 会在提交到 `main` 和创建/更新 PR 时测试 `server` 以外的 Go 包、运行 `server` 的 TOTP 单元测试，并用隔离 PostgreSQL 验证发现统计和代理断线恢复；同时检查前端静态构建。`server` 的完整测试尚未作为发布门槛；发布工作流另用临时 PostgreSQL 验证 Docker 镜像启动和前端可访问。发布工作流为 `.github/workflows/release.yml`：推送标签后会再次运行上述 Go 测试，通过后才构建并发布；也可在 Actions → release → Run workflow 中输入已存在的标签重新执行失败的发布。正式版标签采用 `v0.YY.MM.DD.SSS`（日期加三位提交序号），首个版本为 `v0.26.10.31.001`；测试版在同一编号后追加 `-beta1`、`-beta2` 等。页面显示完整标签，例如 `v0.26.10.31.001-beta1`。后续版本号应递增。
+`ci.yml` 会在提交到 `main` 和创建/更新 PR 时测试 `server` 以外的 Go 包、运行 `server` 的 TOTP 单元测试，并用隔离 PostgreSQL 验证发现统计和代理断线恢复；同时检查前端静态构建。`server` 的完整测试尚未作为发布门槛；发布工作流另用临时 PostgreSQL 验证 Docker 镜像启动和前端可访问。发布工作流为 `.github/workflows/release.yml`：推送标签后会再次运行上述 Go 测试，通过后才构建并发布；也可在 Actions → release → Run workflow 中输入已存在的标签重新执行失败的发布。
+
+从已发布的 `v0.26.11.01.002-beta1` 起，`./version.sh [提交]` 按北京时间给主分支每次提交计算独立的 `v0.YY.MM.DD.SSS`：同日依次递增，次日从 `001` 开始。该提交不必立即发布；`build.sh` 默认把提交版本写进干净的构建。发布测试版时在该编号后加 `-beta`，正式版不加后缀，**不能把同一编号再用于另一个 beta 或正式版**。已有的重复历史标签不改写。发布工作流校验标签与提交版本一致，并在 Release 中逐条列出上次已发布版本以来的主分支提交及其版本号。
 
 ```bash
 git push origin main
-git tag v0.26.10.31.001
-git push origin v0.26.10.31.001
+tag="$(./version.sh)-beta" # 正式版使用 tag="$(./version.sh)"
+git tag "$tag"
+git push origin "$tag"
 ```
 
 工作流固定标签对应的提交，用 Node.js 22 导出前端，按照 `go.mod` 指定的 Go 版本编译内嵌前端的五个平台程序，并生成 ZIP 与 `SHA256SUMS`。AMD64 和 ARM64 镜像分别在 GitHub 原生 runner 上构建，连接临时 PostgreSQL 验证程序启动、版本和内嵌前端；两种架构都通过后发布 `moleftcn/artex` 多架构镜像。正式版更新版本标签与 `latest`；测试版只发布版本标签并标为 prerelease。镜像发布成功后上传完整 ZIP 和校验文件，最后公开 Release。已公开的同版本不允许覆盖，应发布新标签。
