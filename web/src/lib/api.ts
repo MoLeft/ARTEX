@@ -19,6 +19,7 @@ import type {
   Audit,
   BatchCategoryItem,
   BatchControlItem,
+  BrowserMCPState,
   ChatAttachment,
   CommandRecord,
   Company,
@@ -1012,6 +1013,9 @@ export const api = {
     put<{ enabled: boolean }>("/settings/totp", { password, secret, code }),
   disableTOTP: (password: string, code: string) => del<{ enabled: boolean }>("/settings/totp", { password, code }),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
+  // 浏览器 MCP（Chrome / Lightpanda）：按普通 MCP 行创建/启停，状态以 MCP 列表为准。
+  setBrowserMCP: (kind: "chrome" | "lightpanda", enabled: boolean) =>
+    post<{ servers: BrowserMCPState[] }>("/settings/browser-mcp", { kind, enabled }),
   // Run a real "test" search with the given (or saved) config to verify it works.
   testWebSearch: (patch: {
     web_search_backend?: string;

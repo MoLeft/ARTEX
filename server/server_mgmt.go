@@ -498,7 +498,7 @@ func (s *Server) pgGetAgent(w http.ResponseWriter, r *http.Request) {
 			"id": p.ID, "name": p.Name, "model": p.Model, "is_default": p.IsDefault,
 		})
 	}
-	runtimePrompt := lightpandaRuntimePrompt(pg, a)
+	runtimePrompt := browserMCPPrompt(pg, a)
 	writeJSON(w, 200, map[string]any{
 		"agent": agentDTO(a), "prompt": cur, "variables": vars, "versions": vers,
 		"runtime_prompt_append": runtimePrompt,
@@ -736,12 +736,6 @@ func (s *Server) pgSetAgentVisibility(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	for _, id := range body.MCP {
-		if id == lightpandaReaderMCPID && !lightpandaAgentAllowed(a.Key) {
-			writeErr(w, 400, "此 Agent 不支持 Lightpanda 页面阅读")
-			return
-		}
-	}
 	if err := pg.SetAgentVisibilityKind(a.ID, "mcp", body.MCP); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -872,9 +866,6 @@ func (s *Server) pgListMCP(w http.ResponseWriter, r *http.Request) {
 	if ms == nil {
 		ms = []*db.MCPServer{}
 	}
-	if m := lightpandaMCP(pg); m != nil {
-		ms = append(ms, m)
-	}
 	writeJSON(w, 200, map[string]any{"servers": ms})
 }
 
@@ -886,22 +877,6 @@ func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
 	var m db.MCPServer
 	if err := decode(r, &m); err != nil {
 		writeErr(w, 400, err.Error())
-		return
-	}
-	if m.ID == lightpandaReaderMCPID {
-		if lightpandaMCP(pg) == nil {
-			writeErr(w, 404, "Lightpanda MCP 未运行")
-			return
-		}
-		if err := saveLightpandaConfig(r.Context(), pg, &m); err != nil {
-			writeErr(w, 400, err.Error())
-			return
-		}
-		writeJSON(w, 200, map[string]any{"id": lightpandaReaderMCPID})
-		return
-	}
-	if m.Name == lightpandaReaderMCPName {
-		writeErr(w, 400, "内置 Lightpanda 不允许重复创建")
 		return
 	}
 	isNew := m.ID == 0
@@ -930,21 +905,6 @@ func (s *Server) pgDeleteMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := pathInt(r, "id")
-	if id == lightpandaReaderMCPID {
-		writeErr(w, 400, "内置 Lightpanda 不允许删除")
-		return
-	}
-	all, err := pg.ListMCP()
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	for _, m := range all {
-		if m.ID == id && m.Builtin {
-			writeErr(w, 400, "内置 browser 不允许删除")
-			return
-		}
-	}
 	if err := pg.DeleteMCP(id); err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -960,34 +920,6 @@ func (s *Server) pgRefreshMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := pathInt(r, "id")
-	if id == lightpandaReaderMCPID {
-		m := lightpandaMCP(pg)
-		if m == nil {
-			writeErr(w, 404, "Lightpanda MCP 未运行")
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-		defer cancel()
-		cl, err := connectMCP(ctx, m)
-		if err != nil {
-			writeErr(w, 502, "工具发现失败："+err.Error())
-			return
-		}
-		defer cl.Close()
-		ts, err := cl.Tools(ctx)
-		if err != nil {
-			writeErr(w, 502, "工具发现失败："+err.Error())
-			return
-		}
-		tools := make([]db.MCPTool, 0, len(ts))
-		for _, t := range ts {
-			if isLightpandaReadTool(t.Name()) {
-				tools = append(tools, db.MCPTool{Name: t.Name(), Description: t.Description()})
-			}
-		}
-		writeJSON(w, 200, map[string]any{"tools": tools})
-		return
-	}
 	all, err := pg.ListMCP()
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -1021,14 +953,6 @@ func (s *Server) pgMCPTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := pathInt(r, "id")
-	if id == lightpandaReaderMCPID {
-		if lightpandaMCP(pg) == nil {
-			writeErr(w, 404, "Lightpanda MCP 未运行")
-			return
-		}
-		writeJSON(w, 200, map[string]any{"tools": lightpandaTools(pg)})
-		return
-	}
 	tools, err := pg.MCPToolsDetailed(id)
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -1836,12 +1760,6 @@ func (s *Server) pgResourceVisibility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := pathInt(r, "id")
-	if r.PathValue("kind") == "mcp" && id == lightpandaReaderMCPID {
-		if lightpandaMCP(pg) == nil {
-			writeErr(w, 404, "Lightpanda MCP 未运行")
-			return
-		}
-	}
 	agents, err := pg.ResourceAgents(r.PathValue("kind"), id)
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -1864,28 +1782,6 @@ func (s *Server) pgToggleVisibility(w http.ResponseWriter, r *http.Request) {
 	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, err.Error())
 		return
-	}
-	if body.Kind == "mcp" && body.ResourceID == lightpandaReaderMCPID {
-		if lightpandaMCP(pg) == nil {
-			writeErr(w, 404, "Lightpanda MCP 未运行")
-			return
-		}
-		agents, err := pg.ListAgents()
-		if err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		allowed := false
-		for _, a := range agents {
-			if a.ID == body.AgentID && lightpandaAgentAllowed(a.Key) {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			writeErr(w, 400, "此 Agent 不支持 Lightpanda 页面阅读")
-			return
-		}
 	}
 	if err := pg.ToggleVisibility(body.AgentID, body.Kind, body.ResourceID, body.Visible); err != nil {
 		writeErr(w, 500, err.Error())

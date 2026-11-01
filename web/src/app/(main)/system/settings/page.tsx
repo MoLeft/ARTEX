@@ -6,6 +6,7 @@ import {
   CameraIcon,
   CpuIcon,
   FlaskConicalIcon,
+  GlobeIcon,
   KeyboardIcon,
   RadioTowerIcon,
   SearchIcon,
@@ -14,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
@@ -23,7 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { EgressReport, LLMProfile, Settings, WorkerPool } from "@/lib/types";
+import type { BrowserMCPState, EgressReport, LLMProfile, MCPServer, Settings, WorkerPool } from "@/lib/types";
 
 import { useEgressIp } from "../../_components/egress-ip-banner";
 import { BasicAuthCard } from "./_components/basic-auth-card";
@@ -88,6 +90,11 @@ export default function SystemSettingsPage() {
   const [injectWorker, setInjectWorker] = React.useState(true);
   // 实验功能:noa 上下文压缩(默认关)。
   const [noaCompaction, setNoaCompaction] = React.useState(false);
+  // 浏览器 MCP：两个可选 MCP 的真实状态从 MCP 列表读取（创建/启停都在 mcp_servers 表里）。
+  const [mcpServers, setMcpServers] = React.useState<MCPServer[]>([]);
+  const [browserMCPPriority, setBrowserMCPPriority] = React.useState<"chrome" | "lightpanda">("chrome");
+  const [savingBrowserMCP, setSavingBrowserMCP] = React.useState<"chrome" | "lightpanda" | null>(null);
+  const [savingPriority, setSavingPriority] = React.useState(false);
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
   const sendMode = useChatSendMode();
   const {
@@ -123,6 +130,7 @@ export default function SystemSettingsPage() {
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
+    setBrowserMCPPriority(s.browser_mcp_priority === "lightpanda" ? "lightpanda" : "chrome");
   }, []);
 
   const saveWorkers = () => {
@@ -222,6 +230,78 @@ export default function SystemSettingsPage() {
       .catch(() => setLlmProfiles([]));
   }, []);
 
+  // 浏览器 MCP：状态完全来自 MCP 列表——在 MCP 页面停用/删除后这里同步关闭。
+  const loadBrowserMCPs = React.useCallback(() => {
+    api
+      .mcpServers()
+      .then(setMcpServers)
+      .catch(() => setMcpServers([]));
+  }, []);
+
+  React.useEffect(() => {
+    loadBrowserMCPs();
+  }, [loadBrowserMCPs]);
+
+  const applyBrowserMCPState = (states: BrowserMCPState[]) => {
+    setMcpServers((current) => {
+      const next = [...current];
+      for (const st of states) {
+        const index = next.findIndex((item) => item.name === st.name);
+        if (st.created && index >= 0) {
+          next[index] = { ...next[index], enabled: st.enabled };
+        } else if (st.created) {
+          next.push({
+            id: st.id ?? -1,
+            name: st.name,
+            transport: st.kind === "lightpanda" ? "http" : "stdio",
+            args: [],
+            env: {},
+            enabled: st.enabled,
+          });
+        } else if (index >= 0) {
+          next.splice(index, 1);
+        }
+      }
+      return next;
+    });
+  };
+
+  const toggleBrowserMCP = (kind: "chrome" | "lightpanda", enabled: boolean) => {
+    setSavingBrowserMCP(kind);
+    api
+      .setBrowserMCP(kind, enabled)
+      .then((r) => {
+        applyBrowserMCPState(r.servers);
+        loadBrowserMCPs(); // 补齐工具数/配置，列表仍是唯一事实来源
+        toast.success(
+          enabled
+            ? `已创建并启用 ${kind === "chrome" ? "Chrome MCP" : "Lightpanda MCP"}（可在 MCP 页面管理）`
+            : `已停用 ${kind === "chrome" ? "Chrome MCP" : "Lightpanda MCP"}`,
+        );
+      })
+      .catch((e) => toast.error(`操作失败：${(e as Error).message}`))
+      .finally(() => setSavingBrowserMCP(null));
+  };
+
+  const saveBrowserMCPPriority = (value: "chrome" | "lightpanda") => {
+    const previous = browserMCPPriority;
+    setBrowserMCPPriority(value); // optimistic
+    setSavingPriority(true);
+    api
+      .setSettings({ browser_mcp_priority: value })
+      .then((s) => {
+        apply(s);
+        toast.success(value === "chrome" ? "Agent 将优先使用 Chrome MCP" : "Agent 将优先使用 Lightpanda MCP");
+      })
+      .catch((e) => {
+        setBrowserMCPPriority(previous);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingPriority(false));
+  };
+
+  const browserMCP = (name: string) => mcpServers.find((item) => item.name === name);
+
   const toggleTraffic = (v: boolean) => {
     setTrafficCapture(v); // optimistic
     setSaving(true);
@@ -296,6 +376,7 @@ export default function SystemSettingsPage() {
 
   const settingCategories = [
     { id: "system", label: "系统与账号", hint: "版本、登录与基础配置", icon: SettingsIcon },
+    { id: "browser", label: "浏览器 MCP", hint: "Chrome / Lightpanda 与优先级", icon: GlobeIcon },
     { id: "traffic", label: "流量与安全", hint: "流量、代理、截图与 OPSEC", icon: RadioTowerIcon },
     { id: "agent", label: "Agent 行为", hint: "约束、情报与自动化", icon: CpuIcon },
     { id: "network", label: "网络与工具", hint: "搜索、脚本与并发", icon: SearchIcon },
@@ -716,6 +797,88 @@ export default function SystemSettingsPage() {
                     disabled={!loaded || saving}
                     onCheckedChange={toggleOpsec}
                   />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card
+              className={`${isSettingVisible("browser", "浏览器 MCP Chrome Playwright Lightpanda 优先级 实验") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
+            >
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <GlobeIcon className="size-4" />
+                  浏览器 MCP
+                </CardTitle>
+                <CardDescription>
+                  按需创建两个<b>普通 MCP</b>：Chrome（Playwright，命名空间 <code>browser</code>）与
+                  Lightpanda（命名空间 <code>lightpanda</code>）。打开开关会在 MCP 页面创建并启用对应 MCP；命令、参数与
+                  Agent 可见性都在 MCP 页面管理，在那边停用或删除后这里的开关会同步关闭。
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="divide-y">
+                {[
+                  {
+                    kind: "chrome" as const,
+                    title: "Chrome MCP",
+                    name: "browser",
+                    hint: "Playwright 驱动 Chromium：真实像素截图、交互与页面快照；报告截图只认这一路。",
+                  },
+                  {
+                    kind: "lightpanda" as const,
+                    title: "Lightpanda MCP",
+                    name: "lightpanda",
+                    hint: "轻量无头浏览器：读页面文字与结构更快，适合批量核对 URL；不用于取证截图。",
+                  },
+                ].map((item) => {
+                  const server = browserMCP(item.name);
+                  const status = server ? (server.enabled ? "已启用" : "已停用") : "未创建";
+                  return (
+                    <div key={item.kind} className="flex items-center justify-between gap-4 py-3 first:pt-0">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <Label htmlFor={`browser-mcp-${item.kind}`} className="text-sm font-medium">
+                            {item.title}
+                          </Label>
+                          <Badge variant={server?.enabled ? "secondary" : "outline"}>{status}</Badge>
+                        </div>
+                        <p className="text-muted-foreground mt-1 text-xs">
+                          {item.hint}
+                          {server?.tools?.length ? ` · 已发现 ${server.tools.length} 个工具` : ""}
+                        </p>
+                      </div>
+                      <Switch
+                        id={`browser-mcp-${item.kind}`}
+                        checked={!!server?.enabled}
+                        disabled={!loaded || savingBrowserMCP !== null}
+                        onCheckedChange={(value) => toggleBrowserMCP(item.kind, value)}
+                      />
+                    </div>
+                  );
+                })}
+                <div className="flex flex-col gap-2 py-3 last:pb-0">
+                  <div className="flex items-center gap-2">
+                    <Label htmlFor="browser-mcp-priority" className="text-sm font-medium">
+                      Agent 浏览器 MCP 优先级
+                    </Label>
+                    <Badge variant="outline">实验性</Badge>
+                  </div>
+                  <p className="text-muted-foreground text-xs">
+                    两个浏览器 MCP 同时对某个 Agent 可见时，运行时提示词按此引导它优先用哪一个。只影响提示词，
+                    不改变启停与可见性；保存后对之后启动的运行生效。
+                  </p>
+                  <Select
+                    value={browserMCPPriority}
+                    disabled={!loaded || savingPriority}
+                    onValueChange={(value) => saveBrowserMCPPriority(value as "chrome" | "lightpanda")}
+                  >
+                    <SelectTrigger id="browser-mcp-priority" className="w-80">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="chrome">Chrome MCP · 截图与交互优先</SelectItem>
+                      <SelectItem value="lightpanda">Lightpanda MCP · 轻量读页面优先</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </CardContent>
             </Card>

@@ -539,14 +539,11 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedWorkerReadbackRebind()  // 修复旧迁移误删：把 search_all_worker_traces/get_worker_trace/node_detail 补绑回 worker(一次性)
 	s.seedAutoReportFindingBinding()
 	s.unbindGoalMetDefault()
-	s.reseedGoalsPrompt()     // goals 提示词加入「抽操作约束」步 → 旧库追加一版新默认(一次性)
-	s.reseedMainAgentPrompt() // mainagent 提示词加入「目标达成后 add_intent 反问是否建目标」(一次性)
-	s.reseedPlannerPrompt()   // planner 提示词:重写「0 意图」正当理由 + 加量化验收核对(一次性)
-	s.reseedWorkerPrompt()    // worker 提示词:加否定结论证据门槛(一次性)
-	s.seedReporterAgent()     // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
-	if err := seedLightpandaVisibility(s.m.pg); err != nil {
-		log.Printf("[lightpanda] 默认授权初始化失败: %v", err)
-	}
+	s.reseedGoalsPrompt()             // goals 提示词加入「抽操作约束」步 → 旧库追加一版新默认(一次性)
+	s.reseedMainAgentPrompt()         // mainagent 提示词加入「目标达成后 add_intent 反问是否建目标」(一次性)
+	s.reseedPlannerPrompt()           // planner 提示词:重写「0 意图」正当理由 + 加量化验收核对(一次性)
+	s.reseedWorkerPrompt()            // worker 提示词:加否定结论证据门槛(一次性)
+	s.seedReporterAgent()             // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
 	s.upgradeReporterTriggerMessage() // 老库补迁移:让 reporter 回传 evidence_version(一次性)
 	s.migrateReporterWorkflow()       // 修复旧库残留的 reproduction 工具/提示词绑定
 	if s.m.pg.GetBool(settingBrowserScreenshot, false) {

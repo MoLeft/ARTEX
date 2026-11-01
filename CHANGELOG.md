@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 浏览器 MCP
+
+- 浏览器 MCP 改为可选：不再随启动创建，也不再标记「内置」；Chrome（Playwright）与 Lightpanda 都是可改名、可停用、可删除的普通 MCP。
+- 系统配置新增「浏览器 MCP」分类：打开开关即调用 MCP 创建接口建立对应的普通 MCP 并启用，在 MCP 页面停用或删除后开关同步关闭。
+- 新增实验性「Agent 浏览器 MCP 优先级」：两者同时对一个 Agent 可见时，运行时提示词按所选优先级引导优先使用 Chrome 或 Lightpanda；真实像素截图仍只由 Chrome MCP 完成。
+- 升级说明：旧版本 seed 的 `browser` 行会原样保留（不再受保护）；Lightpanda 不再自动出现，需在「浏览器 MCP」里打开开关按普通 MCP 重新创建，旧的 Lightpanda 专用配置不再读取。
+
 ## [0.3.18] - 2026-10-12
 
 ### 审批审查

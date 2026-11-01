@@ -2448,6 +2448,34 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/settings/totp" && m === "GET") return { enabled: false };
   if (path === "/settings/totp" || path === "/settings/totp/setup")
     throw new Error("演示模式不支持修改 TOTP，请在实际部署中配置");
+  // 浏览器 MCP 开关（demo）：只维护内存里的示例行，行为与真实实现一致。
+  if (path === "/settings/browser-mcp" && m === "POST") {
+    const kind = b.kind === "lightpanda" ? "lightpanda" : "chrome";
+    const name = kind === "lightpanda" ? "lightpanda" : "browser";
+    const enabled = b.enabled === true;
+    const existing = D.mcpServers.find((item) => item.name === name);
+    if (existing) {
+      existing.enabled = enabled;
+    } else if (enabled) {
+      D.mcpServers.push({
+        id: 900 + D.mcpServers.length,
+        name,
+        transport: kind === "lightpanda" ? "http" : "stdio",
+        command: kind === "lightpanda" ? undefined : "npx",
+        url: kind === "lightpanda" ? "http://127.0.0.1:9222/mcp" : undefined,
+        args: kind === "lightpanda" ? [] : ["@playwright/mcp", "--headless", "--no-sandbox"],
+        env: {},
+        enabled: true,
+        tools: [],
+      });
+    }
+    const state = (k: "chrome" | "lightpanda") => {
+      const n = k === "lightpanda" ? "lightpanda" : "browser";
+      const row = D.mcpServers.find((item) => item.name === n);
+      return { kind: k, name: n, created: !!row, enabled: !!row?.enabled, id: row?.id };
+    };
+    return { servers: [state("chrome"), state("lightpanda")] };
+  }
   if (path === "/settings/web-search/test") return { ok: true, count: 5, backend: D.settings.web_search_backend };
   if (path === "/settings/proxy/test")
     return {

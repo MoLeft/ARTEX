@@ -983,6 +983,11 @@ export interface Settings {
   browser_screenshot_timestamp_enabled?: boolean;
   /** 是否向 Agent 注入统一 OPSEC 准则。默认关闭。 */
   opsec_enabled?: boolean;
+  /**
+   * 实验功能：多个浏览器 MCP 同时可用时 Agent 优先用哪个。
+   * 只影响运行时提示词；两个 MCP 本身都是普通 MCP，在 MCP 页面管理。
+   */
+  browser_mcp_priority?: "chrome" | "lightpanda";
   credential_agent_enabled: boolean;
   credential_traffic_binding: boolean;
   task_intelligence_enabled: boolean; // 默认关闭；关闭不注入情报工具或提示
@@ -1259,7 +1264,6 @@ export interface AgentDetail {
 export interface MCPServer {
   id: number;
   name: string;
-  display_name?: string; // built-in Lightpanda label; tool namespace stays fixed
   transport: "stdio" | "http" | "sse";
   command?: string;
   args: string[];
@@ -1268,13 +1272,20 @@ export interface MCPServer {
   enabled: boolean;
   insecure?: boolean; // http: skip TLS cert verification (self-signed servers)
   tools?: string[]; // mcp_tools_cache (names only, for the count)
-  builtin?: boolean; // seeded browser or runtime-owned Lightpanda
-  allowed_agents?: string[]; // present when the built-in MCP has a limited agent scope
 }
 
 export interface MCPTool {
   name: string;
   description: string;
+}
+
+/** 系统配置 →「浏览器 MCP」里两个可选 MCP 的状态（与 MCP 页面同一张表）。 */
+export interface BrowserMCPState {
+  kind: "chrome" | "lightpanda";
+  name: string; // 对应 mcp_servers.name（browser / lightpanda）
+  created: boolean; // MCP 页面里存在这一行
+  enabled: boolean; // 该行当前是否启用
+  id?: number;
 }
 
 // ---- Skills ----

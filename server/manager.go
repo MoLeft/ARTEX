@@ -836,15 +836,12 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, pro
 	return nil
 }
 
-// browserMCPName is the seeded Playwright MCP whose proxy args + CA env are kept
-// in sync with the traffic-capture toggle.
-const browserMCPName = "browser"
-
-// syncBrowserMCPProxy reconciles the seeded browser MCP's proxy args + CA env with
-// the current traffic-capture state: capture on → route Playwright through the
-// recording proxy (--proxy-server) and trust its MITM CA (NODE_EXTRA_CA_CERTS);
-// capture off → strip both. Idempotent. Must be called WITHOUT m.mu held
-// (ProxyAddr/ProxyCACert take the lock).
+// syncBrowserMCPProxy reconciles the browser (Chrome/Playwright) MCP's proxy args
+// + CA env with the current traffic-capture state: capture on → route Playwright
+// through the recording proxy (--proxy-server) and trust its MITM CA
+// (NODE_EXTRA_CA_CERTS); capture off → strip both. The MCP is optional, so a
+// database without that row is simply left alone. Idempotent. Must be called
+// WITHOUT m.mu held (ProxyAddr/ProxyCACert take the lock).
 func (m *Manager) syncBrowserMCPProxy() {
 	servers, err := m.pg.ListMCP()
 	if err != nil {

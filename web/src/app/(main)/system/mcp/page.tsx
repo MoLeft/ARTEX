@@ -110,7 +110,7 @@ export default function MCPPage() {
   function openEdit(s: MCPServer) {
     setEditing(s);
     setForm({
-      name: s.display_name || s.name,
+      name: s.name,
       transport: s.transport,
       command: s.command ?? "",
       args: (s.args ?? []).join(" "),
@@ -168,14 +168,12 @@ export default function MCPPage() {
             };
       await api.saveMcpServer({
         ...(editing ? { id: editing.id } : {}),
-        name: editing?.id === -1 ? editing.name : form.name.trim(),
-        ...(editing?.id === -1 ? { display_name: form.name.trim() } : {}),
+        name: form.name.trim(),
         enabled: editing ? editing.enabled : true,
         ...base,
       });
       toast.success(editing ? "已保存" : "已添加 MCP 服务器");
       if (!editing) setOpen(false);
-      if (editing?.id === -1) setEditing({ ...editing, display_name: form.name.trim() });
       load();
     } catch (e) {
       toast.error("保存失败：" + (e as Error).message);
@@ -212,7 +210,7 @@ export default function MCPPage() {
 
   async function toggleEnabled(s: MCPServer) {
     try {
-      await api.saveMcpServer(s.id === -1 ? { id: s.id, enabled: !s.enabled } : { ...s, enabled: !s.enabled });
+      await api.saveMcpServer({ ...s, enabled: !s.enabled });
       load();
     } catch (e) {
       toast.error("操作失败：" + (e as Error).message);
@@ -266,7 +264,6 @@ export default function MCPPage() {
             placeholder="filesystem"
             value={form.name}
             onChange={(e) => setF({ name: e.target.value })}
-            disabled={editing?.builtin && editing.id !== -1}
           />
         </div>
         {form.transport === "stdio" ? (
@@ -366,7 +363,9 @@ export default function MCPPage() {
     <div className="flex flex-1 flex-col gap-4 md:gap-6">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">MCP</h1>
-        <p className="text-muted-foreground text-sm">内置与外部 MCP 工具服务器 · 按 Agent 授权可见</p>
+        <p className="text-muted-foreground text-sm">
+          外部与浏览器 MCP 工具服务器 · 按 Agent 授权可见（浏览器 MCP 可在系统配置中一键创建）
+        </p>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -388,25 +387,24 @@ export default function MCPPage() {
             <CardHeader>
               <div className="flex items-center gap-2">
                 <ServerIcon className="text-muted-foreground size-4 shrink-0" />
-                <CardTitle className="truncate text-base">{s.display_name || s.name}</CardTitle>
+                <CardTitle className="truncate text-base">{s.name}</CardTitle>
                 <Badge variant="outline" className="uppercase">
                   {s.transport}
                 </Badge>
-                {s.builtin && <Badge variant="secondary">内置</Badge>}
                 <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                   <Switch
                     checked={s.enabled}
                     onCheckedChange={() => toggleEnabled(s)}
                     aria-label="启用"
                   />
-                  {!s.builtin && <Button
+                  <Button
                     size="icon"
                     variant="outline"
                     aria-label="删除"
                     onClick={() => removeServer(s)}
                   >
                     <Trash2Icon className="text-destructive" />
-                  </Button>}
+                  </Button>
                 </div>
               </div>
             </CardHeader>
@@ -421,7 +419,6 @@ export default function MCPPage() {
                     <label key={a.key} className="flex items-center gap-2 text-sm">
                       <Checkbox
                         checked={(visibility[s.id] ?? []).includes(a.id)}
-                        disabled={!!s.allowed_agents && !s.allowed_agents.includes(a.key)}
                         onCheckedChange={() => toggleVisibility(s.id, a.id, a.name)}
                       />
                       {a.name}
@@ -440,7 +437,7 @@ export default function MCPPage() {
           className="w-full data-[side=right]:sm:max-w-lg"
         >
           <SheetHeader>
-            <SheetTitle>{editing ? (editing.display_name || editing.name) : "添加 MCP 服务器"}</SheetTitle>
+            <SheetTitle>{editing ? editing.name : "添加 MCP 服务器"}</SheetTitle>
             <SheetDescription>
               stdio（本地起进程）或 http（远程 Streamable HTTP）
             </SheetDescription>

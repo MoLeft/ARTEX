@@ -135,7 +135,7 @@ docker compose up -d          # 拉取 ARTEX 与 PostgreSQL
 `/message?sessionId=...` 接收 JSON-RPC 请求；配置时将 URL 填为 `/sse`，请求头按
 `Authorization=Bearer <token>` 填写。
 
-Lightpanda 测试版 Docker 镜像内置 Lightpanda：ARTEX 启动后自动运行本机 MCP。系统 MCP 页面中的 browser（Chrome/Playwright）与 Lightpanda 都标为「内置」，可以开关、调整 Agent 可见性，但不能删除。Lightpanda 的页面阅读工具只可授权给报告撰写和资产梳理 Agent；关闭时工具与对应运行时提示词立即停用，重新开启后恢复已保存的授权。切回不含此功能的旧版本后，Lightpanda 工具和追加提示词自动消失，原有提示词不被改写。真实截图仍由 Chrome/Playwright MCP 完成；Lightpanda 的截图、点击、填表和脚本工具不提供给 Agent。独立运行 ARTEX 二进制时，可设置 `ARTEX_LIGHTPANDA_MCP_URL=http://<Lightpanda主机>:9222/mcp` 接入自行启动的 Lightpanda；未设置时保持原有行为。
+浏览器 MCP 不再是内置服务。系统配置 →「浏览器 MCP」里有 Chrome 与 Lightpanda 两个开关：打开时按普通 MCP 创建并启用（Chrome 的服务名为 `browser`，Lightpanda 为 `lightpanda`），之后与其它 MCP 完全一样在 MCP 页面管理——可以改名、改命令/参数、调整 Agent 可见性、停用或删除；在 MCP 页面停用或删除后，系统配置里的开关同步关闭，重新打开开关会按默认配置再次创建。同页面的「Agent 浏览器 MCP 优先级」（实验功能）决定两者同时对一个 Agent 可见时，运行时提示词引导它优先用 Chrome 还是 Lightpanda；真实像素截图始终只由 Chrome/Playwright 完成。Lightpanda 测试版 Docker 镜像仍内置 `127.0.0.1:9222` 的 Lightpanda MCP，打开开关即可用；独立运行 ARTEX 二进制时，可设置 `ARTEX_LIGHTPANDA_MCP_URL=http://<Lightpanda主机>:9222/mcp` 指向自行启动的实例。
 
 ### 方式三：下载预编译二进制（Releases）
 

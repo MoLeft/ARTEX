@@ -254,18 +254,10 @@ ON CONFLICT (agent_id, var_name) DO UPDATE
 		}
 		_ = d.SetSetting("interactive_shell_default_v1", "true")
 	}
-	// Seed the built-in browser (Playwright) MCP once — DISABLED by default (用户
-	// 需要时自行启用), no proxy by default. The traffic-capture toggle injects/strips
-	// the recording proxy + CA at runtime (server.Manager.syncBrowserMCPProxy).
-	// Insert only if absent so we never clobber user edits (args/env/enabled/
-	// visibility) on restart.
-	if _, err := d.Exec(`
-INSERT INTO mcp_servers(name, transport, command, args, env, enabled)
-VALUES ('browser', 'stdio', 'npx', $1, '{}', false)
-ON CONFLICT (name) DO NOTHING`,
-		`["@playwright/mcp","--headless"]`); err != nil {
-		return fmt.Errorf("seed browser mcp: %w", err)
-	}
+	// NOTE: 浏览器 MCP（Chrome/Playwright、Lightpanda）不再内置 seed。它们在
+	// 系统配置 →「浏览器 MCP」里按需创建成普通 MCP 行（server.ensureBrowserMCP），
+	// 之后与其它 MCP 一样在 MCP 页面管理；早期版本 seed 过的 browser 行原地保留，
+	// 但已不再受保护，可以改名或删除。当 capture 打开时记录代理仍按名字注入。
 	// NOTE: the placeholder ScopeSentry data-source MCP (empty URL + empty X-API-Key,
 	// disabled) is seeded directly in schema.sql §F so a raw `psql < schema.sql` init
 	// also gets it. schema.sql is Exec'd on every startup, so it stays idempotent.

@@ -807,19 +807,17 @@ func (d *DB) ListPromptVersions(agentID int64) ([]PromptVersion, error) {
 // ---------- MCP servers ----------
 
 type MCPServer struct {
-	ID            int64           `json:"id"`
-	Name          string          `json:"name"`
-	DisplayName   string          `json:"display_name,omitempty"`
-	Transport     string          `json:"transport"`
-	Command       string          `json:"command,omitempty"`
-	Args          json.RawMessage `json:"args"`
-	Env           json.RawMessage `json:"env"`
-	URL           string          `json:"url,omitempty"`
-	Enabled       bool            `json:"enabled"`
-	Insecure      bool            `json:"insecure"`          // http: skip TLS cert verification (self-signed servers, issue #108)
-	Tools         []string        `json:"tools,omitempty"`   // cached tool names (mcp_tools_cache)
-	Builtin       bool            `json:"builtin,omitempty"` // seeded browser or runtime-owned Lightpanda
-	AllowedAgents []string        `json:"allowed_agents,omitempty"`
+	ID          int64           `json:"id"`
+	Name        string          `json:"name"`
+	DisplayName string          `json:"display_name,omitempty"`
+	Transport   string          `json:"transport"`
+	Command     string          `json:"command,omitempty"`
+	Args        json.RawMessage `json:"args"`
+	Env         json.RawMessage `json:"env"`
+	URL         string          `json:"url,omitempty"`
+	Enabled     bool            `json:"enabled"`
+	Insecure    bool            `json:"insecure"`        // http: skip TLS cert verification (self-signed servers, issue #108)
+	Tools       []string        `json:"tools,omitempty"` // cached tool names (mcp_tools_cache)
 }
 
 func (d *DB) ListMCP() ([]*MCPServer, error) {
@@ -836,7 +834,6 @@ func (d *DB) ListMCP() ([]*MCPServer, error) {
 			return nil, err
 		}
 		m.Args, m.Env = json.RawMessage(args), json.RawMessage(env)
-		m.Builtin = m.Name == "browser"
 		out = append(out, &m)
 	}
 	if err := rows.Err(); err != nil {
@@ -849,6 +846,24 @@ func (d *DB) ListMCP() ([]*MCPServer, error) {
 		m.Tools, _ = d.MCPToolNames(m.ID)
 	}
 	return out, nil
+}
+
+// GetMCPByName returns one MCP server by its unique name, or nil when absent.
+// It skips the tool cache (unlike ListMCP): callers that only need the config
+// (proxy reconciliation, prompt hints) should not pay for the per-server query.
+func (d *DB) GetMCPByName(name string) (*MCPServer, error) {
+	var m MCPServer
+	var args, env []byte
+	err := d.QueryRow(`SELECT id,name,transport,COALESCE(command,''),args,env,COALESCE(url,''),enabled,insecure FROM mcp_servers WHERE name=$1`, name).
+		Scan(&m.ID, &m.Name, &m.Transport, &m.Command, &args, &env, &m.URL, &m.Enabled, &m.Insecure)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	m.Args, m.Env = json.RawMessage(args), json.RawMessage(env)
+	return &m, nil
 }
 
 // MCPToolNames returns the cached tool names for a server (empty until discovered).
@@ -913,18 +928,6 @@ ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.descriptio
 }
 
 func (d *DB) SaveMCP(m *MCPServer) (int64, error) {
-	if m.ID == -1 || m.Name == "artex_lightpanda_reader" {
-		return 0, errors.New("内置 Lightpanda 只能通过其开关配置")
-	}
-	if m.ID != 0 {
-		var currentName string
-		if err := d.QueryRow(`SELECT name FROM mcp_servers WHERE id=$1`, m.ID).Scan(&currentName); err != nil {
-			return 0, err
-		}
-		if currentName == "browser" && m.Name != "browser" {
-			return 0, errors.New("内置 browser 不允许重命名")
-		}
-	}
 	args, env := string(m.Args), string(m.Env)
 	if args == "" {
 		args = "[]"
@@ -944,21 +947,11 @@ func (d *DB) SaveMCP(m *MCPServer) (int64, error) {
 }
 
 func (d *DB) DeleteMCP(id int64) error {
-	if id == -1 {
-		return errors.New("内置 Lightpanda 不允许删除")
-	}
 	tx, err := d.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var name string
-	if err := tx.QueryRow(`SELECT name FROM mcp_servers WHERE id=$1`, id).Scan(&name); err != nil {
-		return err
-	}
-	if name == "browser" {
-		return errors.New("内置 browser 不允许删除")
-	}
 	if _, err := tx.Exec(`DELETE FROM agent_visibility WHERE resource_kind='mcp' AND resource_id=$1`, id); err != nil {
 		return err
 	}

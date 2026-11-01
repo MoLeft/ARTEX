@@ -222,7 +222,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 					t = agent.BuiltinPromptSeeds()[key]
 				}
 			}
-			t += lightpandaRuntimePrompt(m.pg, a)
+			t += browserMCPPrompt(m.pg, a)
 			if key == "reporter" && m.pg.GetBool(settingBrowserScreenshot, false) {
 				t += `
 
@@ -940,6 +940,9 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
+	// 浏览器 MCP（Chrome / Lightpanda）开关：按普通 MCP 行创建/启停，MCP 页面仍是
+	// 唯一管理入口，两边状态同步（存在即「已创建」，enabled 即开关）。
+	mux.HandleFunc("POST /api/settings/browser-mcp", s.postBrowserMCP)
 	// 漏洞 IM 推送。渠道是「多实例 + 各自过滤规则」的资源，因此独立成一组
 	// REST 接口，而不是塞进扁平的 /api/settings 键值里。
 	mux.HandleFunc("GET /api/notify/meta", s.notifyMeta)
@@ -3573,27 +3576,29 @@ func (s *Server) settingsPayload() map[string]any {
 		"browser_screenshot_enabled":           s.m.pg.GetBool(settingBrowserScreenshot, false),
 		"browser_screenshot_timestamp_enabled": s.m.pg.GetBool(settingScreenshotTimestamp, false),
 		"opsec_enabled":                        s.m.pg.GetBool(settingOpsecEnabled, false),
-		"agent_traffic_binding":                s.m.pg.GetBool(settingAgentTrafficBinding, false),
-		"task_intelligence_enabled":            s.m.pg.GetBool(db.SettingTaskIntelligence, false),
-		db.SettingTaskAutoTitle:                s.m.pg.GetBool(db.SettingTaskAutoTitle, false),
-		db.SettingChatAutoTitle:                s.m.pg.GetBool(db.SettingChatAutoTitle, false),
-		db.SettingCredentialAgent:              s.m.pg.GetBool(db.SettingCredentialAgent, false),
-		db.SettingCredentialTraffic:            s.m.pg.GetBool(db.SettingCredentialAgent, false) && s.m.pg.GetBool(db.SettingCredentialTraffic, false),
-		"llm_record":                           s.m.LLMRecordEnabled(),
-		"web_search_enabled":                   on,
-		"web_search_backend":                   backend,
-		"brave_key_set":                        strings.TrimSpace(braveKey) != "",
-		"tavily_key_set":                       strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":                     proxy,             // 独立出口代理(http/https/socks5)，空=直连
-		"global_proxy":                         s.m.GlobalProxy(), // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
-		"proxy_reconnect_max_attempts":         func() int { n, _ := s.proxyReconnectConfig(); return n }(),
-		"proxy_reconnect_interval_seconds":     func() int { _, d := s.proxyReconnectConfig(); return int(d / time.Second) }(),
-		"show_egress_ip":                       s.m.pg.GetBool(settingShowEgressIP, false),
-		"python_interpreter":                   strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
-		"workers":                              s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
-		"worker_pools":                         s.m.WorkerPools(),           // 非空时按池顺序绑定 worker 会话
-		"task_concurrency_enabled":             concOn,                      // 任务并发上限开关(默认关)
-		"task_concurrency_limit":               concLimit,                   // 同时运行任务上限(开启后默认5)
+		// 实验功能：多个浏览器 MCP 都可用时 Agent 优先用哪个（chrome|lightpanda）。
+		"browser_mcp_priority":             browserMCPPriority(s.m.pg),
+		"agent_traffic_binding":            s.m.pg.GetBool(settingAgentTrafficBinding, false),
+		"task_intelligence_enabled":        s.m.pg.GetBool(db.SettingTaskIntelligence, false),
+		db.SettingTaskAutoTitle:            s.m.pg.GetBool(db.SettingTaskAutoTitle, false),
+		db.SettingChatAutoTitle:            s.m.pg.GetBool(db.SettingChatAutoTitle, false),
+		db.SettingCredentialAgent:          s.m.pg.GetBool(db.SettingCredentialAgent, false),
+		db.SettingCredentialTraffic:        s.m.pg.GetBool(db.SettingCredentialAgent, false) && s.m.pg.GetBool(db.SettingCredentialTraffic, false),
+		"llm_record":                       s.m.LLMRecordEnabled(),
+		"web_search_enabled":               on,
+		"web_search_backend":               backend,
+		"brave_key_set":                    strings.TrimSpace(braveKey) != "",
+		"tavily_key_set":                   strings.TrimSpace(tavilyKey) != "",
+		"web_search_proxy":                 proxy,             // 独立出口代理(http/https/socks5)，空=直连
+		"global_proxy":                     s.m.GlobalProxy(), // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
+		"proxy_reconnect_max_attempts":     func() int { n, _ := s.proxyReconnectConfig(); return n }(),
+		"proxy_reconnect_interval_seconds": func() int { _, d := s.proxyReconnectConfig(); return int(d / time.Second) }(),
+		"show_egress_ip":                   s.m.pg.GetBool(settingShowEgressIP, false),
+		"python_interpreter":               strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
+		"workers":                          s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"worker_pools":                     s.m.WorkerPools(),           // 非空时按池顺序绑定 worker 会话
+		"task_concurrency_enabled":         concOn,                      // 任务并发上限开关(默认关)
+		"task_concurrency_limit":           concLimit,                   // 同时运行任务上限(开启后默认5)
 		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时
 		// 自动切到下一个配置。bind_fallback 仅在轮询开启时有意义(默认关)。
 		"llm_pool_enabled":       s.m.LLMPoolEnabled(),
@@ -3655,13 +3660,15 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		BrowserScreenshot   *bool `json:"browser_screenshot_enabled"`
 		ScreenshotTimestamp *bool `json:"browser_screenshot_timestamp_enabled"`
 		OpsecEnabled        *bool `json:"opsec_enabled"`
-		AgentTrafficBinding *bool `json:"agent_traffic_binding"`
-		TaskIntelligence    *bool `json:"task_intelligence_enabled"`
-		TaskAutoTitle       *bool `json:"task_auto_title_enabled"`
-		ChatAutoTitle       *bool `json:"chat_auto_title_enabled"`
-		CredentialAgent     *bool `json:"credential_agent_enabled"`
-		CredentialTraffic   *bool `json:"credential_traffic_binding"`
-		LLMRecord           *bool `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
+		// 实验功能：浏览器 MCP 优先级（chrome|lightpanda）。影响 Agent 运行时提示词。
+		BrowserMCPPriority  *string `json:"browser_mcp_priority"`
+		AgentTrafficBinding *bool   `json:"agent_traffic_binding"`
+		TaskIntelligence    *bool   `json:"task_intelligence_enabled"`
+		TaskAutoTitle       *bool   `json:"task_auto_title_enabled"`
+		ChatAutoTitle       *bool   `json:"chat_auto_title_enabled"`
+		CredentialAgent     *bool   `json:"credential_agent_enabled"`
+		CredentialTraffic   *bool   `json:"credential_traffic_binding"`
+		LLMRecord           *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
 		// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 		// are optional — omit (null) to leave a stored key untouched, send "" to clear.
 		WebSearchEnabled       *bool         `json:"web_search_enabled"`
@@ -3877,6 +3884,19 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
+	}
+	if req.BrowserMCPPriority != nil {
+		// 优先级只改变运行时提示词；仍走一次重建，保证已组装好的 Agent 也立刻换用新文案。
+		priority, err := normalizeBrowserMCPKind(*req.BrowserMCPPriority)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		if err := s.m.pg.SetSetting(settingBrowserMCPPriority, priority); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		changed = true
 	}
 	if req.TrafficCapture != nil {
 		if err := s.m.SetTrafficEnabled(*req.TrafficCapture); err != nil {
