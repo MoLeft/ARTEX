@@ -512,6 +512,8 @@ function ChatView({
   const agent = agents.find((a) => a.key === conv.agent_key);
   const currentProfileId = conv.llm_profile_id ?? null;
   const side = useSideQuestions(`/api/conversations/${conv.id}`);
+  const lastTurn = messages.findLast((a) => a.kind === "result" || a.kind === "user");
+  const canContinue = !running && lastTurn?.kind === "result" && lastTurn.is_error && lastTurn.summary.includes("model_error");
 
   async function changeProfile(id: number | null) {
     try {
@@ -816,6 +818,19 @@ function ChatView({
         </div>
       </ScrollArea>
 
+      {canContinue && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2 text-xs" role="status">
+          <span className="text-muted-foreground">模型调用失败，已完成的工具结果仍在记录中。核对后可继续这段会话。</span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={sending || uploading || !!input.trim()}
+            onClick={() => setInput("请从中断前的进度继续。先核对已完成的操作，不要重复执行有副作用的工具；如无法确认，请先询问我。")}
+          >
+            填写继续消息
+          </Button>
+        </div>
+      )}
       <Composer
         value={input}
         onChange={setInput}

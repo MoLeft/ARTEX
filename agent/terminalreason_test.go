@@ -135,6 +135,9 @@ func TestTerminalTextNonAbortReasons(t *testing.T) {
 	if !strings.Contains(summary, "model_error") || !strings.Contains(detail, "429 rate limited") {
 		t.Fatalf("model_error detail incomplete: %q\n%s", summary, detail)
 	}
+	if strings.Contains(detail, "重试用尽后意图标记为 blocked") || !strings.Contains(detail, "已完成的工具结果") {
+		t.Fatalf("model_error hint must describe recoverable progress without assuming a task intent: %s", detail)
+	}
 }
 
 func TestAbortCausesAreWellFormed(t *testing.T) {
