@@ -1237,6 +1237,7 @@ export interface PromptVersion {
 export interface AgentDetail {
   agent: Agent;
   prompt: string;
+  runtime_prompt_append?: string;
   variables: PromptVar[];
   versions: PromptVersion[];
   visibility: { mcp: number[]; skill: string[] };
@@ -1266,6 +1267,7 @@ export interface MCPServer {
   enabled: boolean;
   insecure?: boolean; // http: skip TLS cert verification (self-signed servers)
   tools?: string[]; // mcp_tools_cache (names only, for the count)
+  builtin?: boolean; // provided by the running version, not saved in PostgreSQL
 }
 
 export interface MCPTool {

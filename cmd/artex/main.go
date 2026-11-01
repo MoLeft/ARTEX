@@ -94,6 +94,7 @@ func run() int {
 	defer stop()
 	ctx, shutdown := shutdownContext(sigCtx)
 	defer shutdown(agent.AbortShutdown)
+	startLightpanda(ctx)
 
 	mgr, err := server.NewManager(*dataDir, *proxy)
 	if err != nil {

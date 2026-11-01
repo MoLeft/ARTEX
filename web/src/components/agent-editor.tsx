@@ -385,6 +385,12 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
 
           <Textarea className="font-mono text-xs" rows={16} value={prompt}
             placeholder="留空则使用内置默认提示词" onChange={(e) => setPrompt(e.target.value)} />
+          {detail?.runtime_prompt_append && (
+            <div className="rounded-md border bg-muted/30 p-3 text-xs">
+              <p className="font-medium">当前版本自动追加（只读，切回旧版会移除）</p>
+              <p className="mt-2 whitespace-pre-wrap text-muted-foreground">{detail.runtime_prompt_append.trim()}</p>
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-2">
             <Dialog>
@@ -596,7 +602,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         <div className="grid gap-2">
           {mcp.map((m) => (
             <label key={m.id} className="flex items-center gap-2 rounded-md border p-2 text-sm">
-              <Checkbox checked={mcpVisible.includes(m.id)} onCheckedChange={() => toggleMcp(m.id)} />
+              <Checkbox checked={mcpVisible.includes(m.id)} disabled={m.builtin} onCheckedChange={() => toggleMcp(m.id)} />
               {m.name}
               <span className="text-muted-foreground ml-auto text-xs">{m.transport}</span>
             </label>

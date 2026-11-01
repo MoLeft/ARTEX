@@ -10,7 +10,8 @@
 #   cp -r web/out server/webui/dist
 #   CGO_ENABLED=0 GOARCH=amd64 go build -tags embedui -o dist/amd64/artex ./cmd/artex
 #   docker build -t artex:local .
-FROM python:3.12-slim-bookworm
+FROM lightpanda/browser:1.0.2 AS lightpanda
+FROM python:3.12-slim-trixie
 ARG TARGETARCH
 # 常用工具：ripgrep / curl / vim，加一批 recon 常备件（按需增删）。
 # Node 从 NodeSource 装 22.x，与前端构建使用的主版本一致。
@@ -34,6 +35,7 @@ WORKDIR /app
 ENV TZ=Asia/Shanghai
 # 预编译好的对应架构二进制（dist/amd64/artex 或 dist/arm64/artex）
 COPY dist/${TARGETARCH}/artex /app/artex
+COPY --from=lightpanda /usr/bin/lightpanda /usr/bin/lightpanda
 # 守护启动脚本：进程退出后按退出码决定是否重新拉起，页面一键更新靠它完成换装。
 # 它同时负责把 SIGTERM 转发给 artex —— docker stop 只把信号发给 PID 1，
 # 不转发的话 artex 收不到、做不了优雅关闭，10 秒后被 SIGKILL 硬杀。

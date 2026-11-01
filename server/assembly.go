@@ -75,11 +75,16 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			mcpIDs, _ := pg.AgentVisible(a.ID, "mcp")
 			want := idSet(mcpIDs)
 			all, _ := pg.ListMCP()
+			if agentKey == "reporter" {
+				if m := lightpandaMCP(); m != nil {
+					all = append(all, m)
+				}
+			}
 			for _, m := range all {
-				if !m.Enabled {
+				if !m.Enabled || (m.Name == lightpandaReaderMCPName && agentKey != "reporter") {
 					continue
 				}
-				directVisible := want[m.ID]
+				directVisible := want[m.ID] || (agentKey == "reporter" && m.ID == lightpandaReaderMCPID)
 				skillGated := gated[m.Name]
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
@@ -96,6 +101,9 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 					continue
 				}
 				for _, t := range ts {
+					if m.Name == lightpandaReaderMCPName && !isReporterLightpandaTool(t.Name()) {
+						continue
+					}
 					// Playwright exposes the screenshot capability as a separate tool. Keep
 					// it opt-in so a normal browser MCP session does not unexpectedly send
 					// image payloads to the model or consume extra tokens.
