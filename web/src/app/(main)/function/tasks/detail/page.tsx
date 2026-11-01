@@ -5,7 +5,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, PauseIcon, PlayIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, PauseIcon, PlayIcon, RotateCcwIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { IntelligencePanel } from "@/components/intelligence-panel";
@@ -298,6 +298,18 @@ function TaskDetailInner() {
     }
   }
 
+  // 模型错误停机后的一键重试。后端 resume 会清掉失败计数与停机标记，并立刻
+  // 唤醒一轮规划；如果配置还没修好，这一轮会失败并把计数从 1 重新开始。
+  async function retryAfterLLMError() {
+    try {
+      await api.controlTask(id, "resume");
+      toast.success("已重新开始，正在再试一次");
+      await load();
+    } catch (e) {
+      toast.error("重试失败：" + (e as Error).message);
+    }
+  }
+
   async function archiveTask() {
     if (!task || archiving) return;
     setArchiving(true);
@@ -429,12 +441,26 @@ function TaskDetailInner() {
             {task.pause_reason === "paused_by_proxy" && <Button size="sm" variant="outline" onClick={() => api.testTaskProxy(task.id).then((r) => r.ok ? (toast.success("代理已恢复，任务将自动继续"), load()) : toast.error(r.error || "代理探测失败")).catch((e) => toast.error((e as Error).message))}>测试代理</Button>}
           </div>
         )}
+        {/* 模型错误停机 / 退避（LLM 重试第 6 层）。没修这台机器之前，任务会一直显示
+            「运行中」却什么都不推进，所以这里把真实原因和恢复动作摆在最显眼的位置。 */}
+        {!task.paused && (task.llm_blocked_reason || (task.llm_next_attempt_at ?? 0) > 0) && (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-red-600">
+            <span className="max-w-full truncate" title={task.llm_blocked_reason || undefined}>
+              {task.llm_blocked_reason
+                ? `模型错误，已停止自动重试：${task.llm_blocked_reason}`
+                : `模型调用失败，${new Date((task.llm_next_attempt_at ?? 0) * 1000).toLocaleTimeString("zh-CN")} 后自动重试（已失败 ${task.llm_failure_count ?? 0} 次）`}
+            </span>
+            <Button size="sm" variant="outline" onClick={() => void retryAfterLLMError()}>
+              <RotateCcwIcon data-icon="inline-start" />
+              重试
+            </Button>
+          </div>
+        )}
         {task.remark ? (
           <p className="truncate text-xs text-muted-foreground" title={task.remark}>
             备注：{task.remark}
           </p>
-        ) : null}
-        {/* Tabs */}
+        ) : null}        {/* Tabs */}
         <div className="no-scrollbar min-w-0 overflow-x-auto">
           <TabsList variant="default" className="min-w-max">
             {TABS.map((t) => (

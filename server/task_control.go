@@ -184,6 +184,13 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 		if err != nil {
 			return out, err
 		}
+		// 模型错误停机之后，用户点「继续」等于断言配置已经修好：这里必须清掉
+		// 停机标记和退避计数，否则 admit 唤醒的那一轮会被 planner 的门挡回去，
+		// 用户看到「已恢复」却没有任何规划轮。清完再唤醒一次，跳过那次空唤醒。
+		if clearErr := s.clearTaskLLMBlock(t); clearErr != nil {
+			return out, clearErr
+		}
+		t.Notify()
 		out.Queued = queued
 		out.Status = map[bool]string{true: "queued", false: "running"}[queued]
 	default:

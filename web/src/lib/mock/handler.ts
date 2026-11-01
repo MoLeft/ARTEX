@@ -957,13 +957,17 @@ function controlMockTask(id: string, action: "pause" | "resume"): BatchControlIt
     }
     task.run_segment_started_unix = 0;
   } else {
-    if (!task.paused && task.status !== "paused") {
+    // 模型错误停机不是用户暂停，但「继续」同样是它的恢复动作，和真实后端一致。
+    if (!task.paused && task.status !== "paused" && !task.llm_blocked_reason) {
       return { id, ok: false, status: task.status, error: "任务未暂停" };
     }
     task.paused = false;
     task.queued = false;
     task.status = "running";
     task.engine_mode = "exploring";
+    task.llm_blocked_reason = "";
+    task.llm_failure_count = 0;
+    task.llm_next_attempt_at = 0;
     task.run_segment_started_unix = Math.floor(Date.now() / 1000);
   }
   return { id, ok: true, status: task.status, queued: false };

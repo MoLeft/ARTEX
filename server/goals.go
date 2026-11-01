@@ -172,7 +172,9 @@ func (s *Server) admitTaskWhenScheduledWithGenerationChecked(t *Task, mode strin
 		if isTerminalStatus(lifecycle.Status) {
 			return false, fmt.Errorf("终态任务不能执行继续")
 		}
-		if !lifecycle.Paused {
+		// 模型错误停机(LLM 重试第 6 层)不是用户暂停，但同样意味着任务停在原地，
+		// 「继续」就是它的恢复动作，所以按「已暂停」等价处理。
+		if !lifecycle.Paused && !taskLLMBlocked(t) {
 			return false, fmt.Errorf("仅已暂停的任务可以继续")
 		}
 		if requiredReason != "" && lifecycle.PauseReason != requiredReason {

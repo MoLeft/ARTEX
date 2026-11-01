@@ -329,3 +329,56 @@ func TestRecordPlannerFailureBacksOffThenBlocks(t *testing.T) {
 		t.Fatal("the blocking round must not leave a retry time behind")
 	}
 }
+
+// A blocked task is not user-paused, but "continue" is still its recovery
+// action. Before this wiring, resume answered "仅已暂停的任务可以继续", so the
+// banner's retry button could never work.
+func TestResumeClearsLLMBlock(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable: %v", err)
+	}
+	defer m.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dir := t.TempDir()
+	s := New(ctx, m, dir, dir, dir)
+
+	task, err := m.CreateTask("resume blocked", "goal", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := strconv.ParseInt(task.ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.pg.DeleteTask(n) }()
+
+	s.engine.recordPlannerFailure(task, errors.New("openai: status 402: insufficient_quota"))
+	h, err := m.pg.LLMHealth(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.IsBlocked() {
+		t.Fatal("setup: task should be blocked")
+	}
+	if !s.engine.plannerLLMGated(task.ID) {
+		t.Fatal("setup: planner should be gated")
+	}
+
+	if _, err := s.applyTaskControl(task, "resume"); err != nil {
+		t.Fatalf("resume on a blocked task must be allowed: %v", err)
+	}
+
+	h, err = m.pg.LLMHealth(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.IsBlocked() || h.Failures != 0 || h.NextAttempt != nil {
+		t.Fatalf("resume did not clear the LLM block: %+v", h)
+	}
+	if s.engine.plannerLLMGated(task.ID) {
+		t.Fatal("resume must reopen the planner gate")
+	}
+}

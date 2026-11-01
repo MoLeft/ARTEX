@@ -21,6 +21,35 @@ import (
 //
 // 计数与下次时间都落库，所以重启不会把已经烧掉的次数清零。
 
+// taskLLMBlocked reports whether layer 6 stopped this task's automatic retries.
+// Such a task is not user-paused but is equally stopped, so "continue" is its
+// recovery action too.
+func taskLLMBlocked(t *Task) bool {
+	return t != nil && strings.TrimSpace(t.llmStateSnapshot().BlockedReason) != ""
+}
+
+// clearTaskLLMBlock wipes the layer-6 state for one task and mirrors it into the
+// live copy. Called when the user explicitly resumes/retries: pressing continue
+// is the operator asserting the model config is fixed, and leaving the gate shut
+// would make the task look recovered while never planning again.
+func (s *Server) clearTaskLLMBlock(t *Task) error {
+	if t == nil || s.m == nil || s.m.pg == nil {
+		return nil
+	}
+	if st := t.llmStateSnapshot(); st.BlockedReason == "" && st.FailureCount == 0 && st.NextAttemptAt == 0 {
+		return nil
+	}
+	n, err := parseTaskID(t.ID)
+	if err != nil {
+		return err
+	}
+	if err := s.m.pg.ClearLLMFailure(n); err != nil {
+		return err
+	}
+	t.setLLMHealth(0, "", 0, "")
+	return nil
+}
+
 // classifyPlannerFailure maps a planner error onto the two persisted kinds plus
 // a human-readable reason. The default is transient: an unclassified failure is
 // more likely a blip than a permanent misconfiguration, and backing off is the
