@@ -1259,6 +1259,7 @@ export interface AgentDetail {
 export interface MCPServer {
   id: number;
   name: string;
+  display_name?: string; // built-in Lightpanda label; tool namespace stays fixed
   transport: "stdio" | "http" | "sse";
   command?: string;
   args: string[];

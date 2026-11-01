@@ -893,8 +893,8 @@ func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 404, "Lightpanda MCP 未运行")
 			return
 		}
-		if err := pg.SetBool(settingLightpandaEnabled, m.Enabled); err != nil {
-			writeErr(w, 500, err.Error())
+		if err := saveLightpandaConfig(r.Context(), pg, &m); err != nil {
+			writeErr(w, 400, err.Error())
 			return
 		}
 		writeJSON(w, 200, map[string]any{"id": lightpandaReaderMCPID})
@@ -961,11 +961,31 @@ func (s *Server) pgRefreshMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	id, _ := pathInt(r, "id")
 	if id == lightpandaReaderMCPID {
-		if lightpandaMCP(pg) == nil {
+		m := lightpandaMCP(pg)
+		if m == nil {
 			writeErr(w, 404, "Lightpanda MCP 未运行")
 			return
 		}
-		writeJSON(w, 200, map[string]any{"tools": lightpandaTools(pg)})
+		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+		defer cancel()
+		cl, err := connectMCP(ctx, m)
+		if err != nil {
+			writeErr(w, 502, "工具发现失败："+err.Error())
+			return
+		}
+		defer cl.Close()
+		ts, err := cl.Tools(ctx)
+		if err != nil {
+			writeErr(w, 502, "工具发现失败："+err.Error())
+			return
+		}
+		tools := make([]db.MCPTool, 0, len(ts))
+		for _, t := range ts {
+			if isLightpandaReadTool(t.Name()) {
+				tools = append(tools, db.MCPTool{Name: t.Name(), Description: t.Description()})
+			}
+		}
+		writeJSON(w, 200, map[string]any{"tools": tools})
 		return
 	}
 	all, err := pg.ListMCP()

@@ -63,6 +63,36 @@ func TestBuiltinMCPControls(t *testing.T) {
 	if browserID == 0 || lightpanda == nil || lightpanda["builtin"] != true || lightpanda["enabled"] != true {
 		t.Fatalf("missing built-in MCPs: browser=%v Lightpanda=%v", browserID, lightpanda)
 	}
+	if lightpanda["display_name"] != "Lightpanda" {
+		t.Fatalf("unexpected Lightpanda label: %v", lightpanda["display_name"])
+	}
+	if code, out := call(http.MethodPost, "/api/mcp", map[string]any{
+		"id": -1, "name": lightpandaReaderMCPName, "display_name": "My Lightpanda",
+		"transport": "stdio", "command": "lightpanda", "args": []string{"mcp"},
+		"env": map[string]string{"TEST": "ok"}, "enabled": true,
+	}); code != 200 {
+		t.Fatalf("save Lightpanda stdio config: %d %v", code, out)
+	}
+	configured := lightpandaMCP(m.pg)
+	if configured.DisplayName != "My Lightpanda" || configured.Transport != "stdio" || configured.Command != "lightpanda" || string(configured.Args) != `["mcp"]` {
+		t.Fatalf("Lightpanda stdio config not retained: %+v", configured)
+	}
+	if code, out := call(http.MethodPost, "/api/mcp", map[string]any{
+		"id": -1, "name": lightpandaReaderMCPName, "display_name": "Lightpanda",
+		"transport": "http", "url": "http://127.0.0.1:9223/mcp",
+		"env": map[string]string{"Host": "127.0.0.1"}, "enabled": true,
+	}); code != 200 {
+		t.Fatalf("save Lightpanda HTTP config: %d %v", code, out)
+	}
+	if configured = lightpandaMCP(m.pg); configured.URL != "http://127.0.0.1:9223/mcp" || configured.DisplayName != "Lightpanda" {
+		t.Fatalf("Lightpanda HTTP config not retained: %+v", configured)
+	}
+	if code, _ := call(http.MethodPost, "/api/mcp", map[string]any{
+		"id": -1, "name": lightpandaReaderMCPName, "display_name": "Bad",
+		"transport": "http", "url": "file:///etc/passwd", "enabled": true,
+	}); code != 400 || lightpandaMCP(m.pg).URL != configured.URL {
+		t.Fatalf("invalid Lightpanda URL changed saved config: %d", code)
+	}
 	if err := m.pg.SetBool(settingBrowserScreenshot, true); err != nil {
 		t.Fatal(err)
 	}
