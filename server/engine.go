@@ -335,6 +335,10 @@ func (e *Engine) Resume(t *Task) {
 		return
 	}
 	e.paused.Delete(t.ID)
+	// 用户明确要求继续 → 清掉第 6 层的停机标记。用户按继续的前提就是「我已经把
+	// 模型配置改好了」，此时还留着 blocked 会让 planner 门一直关着，任务看起来
+	// 恢复了却永远不规划。
+	e.clearPlannerFailure(t)
 	t.Notify()
 }
 
@@ -907,6 +911,12 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if e.IsDeleting(t.ID) {
 			return
 		}
+		// 模型错误退避中，或已停止自动重试(第 6 层)。放在这里而不是心跳分支里，
+		// 是因为边沿唤醒(worker 结束 / finding)同样会走到这一步——两种来源都必须
+		// 被同一个门拦住，否则退避期间一次 worker 收尾就能把请求再打出去。
+		if e.plannerLLMGated(t.ID) {
+			return
+		}
 		// terminal task (goals all met → done, or failed): the run is over. A
 		// resume/nudge — e.g. auto-resume of the active task on restart — must NOT
 		// re-plan (it would burn an LLM round and re-confirm a settled result).
@@ -967,12 +977,21 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		e.BeginLLMCall(t.ID)
 		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
 		e.EndLLMCall(t.ID)
+		if err == nil {
+			// 一轮真正跑通 → 连续失败计数清零。放在 switch 之前，因为 met 与
+			// default 都是成功。
+			e.clearPlannerFailure(t)
+		}
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 规划出错: %v", t.ID, err)
 			if e.proxyFailure != nil && isProxyFailure(err) {
+				// 出口代理故障有自己的探测与恢复路径；再叠一层模型错误退避会让
+				// 两个状态机互相打脸。
 				e.proxyFailure(t.ID, err)
+				break
 			}
+			e.recordPlannerFailure(t, err)
 		case met:
 			log.Printf("[planner] task %s 判定目标达成: %s", t.ID, reason)
 			// 所有目标达成 → 持久化任务状态为 done（前端 DTO 会优先展示该终态）。
@@ -1000,7 +1019,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 			runRound("heartbeat")
 		}
 		// 每次唤醒(边沿或心跳)后重臂心跳:任意规划触发都重算这段静置计时。
-		resetPlannerTimer(heartbeat, interval)
+		// 退避待命时按 next_attempt_at 精确唤醒——否则 1 分钟的退避会被 10 分钟的
+		// 心跳粒度悄悄拉长成 10 分钟，退避梯度就失去意义了。
+		resetPlannerTimer(heartbeat, e.plannerNextWake(t.ID, interval))
 	}
 }
 

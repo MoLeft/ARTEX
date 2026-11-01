@@ -334,7 +334,9 @@ function TaskDetailInner() {
   if (archiveLifecycleEligible && task.archive_blocked_by_task_id) {
     archiveDisabledReason = `任务被未归档任务 #${task.archive_blocked_by_task_id} 直接继承，请先归档依赖任务`;
   }
-  const engineMode = paused ? "paused" : (task.engine_mode ?? "idle");
+  // 模型错误停机优先于 idle：引擎线程还活着，但它不会再发起规划请求。显示「空闲」
+  // 会让人以为任务在等活干，实际是在等配置修好。
+  const engineMode = paused ? "paused" : task.llm_blocked_reason ? "llm_blocked" : (task.engine_mode ?? "idle");
   let controlVariant: "default" | "secondary" | "outline" = "outline";
   let controlIcon = <PauseIcon data-icon="inline-start" />;
   let controlLabel = "暂停";

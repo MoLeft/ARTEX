@@ -51,6 +51,9 @@ const task: Record<string, StatusMeta> = {
   queued: { label: "排队中", tone: "amber" },
   running: { label: "运行中", tone: "blue" },
   paused: { label: "已暂停", tone: "amber" },
+  // llm_blocked = 模型错误把自动重试停掉了。既不是「运行中」（不会再发请求），
+  // 也不是「已暂停」（用户没主动停），所以单列，红色以示需要人工处理。
+  llm_blocked: { label: "模型错误已停止", tone: "red" },
   done: { label: "已完成", tone: "green" },
   failed: { label: "失败", tone: "red" },
   timeout: { label: "已超时", tone: "amber" },
@@ -87,6 +90,9 @@ const engine: Record<string, StatusMeta> = {
   exploring: { label: "探索中", tone: "blue" },
   paused: { label: "已暂停", tone: "amber" },
   stalled: { label: "停滞", tone: "red" },
+  // 模型错误停机：引擎进程还在，但不会再发起规划请求，所以既不是「探索中」
+  // 也不是「空闲」。
+  llm_blocked: { label: "模型错误", tone: "red" },
   idle: { label: "空闲", tone: "neutral" },
 };
 

@@ -568,6 +568,18 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS active_run_seconds BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS run_segment_started_at TIMESTAMPTZ;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pause_reason TEXT NOT NULL DEFAULT '';
+-- planner 连续规划失败的持久化状态(LLM 重试第 6 层,见 db/task_llm_health.go)。
+-- 落库而不是只放内存,否则重启后计数归零,等于把已经烧掉的失败次数再烧一遍。
+--   llm_failure_count   连续失败次数;任何一次成功规划过后清零
+--   llm_failure_kind    quota(额度耗尽,不重试) | transient(瞬时,退避重试)
+--   llm_next_attempt_at 下次允许唤醒 planner 的时刻;为空=不限制
+--   llm_blocked_reason  非空=已停止自动重试,等用户修好配置后手动继续
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_failure_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_failure_kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_next_attempt_at TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS llm_blocked_reason TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_tasks_llm_retry ON tasks(llm_next_attempt_at)
+    WHERE deleted_at IS NULL AND llm_next_attempt_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category_id, created_at DESC)
     WHERE deleted_at IS NULL AND category_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_pinned ON tasks(pinned_at DESC)

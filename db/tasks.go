@@ -59,6 +59,12 @@ type Task struct {
 	// WorkerCount is the per-task concurrent work-agent count. 0 means use the
 	// global settings.workers default when the engine starts this task.
 	WorkerCount int `json:"worker_count"`
+	// 连续规划失败的持久化状态(LLM 重试第 6 层)。见 db/task_llm_health.go。
+	// 只由 planner 这一层累加；worker 的 model_error 走意图重跑那套，互不干扰。
+	LLMFailureCount  int        `json:"llm_failure_count,omitempty"`
+	LLMFailureKind   string     `json:"llm_failure_kind,omitempty"`
+	LLMNextAttemptAt *time.Time `json:"llm_next_attempt_at,omitempty"`
+	LLMBlockedReason string     `json:"llm_blocked_reason,omitempty"`
 }
 
 // TaskDeleteResult reports optional related-data cleanup performed in the same
@@ -406,11 +412,11 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), remark, category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), COALESCE(worker_count,0), first_run_at, deadline_at, COALESCE(active_run_seconds,0), run_segment_started_at`
+description, goal, exploration_id, status, paused, COALESCE(pause_reason,''), queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), COALESCE(worker_count,0), first_run_at, deadline_at, COALESCE(active_run_seconds,0), run_segment_started_at, COALESCE(llm_failure_count,0), COALESCE(llm_failure_kind,''), llm_next_attempt_at, COALESCE(llm_blocked_reason,'')`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.Remark, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.WorkerCount, &t.FirstRunAt, &t.DeadlineAt, &t.ActiveRunSeconds, &t.RunSegmentStartedAt); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.Remark, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.PauseReason, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.WorkerCount, &t.FirstRunAt, &t.DeadlineAt, &t.ActiveRunSeconds, &t.RunSegmentStartedAt, &t.LLMFailureCount, &t.LLMFailureKind, &t.LLMNextAttemptAt, &t.LLMBlockedReason); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil

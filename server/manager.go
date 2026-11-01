@@ -60,9 +60,15 @@ type Task struct {
 	LLMChainRevision   int64   `json:"-"`
 	LLMFailoverState   string  `json:"llm_failover_state,omitempty"`
 	LLMFailoverReason  string  `json:"llm_failover_reason,omitempty"`
-	SourceTaskIDs      []int64 `json:"source_task_ids,omitempty"`
-	CompanyIDs         []int64 `json:"company_ids,omitempty"`
-	Status             string  `json:"status"` // persisted lifecycle status (done/failed/timeout 为终态；空/其它则由运行态推导)
+	// planner 连续失败的持久化状态(LLM 重试第 6 层)。由 DB 恢复、由 engine 记账，
+	// 只用于展示与门控，不参与业务判断。见 server/task_llm_health.go。
+	LLMFailureCount  int     `json:"llm_failure_count,omitempty"`
+	LLMFailureKind   string  `json:"llm_failure_kind,omitempty"`
+	LLMNextAttemptAt int64   `json:"llm_next_attempt_at,omitempty"` // unix 秒;0=无待命重试
+	LLMBlockedReason string  `json:"llm_blocked_reason,omitempty"`
+	SourceTaskIDs    []int64 `json:"source_task_ids,omitempty"`
+	CompanyIDs       []int64 `json:"company_ids,omitempty"`
+	Status           string  `json:"status"` // persisted lifecycle status (done/failed/timeout 为终态；空/其它则由运行态推导)
 	// 任务级超时(见 docs/任务级超时与收尾设计.md)。DeadlineAt/FirstRunAt 为 unix 秒,0=未设/未运行。
 	TimeoutSeconds       int                    `json:"timeout_seconds"`
 	PlanHeartbeatSeconds int                    `json:"plan_heartbeat_seconds"` // planner 心跳触发间隔(秒)
@@ -190,6 +196,12 @@ type taskLLMState struct {
 	ChainRevision  int64
 	FailoverState  string
 	FailoverReason string
+	// 第 6 层：planner 调度级失败状态。和链状态放在同一份快照里，因为它们是同一件
+	// 事的两个阶段：链上的配置全都不可用(chain_exhausted) → 调度层开始退避、最终停止。
+	FailureCount  int
+	FailureKind   string
+	NextAttemptAt int64
+	BlockedReason string
 }
 
 func cloneInt64Ptr(value *int64) *int64 {
@@ -210,7 +222,22 @@ func (t *Task) llmStateSnapshot() taskLLMState {
 		ChainRevision:  t.LLMChainRevision,
 		FailoverState:  t.LLMFailoverState,
 		FailoverReason: t.LLMFailoverReason,
+		FailureCount:   t.LLMFailureCount,
+		FailureKind:    t.LLMFailureKind,
+		NextAttemptAt:  t.LLMNextAttemptAt,
+		BlockedReason:  t.LLMBlockedReason,
 	}
+}
+
+// setLLMHealth mirrors the persisted layer-6 state into the live task so the
+// status endpoint and the DTO don't have to hit PG on every poll.
+func (t *Task) setLLMHealth(count int, kind string, nextAttempt int64, blockedReason string) {
+	t.llmMu.Lock()
+	defer t.llmMu.Unlock()
+	t.LLMFailureCount = count
+	t.LLMFailureKind = kind
+	t.LLMNextAttemptAt = nextAttempt
+	t.LLMBlockedReason = blockedReason
 }
 
 func (t *Task) setLLMState(profileID, activeID *int64, profileIDs []int64, revision int64, state, reason string) bool {
@@ -1100,6 +1127,8 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		LLMProfileIDs: append([]int64(nil), pt.LLMProfileIDs...), ActiveLLMProfileID: pt.ActiveLLMProfileID,
 		LLMChainRevision: pt.LLMChainRevision,
 		LLMFailoverState: pt.LLMFailoverState, LLMFailoverReason: pt.LLMFailoverReason,
+		LLMFailureCount: pt.LLMFailureCount, LLMFailureKind: pt.LLMFailureKind,
+		LLMNextAttemptAt: unixOrZero(pt.LLMNextAttemptAt), LLMBlockedReason: pt.LLMBlockedReason,
 		SourceTaskIDs:  append([]int64(nil), pt.SourceTaskIDs...),
 		CompanyIDs:     append([]int64(nil), pt.CompanyIDs...),
 		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds,
@@ -1399,6 +1428,18 @@ func (m *Manager) SetTaskPaused(id string, paused bool) error {
 		})
 	}
 	m.mu.Unlock()
+	if !paused {
+		// 恢复 = 用户断言配置已经修好。把第 6 层的停机标记一起清掉，否则 planner
+		// 的门一直关着，任务看起来恢复了却永远不会再规划一轮。
+		if clearErr := m.pg.ClearLLMFailure(n); clearErr != nil {
+			return clearErr
+		}
+		m.mu.Lock()
+		if t := m.tasks[id]; t != nil {
+			t.setLLMHealth(0, "", 0, "")
+		}
+		m.mu.Unlock()
+	}
 	return nil
 }
 

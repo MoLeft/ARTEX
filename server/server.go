@@ -1189,16 +1189,22 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	last := s.engine.LastActivity(t.ID)
 	paused := s.engine.IsPaused(t.ID)
 	activeCalls := s.engine.ActiveLLMCalls(t.ID)
-	running := s.engine.ReadyFor(t) && s.engine.Started(t.ID) && !paused
+	llmHealth := t.llmStateSnapshot()
+	// 模型错误把自动重试停掉了：引擎的 goroutine 还活着，但它不会再发起任何规划
+	// 请求。把它算进 running 会让界面显示「运行中」，用户据此以为任务在推进。
+	blocked := llmHealth.BlockedReason != ""
+	running := s.engine.ReadyFor(t) && s.engine.Started(t.ID) && !paused && !blocked
 	// A live event-driven engine with no work is healthy idle. Only a persisted
 	// running intent without any corresponding LLM call can be considered stalled.
 	stalled := running && activeCalls == 0 && inFlight > 0 && last > 0 && time.Now().Unix()-last > 120
 
-	// engine_mode follows the spec enum (exploring|paused|stalled|idle).
+	// engine_mode follows the spec enum (exploring|paused|stalled|llm_blocked|idle).
 	engineMode := "idle"
 	switch {
 	case paused:
 		engineMode = "paused"
+	case blocked:
+		engineMode = "llm_blocked"
 	case stalled:
 		engineMode = "stalled"
 	case running && activeCalls > 0:
@@ -1215,8 +1221,13 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		"llm_in_flight": activeCalls,
 		"last_activity": last,
 		"stalled":       stalled,
-		"goals_total":   st[db.KindGoal],
-		"goals_met":     goalsMet,
+		// 第 6 层：模型错误导致的停机 / 退避。前端据此把「运行中」换成实际状态。
+		"llm_blocked":         blocked,
+		"llm_blocked_reason":  llmHealth.BlockedReason,
+		"llm_failure_count":   llmHealth.FailureCount,
+		"llm_next_attempt_at": llmHealth.NextAttemptAt,
+		"goals_total":         st[db.KindGoal],
+		"goals_met":           goalsMet,
 	}
 	writeJSON(w, 200, out)
 }
@@ -1269,6 +1280,10 @@ func (s *Server) resolvedTaskStatus(t *Task) string {
 		return "queued"
 	case lifecycle.Paused || s.engine.IsPaused(t.ID):
 		return "paused"
+	case t.llmStateSnapshot().BlockedReason != "":
+		// 模型错误把自动重试停掉了。这不是用户暂停（不能说「继续」就能跑），也
+		// 不是运行中（不会再发起请求），所以单列一个状态：配置修好后由用户恢复。
+		return "llm_blocked"
 	case t.llmStateSnapshot().FailoverState == "chain_exhausted" && s.engine.Started(t.ID):
 		// LLM readiness is an execution dependency, not lifecycle state. Keeping
 		// an exhausted task running lets the user edit/reset its chain directly.

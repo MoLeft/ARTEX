@@ -65,11 +65,17 @@ type TaskDTO struct {
 	ActiveLLMProfileID *int64             `json:"active_llm_profile_id,omitempty"`
 	LLMFailoverState   string             `json:"llm_failover_state"`
 	LLMFailoverReason  string             `json:"llm_failover_reason,omitempty"`
-	SourceTaskIDs      []string           `json:"source_task_ids"`
-	ArchiveBlockedBy   string             `json:"archive_blocked_by_task_id,omitempty"`
-	CompanyIDs         []int64            `json:"company_ids"`
-	CoverageEnabled    bool               `json:"coverage_enabled"` // 资产覆盖度功能开关(创建时定)
-	WorkerCount        int                `json:"worker_count"`     // 本任务 Worker 数;0=用全局默认
+	// 第 6 层：planner 调度级失败状态。BlockedReason 非空表示已停止自动重试，
+	// 需要用户修好模型配置后手动继续；NextAttemptAt 非空表示正在退避等待。
+	LLMFailureCount  int      `json:"llm_failure_count,omitempty"`
+	LLMFailureKind   string   `json:"llm_failure_kind,omitempty"`
+	LLMNextAttemptAt int64    `json:"llm_next_attempt_at,omitempty"`
+	LLMBlockedReason string   `json:"llm_blocked_reason,omitempty"`
+	SourceTaskIDs    []string `json:"source_task_ids"`
+	ArchiveBlockedBy string   `json:"archive_blocked_by_task_id,omitempty"`
+	CompanyIDs       []int64  `json:"company_ids"`
+	CoverageEnabled  bool     `json:"coverage_enabled"` // 资产覆盖度功能开关(创建时定)
+	WorkerCount      int      `json:"worker_count"`     // 本任务 Worker 数;0=用全局默认
 }
 
 type ProxyReconnectDTO struct {
@@ -160,6 +166,10 @@ func taskDTO(t *Task, status string) TaskDTO {
 		ActiveLLMProfileID: llmState.ActiveID,
 		LLMFailoverState:   llmState.FailoverState,
 		LLMFailoverReason:  llmState.FailoverReason,
+		LLMFailureCount:    llmState.FailureCount,
+		LLMFailureKind:     llmState.FailureKind,
+		LLMNextAttemptAt:   llmState.NextAttemptAt,
+		LLMBlockedReason:   llmState.BlockedReason,
 		SourceTaskIDs:      sourceIDs,
 		CompanyIDs:         lifecycle.CompanyIDs,
 		CoverageEnabled:    t.CoverageEnabled,

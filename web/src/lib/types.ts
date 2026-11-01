@@ -1,8 +1,8 @@
 // ARTEX domain model — types used across the UI.
 // Derived from the functional spec (section 7: 关键数据形状).
 
-export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout";
-export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
+export type TaskStatus = "created" | "queued" | "running" | "paused" | "llm_blocked" | "done" | "failed" | "timeout";
+export type EngineMode = "exploring" | "paused" | "stalled" | "llm_blocked" | "idle";
 
 // Keep these limits aligned with db.MaxTaskRemarkRunes and db.MaxTaskWorkerCount.
 export const MAX_TASK_REMARK_RUNES = 2000;
@@ -59,6 +59,12 @@ export interface Task {
   active_llm_profile_id?: number; // profile used by the next LLM call
   llm_failover_state?: "default" | "ready" | "chain_exhausted" | string;
   llm_failover_reason?: string;
+  // 模型错误停止/退避（第 6 层）。llm_blocked_reason 非空 = 已停止自动重试，需要先
+  // 修好配置再手动继续；llm_next_attempt_at 非空 = 正在退避等待下一次唤醒。
+  llm_failure_count?: number;
+  llm_failure_kind?: "permanent" | "transient" | string;
+  llm_next_attempt_at?: number;
+  llm_blocked_reason?: string;
   source_task_ids?: string[]; // directly related tasks inherited as read-only context
   archive_blocked_by_task_id?: string; // live direct dependent that must be archived first
   company_ids?: number[]; // associated company scopes; current company assets join the task at creation

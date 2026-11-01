@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// LLM 重试策略：五层重试的「次数 + 间隔」全局配置，见 docs/LLM重试设计.md。
+// LLM 重试策略：六层重试的「次数 + 间隔」全局配置，见 docs/LLM重试设计.md。
 // 存在 settings 表的一个 JSON 值里 —— 它是整机一份的运行参数，不值得为它开一张表；
 // 读取走内置默认兜底，所以键不存在(全新库/从未配置过)时行为与写死常量时代完全一致。
 
@@ -91,12 +91,19 @@ type LLMRetryPolicy struct {
 	Breaker RetryRule `json:"breaker"`
 	// Intent：worker 以 model_error 收场后的整条意图重跑。默认 2 次、固定 3s。
 	Intent RetryRule `json:"intent"`
+	// Planner：planner 连续规划失败后的退避与暂停，即「上一层调用失败之后，还要不要
+	// 发起下一次调用」。前面五层都只管一次调用内部，管不到 planner 心跳的周期性唤醒，
+	// 所以额度耗尽后仍会每 10 分钟原样再来一轮。
+	//   Attempts   连续几次瞬时失败后停止自动重试(默认 5；-1=只退避不停止)
+	//   IntervalMS 首次退避(0=默认 1min，之后按 2x 递增，封顶 30min)
+	// 额度耗尽不走退避，直接停止——额度不会自己回来。
+	Planner RetryRule `json:"planner"`
 }
 
 // Clamped returns the policy with every rule clamped.
 func (p LLMRetryPolicy) Clamped() LLMRetryPolicy {
 	p.Connect, p.Empty, p.Stream = p.Connect.Clamped(), p.Empty.Clamped(), p.Stream.Clamped()
-	p.Breaker, p.Intent = p.Breaker.Clamped(), p.Intent.Clamped()
+	p.Breaker, p.Intent, p.Planner = p.Breaker.Clamped(), p.Intent.Clamped(), p.Planner.Clamped()
 	return p
 }
 

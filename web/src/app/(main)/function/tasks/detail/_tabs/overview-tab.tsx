@@ -967,6 +967,26 @@ export function OverviewTab({ taskId }: { taskId: string }) {
               </div>
             </div>
           ) : null}
+          {/* 模型错误停机 / 退避（LLM 重试第 6 层）。这一块存在的意义是让「运行中」
+              不再等于「在推进」：退避时给出下次时间，停机时说明为什么停、怎么恢复。 */}
+          {task?.llm_blocked_reason || (task?.llm_next_attempt_at ?? 0) > 0 ? (
+            <div className="col-span-2 space-y-1 rounded-md border border-red-500/30 bg-red-500/5 p-3 sm:col-span-4">
+              <div className="text-sm font-medium text-red-600 dark:text-red-400">
+                {task?.llm_blocked_reason ? "模型错误，已停止自动重试" : "模型调用失败，等待自动重试"}
+              </div>
+              {task?.llm_blocked_reason ? (
+                <div className="text-xs break-all text-muted-foreground">{task.llm_blocked_reason}</div>
+              ) : (
+                <div className="text-xs text-muted-foreground">
+                  连续失败 {task?.llm_failure_count ?? 0} 次
+                  {task?.llm_next_attempt_at
+                    ? `，下次重试 ${new Date(task.llm_next_attempt_at * 1000).toLocaleTimeString("zh-CN")}`
+                    : ""}
+                </div>
+              )}
+              <div className="text-xs text-muted-foreground">修好模型配置后点「继续」恢复；继续会清零失败计数。</div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
