@@ -85,6 +85,54 @@ func TestBrowserPoolWaitsAndForceCloseReleasesSlot(t *testing.T) {
 	}
 }
 
+func TestBrowserPoolWaiterCannotBeBypassed(t *testing.T) {
+	p := newBrowserPool(nil)
+	p.setLimit(browserMCPKindChrome, 1)
+	first, err := p.acquire(context.Background(), browserMCPKindChrome, "first", agent.RunInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	oldest := make(chan *browserLease, 1)
+	go func() {
+		lease, _ := p.acquire(waitCtx, browserMCPKindChrome, "oldest", agent.RunInfo{})
+		oldest <- lease
+	}()
+	deadline := time.Now().Add(time.Second)
+	for p.status()[0].Waiting != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if p.status()[0].Waiting != 1 {
+		t.Fatal("first waiter was not queued")
+	}
+	// The released slot is visible before the awakened waiter runs.
+	p.mu.Lock()
+	delete(p.active, first.id)
+	p.mu.Unlock()
+	lateCtx, cancelLate := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelLate()
+	late, err := p.acquire(lateCtx, browserMCPKindChrome, "late", agent.RunInfo{})
+	if late != nil {
+		late.Close()
+		t.Fatal("new arrival bypassed the queued waiter")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("late arrival should wait, got %v", err)
+	}
+	p.setLimit(browserMCPKindChrome, 1)
+	select {
+	case lease := <-oldest:
+		if lease == nil {
+			t.Fatal("oldest waiter did not get the released slot")
+		}
+		defer lease.Close()
+	case <-waitCtx.Done():
+		t.Fatal("oldest waiter never resumed")
+	}
+}
+
 func TestLightpandaCloseAndExtraSessionLimit(t *testing.T) {
 	p := newBrowserPool(nil)
 	p.setLimit(browserMCPKindLightpanda, 1)
@@ -127,6 +175,55 @@ func TestBrowserPoolCanceledWaiter(t *testing.T) {
 	}
 	if p.status()[1].Waiting != 0 {
 		t.Fatal("canceled waiter remained queued")
+	}
+}
+
+func TestBrowserPoolCanceledHeadLetsNextWaiterThrough(t *testing.T) {
+	p := newBrowserPool(nil)
+	p.setLimit(browserMCPKindChrome, 1)
+	first, err := p.acquire(context.Background(), browserMCPKindChrome, "first", agent.RunInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	headCtx, cancelHead := context.WithCancel(context.Background())
+	headResult := make(chan error, 1)
+	go func() {
+		_, err := p.acquire(headCtx, browserMCPKindChrome, "head", agent.RunInfo{})
+		headResult <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for p.status()[0].Waiting != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	nextCtx, cancelNext := context.WithTimeout(context.Background(), time.Second)
+	defer cancelNext()
+	nextResult := make(chan *browserLease, 1)
+	go func() {
+		lease, _ := p.acquire(nextCtx, browserMCPKindChrome, "next", agent.RunInfo{})
+		nextResult <- lease
+	}()
+	for p.status()[0].Waiting != 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if p.status()[0].Waiting != 2 {
+		t.Fatal("both waiters were not queued")
+	}
+	cancelHead()
+	if err := <-headResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled head returned %v", err)
+	}
+	if p.status()[0].Waiting != 1 {
+		t.Fatal("canceled head remained queued")
+	}
+	first.Close()
+	select {
+	case lease := <-nextResult:
+		if lease == nil {
+			t.Fatal("next waiter did not get the slot")
+		}
+		defer lease.Close()
+	case <-nextCtx.Done():
+		t.Fatal("next waiter remained blocked after release")
 	}
 }
 

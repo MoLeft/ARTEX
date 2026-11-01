@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -206,6 +208,63 @@ func TestNoFailoverAfterEmit(t *testing.T) {
 	}
 }
 
+func TestFailoverAfterMetadataOnly(t *testing.T) {
+	a := &fakeProv{
+		name:   "a",
+		events: [][]llm.StreamEvent{{{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 10}}}},
+		errs:   []error{errors.New("anthropic: Internal server error. Please retry your request. (500)")},
+	}
+	b := &fakeProv{name: "b", events: [][]llm.StreamEvent{{
+		{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 20}},
+		{Type: llm.SETextDelta, Text: "recovered"},
+	}}}
+	p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, NewRegistry(nil, nil))
+	var starts, inputTokens int
+	var text string
+	for ev, err := range p.Stream(context.Background(), llm.CompletionRequest{}) {
+		if err != nil {
+			t.Fatalf("metadata-only 500 should fail over: %v", err)
+		}
+		if ev.Type == llm.SEMessageStart {
+			starts++
+			inputTokens += ev.Usage.InputTokens
+		}
+		if ev.Type == llm.SETextDelta {
+			text += ev.Text
+		}
+	}
+	if a.calls != 1 || b.calls != 1 || text != "recovered" || starts != 1 || inputTokens != 20 {
+		t.Fatalf("failover leaked first attempt: calls=%d/%d text=%q starts=%d input=%d", a.calls, b.calls, text, starts, inputTokens)
+	}
+}
+
+func TestAnthropicStreamErrorAfterStartFallsBack(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"error\",\"error\":{\"message\":\"Internal server error. Please retry your request. (500)\"}}\n\n")
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"recovered\"}}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer backup.Close()
+	provider := func(url string) llm.Provider {
+		p, err := llm.NewProvider(llm.Config{Format: llm.FormatAnthropic, BaseURL: url, APIKey: "test", Model: "test-model"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	p := New([]*Member{member(1, "primary", 2, provider(primary.URL)), member(2, "backup", 1, provider(backup.URL))}, nil)
+	if text, err := drain(p.Stream(context.Background(), llm.CompletionRequest{})); err != nil || text != "recovered" {
+		t.Fatalf("real Anthropic adapter did not fall back: text=%q err=%v", text, err)
+	}
+}
+
 // Cancelling a task must not burn a backup key, and must not be diagnosed as an
 // LLM fault.
 func TestNoFailoverOnCancel(t *testing.T) {
@@ -247,6 +306,21 @@ func TestShouldFailoverByStatus(t *testing.T) {
 	// A transport error carries no status and must fail over.
 	if !shouldFailover(context.Background(), errors.New("dial tcp: connection reset by peer")) {
 		t.Error("network error should fail over")
+	}
+}
+
+func TestParenthesizedProviderStatus(t *testing.T) {
+	badRequest := errors.New("anthropic: Invalid request. (400)")
+	if got := statusOf(badRequest); got != 400 || shouldFailover(context.Background(), badRequest) {
+		t.Fatalf("400 error should not use another profile: status=%d", got)
+	}
+	noCredit := errors.New("anthropic: Insufficient balance. (402)")
+	if got := statusOf(noCredit); got != 402 || !isHardFailure(noCredit) {
+		t.Fatalf("402 error should trip its profile: status=%d", got)
+	}
+	serverError := errors.New("anthropic: Internal server error. Please retry your request. (500)")
+	if got := statusOf(serverError); got != 500 || !shouldFailover(context.Background(), serverError) {
+		t.Fatalf("500 error should fail over: status=%d", got)
 	}
 }
 

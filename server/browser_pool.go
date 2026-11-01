@@ -46,7 +46,7 @@ type browserPool struct {
 	limits  map[string]int
 	nextID  int64
 	active  map[int64]*browserLease
-	waiting map[string]int
+	waiting map[string][]chan struct{}
 	wake    chan struct{}
 }
 
@@ -67,7 +67,7 @@ type browserLease struct {
 }
 
 func newBrowserPool(pg *db.DB) *browserPool {
-	p := &browserPool{limits: make(map[string]int), active: make(map[int64]*browserLease), waiting: make(map[string]int), wake: make(chan struct{})}
+	p := &browserPool{limits: make(map[string]int), active: make(map[int64]*browserLease), waiting: make(map[string][]chan struct{}), wake: make(chan struct{})}
 	if pg != nil {
 		for _, kind := range []string{browserMCPKindChrome, browserMCPKindLightpanda} {
 			if raw, ok, err := pg.GetSetting(browserLimitKey(kind)); err == nil && ok {
@@ -95,11 +95,26 @@ func (p *browserPool) setLimit(kind string, limit int) {
 }
 
 func (p *browserPool) acquire(ctx context.Context, kind, owner string, run agent.RunInfo) (*browserLease, error) {
-	queued := false
+	var queued chan struct{}
 	defer func() {
-		if queued {
+		if queued != nil {
 			p.mu.Lock()
-			p.waiting[kind]--
+			for i, waiter := range p.waiting[kind] {
+				if waiter == queued {
+					waiters := p.waiting[kind]
+					copy(waiters[i:], waiters[i+1:])
+					waiters[len(waiters)-1] = nil
+					p.waiting[kind] = waiters[:len(waiters)-1]
+					if len(p.waiting[kind]) == 0 {
+						p.waiting[kind] = nil
+					}
+					if i == 0 {
+						close(p.wake)
+						p.wake = make(chan struct{})
+					}
+					break
+				}
+			}
 			p.mu.Unlock()
 		}
 	}()
@@ -115,7 +130,18 @@ func (p *browserPool) acquire(ctx context.Context, kind, owner string, run agent
 				count++
 			}
 		}
-		if limit == 0 || count < limit {
+		front := len(p.waiting[kind]) == 0 || (queued != nil && p.waiting[kind][0] == queued)
+		if (limit == 0 || count < limit) && front {
+			if queued != nil {
+				p.waiting[kind][0] = nil
+				p.waiting[kind] = p.waiting[kind][1:]
+				if len(p.waiting[kind]) == 0 {
+					p.waiting[kind] = nil
+				}
+				queued = nil
+				close(p.wake)
+				p.wake = make(chan struct{})
+			}
 			p.nextID++
 			connectCtx, cancel := context.WithCancel(ctx)
 			lease := &browserLease{pool: p, id: p.nextID, kind: kind, owner: owner, run: run, ctx: connectCtx, cancel: cancel}
@@ -123,9 +149,9 @@ func (p *browserPool) acquire(ctx context.Context, kind, owner string, run agent
 			p.mu.Unlock()
 			return lease, nil
 		}
-		if !queued {
-			p.waiting[kind]++
-			queued = true
+		if queued == nil {
+			queued = make(chan struct{})
+			p.waiting[kind] = append(p.waiting[kind], queued)
 		}
 		wake := p.wake
 		p.mu.Unlock()
@@ -268,7 +294,7 @@ func (p *browserPool) status() []browserPoolStatus {
 		rows[l.kind] = append(rows[l.kind], browserLease{id: l.id, owner: l.owner, run: l.run, pid: l.pid})
 		l.mu.Unlock()
 	}
-	waiting := map[string]int{browserMCPKindChrome: p.waiting[browserMCPKindChrome], browserMCPKindLightpanda: p.waiting[browserMCPKindLightpanda]}
+	waiting := map[string]int{browserMCPKindChrome: len(p.waiting[browserMCPKindChrome]), browserMCPKindLightpanda: len(p.waiting[browserMCPKindLightpanda])}
 	limits := map[string]int{browserMCPKindChrome: p.limits[browserMCPKindChrome], browserMCPKindLightpanda: p.limits[browserMCPKindLightpanda]}
 	p.mu.Unlock()
 	var shared *int64
