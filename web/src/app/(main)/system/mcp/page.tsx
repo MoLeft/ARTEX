@@ -110,7 +110,7 @@ export default function MCPPage() {
   function openEdit(s: MCPServer) {
     setEditing(s);
     setForm({
-      name: s.name,
+      name: s.display_name || s.name,
       transport: s.transport,
       command: s.command ?? "",
       args: (s.args ?? []).join(" "),
@@ -168,12 +168,14 @@ export default function MCPPage() {
             };
       await api.saveMcpServer({
         ...(editing ? { id: editing.id } : {}),
-        name: form.name.trim(),
+        name: editing?.id === -1 ? editing.name : form.name.trim(),
+        ...(editing?.id === -1 ? { display_name: form.name.trim() } : {}),
         enabled: editing ? editing.enabled : true,
         ...base,
       });
       toast.success(editing ? "已保存" : "已添加 MCP 服务器");
       if (!editing) setOpen(false);
+      if (editing?.id === -1) setEditing({ ...editing, display_name: form.name.trim() });
       load();
     } catch (e) {
       toast.error("保存失败：" + (e as Error).message);
@@ -210,7 +212,7 @@ export default function MCPPage() {
 
   async function toggleEnabled(s: MCPServer) {
     try {
-      await api.saveMcpServer({ ...s, enabled: !s.enabled });
+      await api.saveMcpServer(s.id === -1 ? { id: s.id, enabled: !s.enabled } : { ...s, enabled: !s.enabled });
       load();
     } catch (e) {
       toast.error("操作失败：" + (e as Error).message);
@@ -264,7 +266,7 @@ export default function MCPPage() {
             placeholder="filesystem"
             value={form.name}
             onChange={(e) => setF({ name: e.target.value })}
-            disabled={editing?.builtin}
+            disabled={editing?.builtin && editing.id !== -1}
           />
         </div>
         {form.transport === "stdio" ? (
@@ -334,7 +336,7 @@ export default function MCPPage() {
       <div className="flex flex-col gap-3 py-4">
         <div className="flex items-center justify-between">
           <span className="text-muted-foreground text-sm">{tools.length} 个工具</span>
-          <Button size="sm" variant="outline" disabled={refreshing || editing?.id === -1} onClick={refreshTools}>
+          <Button size="sm" variant="outline" disabled={refreshing} onClick={refreshTools}>
             <RefreshCwIcon className={refreshing ? "animate-spin" : ""} /> 刷新
           </Button>
         </div>
@@ -386,7 +388,7 @@ export default function MCPPage() {
             <CardHeader>
               <div className="flex items-center gap-2">
                 <ServerIcon className="text-muted-foreground size-4 shrink-0" />
-                <CardTitle className="truncate text-base">{s.id === -1 ? "Lightpanda（页面阅读）" : s.name}</CardTitle>
+                <CardTitle className="truncate text-base">{s.display_name || s.name}</CardTitle>
                 <Badge variant="outline" className="uppercase">
                   {s.transport}
                 </Badge>
@@ -438,7 +440,7 @@ export default function MCPPage() {
           className="w-full data-[side=right]:sm:max-w-lg"
         >
           <SheetHeader>
-            <SheetTitle>{editing ? (editing.id === -1 ? "Lightpanda（页面阅读）" : editing.name) : "添加 MCP 服务器"}</SheetTitle>
+            <SheetTitle>{editing ? (editing.display_name || editing.name) : "添加 MCP 服务器"}</SheetTitle>
             <SheetDescription>
               stdio（本地起进程）或 http（远程 Streamable HTTP）
             </SheetDescription>
@@ -457,14 +459,12 @@ export default function MCPPage() {
                 </TabsTrigger>
               </TabsList>
               <TabsContent value="config" className="min-h-0 flex-1 overflow-y-auto">
-                {editing.id === -1 ? (
-                  <p className="text-muted-foreground py-4 text-sm">Lightpanda 随当前版本提供。可在卡片上启用或关闭，并为报告撰写、资产梳理 Agent 设置可见范围；关闭时保留授权，切回旧版本时自动移除工具与附加提示词。</p>
-                ) : <>{renderForm()}
+                {renderForm()}
                 <div className="flex gap-2 pt-2 pb-6">
                   <Button onClick={saveForm} disabled={saving}>
                     保存
                   </Button>
-                </div></>}
+                </div>
               </TabsContent>
               <TabsContent value="tools" className="min-h-0 flex-1 overflow-y-auto">
                 {renderTools()}

@@ -809,6 +809,7 @@ func (d *DB) ListPromptVersions(agentID int64) ([]PromptVersion, error) {
 type MCPServer struct {
 	ID            int64           `json:"id"`
 	Name          string          `json:"name"`
+	DisplayName   string          `json:"display_name,omitempty"`
 	Transport     string          `json:"transport"`
 	Command       string          `json:"command,omitempty"`
 	Args          json.RawMessage `json:"args"`

@@ -1,8 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/Autumn-27/artex/db"
@@ -11,12 +15,33 @@ import (
 const lightpandaReaderMCPName = "artex_lightpanda_reader"
 const lightpandaReaderMCPID int64 = -1
 const settingLightpandaEnabled = "lightpanda_mcp_enabled"
+const settingLightpandaConfig = "lightpanda_mcp_config"
+
+type lightpandaConfig struct {
+	DisplayName string          `json:"display_name"`
+	Transport   string          `json:"transport"`
+	Command     string          `json:"command"`
+	Args        json.RawMessage `json:"args"`
+	Env         json.RawMessage `json:"env"`
+	URL         string          `json:"url"`
+	Insecure    bool            `json:"insecure"`
+}
 
 var lightpandaReadToolNames = []string{"goto", "markdown", "html", "tree", "links", "getUrl", "waitForSelector", "waitForState"}
 
 func lightpandaMCP(pg *db.DB) *db.MCPServer {
-	url := strings.TrimSpace(os.Getenv("ARTEX_LIGHTPANDA_MCP_URL"))
-	if url == "" {
+	defaultURL := strings.TrimSpace(os.Getenv("ARTEX_LIGHTPANDA_MCP_URL"))
+	cfg := lightpandaConfig{DisplayName: "Lightpanda", Transport: "http", URL: defaultURL, Args: json.RawMessage(`[]`), Env: json.RawMessage(`{"Host":"127.0.0.1"}`)}
+	configured := false
+	if pg != nil {
+		if raw, ok, err := pg.GetSetting(settingLightpandaConfig); err == nil && ok {
+			var saved lightpandaConfig
+			if json.Unmarshal([]byte(raw), &saved) == nil {
+				cfg, configured = saved, true
+			}
+		}
+	}
+	if defaultURL == "" && !configured {
 		return nil
 	}
 	tools := make([]string, 0, len(lightpandaReadToolNames))
@@ -24,7 +49,54 @@ func lightpandaMCP(pg *db.DB) *db.MCPServer {
 		tools = append(tools, "mcp__"+lightpandaReaderMCPName+"__"+name)
 	}
 	enabled := pg == nil || pg.GetBool(settingLightpandaEnabled, true)
-	return &db.MCPServer{ID: lightpandaReaderMCPID, Name: lightpandaReaderMCPName, Transport: "http", URL: url, Env: json.RawMessage(`{"Host":"127.0.0.1"}`), Enabled: enabled, Tools: tools, Builtin: true, AllowedAgents: []string{"reporter", "asset_mapper"}}
+	return &db.MCPServer{ID: lightpandaReaderMCPID, Name: lightpandaReaderMCPName, DisplayName: cfg.DisplayName, Transport: cfg.Transport, Command: cfg.Command, Args: cfg.Args, URL: cfg.URL, Env: cfg.Env, Insecure: cfg.Insecure, Enabled: enabled, Tools: tools, Builtin: true, AllowedAgents: []string{"reporter", "asset_mapper"}}
+}
+
+func saveLightpandaConfig(ctx context.Context, pg *db.DB, m *db.MCPServer) error {
+	if m.Transport == "" { // the existing switch API only sends id and enabled
+		return pg.SetBool(settingLightpandaEnabled, m.Enabled)
+	}
+	if m.Name != "" && m.Name != lightpandaReaderMCPName {
+		return errors.New("内置 MCP 标识不可修改")
+	}
+	name := strings.TrimSpace(m.DisplayName)
+	if name == "" {
+		return errors.New("名称不能为空")
+	}
+	var args []string
+	if len(m.Args) > 0 && json.Unmarshal(m.Args, &args) != nil {
+		return errors.New("参数必须是字符串数组")
+	}
+	var env map[string]string
+	if len(m.Env) > 0 && json.Unmarshal(m.Env, &env) != nil {
+		return errors.New("环境变量或请求头必须是字符串映射")
+	}
+	if args == nil {
+		args = []string{}
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	command, endpoint := strings.TrimSpace(m.Command), strings.TrimSpace(m.URL)
+	switch m.Transport {
+	case "stdio":
+		if command == "" {
+			return errors.New("stdio 传输缺少命令")
+		}
+		endpoint = ""
+	case "http", "sse":
+		u, err := url.Parse(endpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return errors.New("远程 URL 必须是有效的 http 或 https 地址")
+		}
+		command, args = "", []string{}
+	default:
+		return errors.New("传输方式必须是 stdio、http 或 sse")
+	}
+	argsJSON, _ := json.Marshal(args)
+	envJSON, _ := json.Marshal(env)
+	cfgJSON, _ := json.Marshal(lightpandaConfig{DisplayName: name, Transport: m.Transport, Command: command, Args: argsJSON, Env: envJSON, URL: endpoint, Insecure: m.Transport != "stdio" && m.Insecure})
+	return pg.SetSettingsAtomic(ctx, map[string]string{settingLightpandaConfig: string(cfgJSON), settingLightpandaEnabled: strconv.FormatBool(m.Enabled)})
 }
 
 func lightpandaTools(pg *db.DB) []db.MCPTool {
