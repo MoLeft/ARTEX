@@ -470,15 +470,18 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				defer cancel()
 				profileID := s.effectiveProfileForAgent(agentKey, pinnedProfile)
+				bound := profileID != nil
 				var prov llm.Provider
+				var cfg agent.Config
 				providerOK := false
 				if profileID != nil {
-					prov, _, providerOK = s.providerForProfile(*profileID)
+					prov, cfg, providerOK = s.providerForProfile(*profileID)
 				}
 				if !providerOK {
 					if active, activeErr := s.m.pg.ActiveProfile(); activeErr == nil && active != nil {
 						profileID = &active.ID
-						prov, _, providerOK = s.providerForProfile(active.ID)
+						bound = false
+						prov, cfg, providerOK = s.providerForProfile(active.ID)
 					} else if activeErr != nil {
 						log.Printf("[auto-title] conversation %d active profile lookup failed: %v", conversationID, activeErr)
 					}
@@ -486,6 +489,11 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 				if profileID == nil || !providerOK || prov == nil {
 					log.Printf("[auto-title] conversation %d: no effective profile", conversationID)
 					return
+				}
+				if bound {
+					prov = s.poolForBinding(*profileID, prov, cfg)
+				} else {
+					prov = s.poolForActive(*profileID, prov, cfg)
 				}
 				generated, err := agent.GenerateAutoTitle(ctx, prov, promptContent)
 				if err != nil {

@@ -308,10 +308,10 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 					log.Printf("[auto-title] active profile lookup failed: %v", activeErr)
 				} else if active == nil {
 					log.Printf("[auto-title] no active profile")
-				} else if prov, _, providerOK := s.providerForProfile(active.ID); providerOK {
+				} else if prov, cfg, providerOK := s.providerForProfile(active.ID); providerOK {
 					titleCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 					defer cancel()
-					generated, titleErr := agent.GenerateAutoTitle(titleCtx, prov, a.Description+"\n"+a.Goal)
+					generated, titleErr := agent.GenerateAutoTitle(titleCtx, s.poolForActive(active.ID, prov, cfg), a.Description+"\n"+a.Goal)
 					if err := ctx.Err(); err != nil {
 						return actool.Errorf(err.Error()), nil
 					}
