@@ -129,7 +129,7 @@ func (d *DB) ClaimRealtimeDeliveries(ctx context.Context, channelID int64, limit
 		sql: `SELECT dd.id FROM notification_deliveries dd
 JOIN notification_channels c ON c.id = dd.channel_id
 WHERE dd.channel_id = $1 AND dd.state IN ($2,$3) AND dd.next_attempt_at <= now()
-  AND c.enabled AND c.mode = $4
+  AND c.enabled AND c.mode = $4 AND NOT dd.quiet_held
 ORDER BY dd.next_attempt_at, dd.id
 FOR UPDATE OF dd SKIP LOCKED
 LIMIT $5`,
@@ -151,10 +151,19 @@ func (d *DB) DigestBatchDue(ctx context.Context, channelID int64, minAge time.Du
 	err := d.QueryRowContext(ctx, `SELECT EXISTS (
   SELECT 1 FROM notification_deliveries d
   JOIN notification_channels c ON c.id = d.channel_id
-  WHERE d.channel_id = $1 AND d.state IN ($2,$3) AND c.enabled
+  WHERE d.channel_id = $1 AND d.state IN ($2,$3) AND c.enabled AND NOT d.quiet_held
   GROUP BY d.channel_id
   HAVING min(d.created_at) <= now() - make_interval(secs => $4)
 )`, channelID, NotifyStatePending, NotifyStateSending, int64(minAge.Seconds())).Scan(&due)
+	return due, err
+}
+
+func (d *DB) QuietBatchDue(ctx context.Context, channelID int64) (bool, error) {
+	var due bool
+	err := d.QueryRowContext(ctx, `SELECT EXISTS (
+  SELECT 1 FROM notification_deliveries
+  WHERE channel_id=$1 AND quiet_held AND state IN ($2,$3) AND next_attempt_at <= now()
+)`, channelID, NotifyStatePending, NotifyStateSending).Scan(&due)
 	return due, err
 }
 
@@ -168,6 +177,15 @@ func (d *DB) DigestBatchDue(ctx context.Context, channelID int64, minAge time.Du
 // 按 id 升序取前 N 条而非随机取：最早产生的投递最先发出去，积压时不会出现
 // 「新漏洞先发、老漏洞永远排在后面」的饥饿。
 func (d *DB) ClaimDigestBatch(ctx context.Context, channelID int64, limit int, lease time.Duration) ([]*NotificationDelivery, error) {
+	return d.claimDigestBatch(ctx, channelID, limit, lease, false)
+}
+
+// ClaimQuietBatch returns messages held during quiet hours for a single summary.
+func (d *DB) ClaimQuietBatch(ctx context.Context, channelID int64, limit int, lease time.Duration) ([]*NotificationDelivery, error) {
+	return d.claimDigestBatch(ctx, channelID, limit, lease, true)
+}
+
+func (d *DB) claimDigestBatch(ctx context.Context, channelID int64, limit int, lease time.Duration, quiet bool) ([]*NotificationDelivery, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -186,11 +204,11 @@ func (d *DB) ClaimDigestBatch(ctx context.Context, channelID int64, limit int, l
 	out, err := d.claimDeliveries(ctx, lease, claimQuery{
 		sql: `SELECT dd.id FROM notification_deliveries dd
 JOIN notification_channels c ON c.id = dd.channel_id
-WHERE dd.channel_id = $1 AND dd.state IN ($2,$3) AND dd.next_attempt_at <= now() AND c.enabled
+WHERE dd.channel_id = $1 AND dd.state IN ($2,$3) AND dd.next_attempt_at <= now() AND c.enabled AND dd.quiet_held = $4
 ORDER BY dd.id
 FOR UPDATE OF dd SKIP LOCKED
-LIMIT $4`,
-		args: []any{channelID, NotifyStatePending, NotifyStateSending, limit},
+LIMIT $5`,
+		args: []any{channelID, NotifyStatePending, NotifyStateSending, quiet, limit},
 	}, func(tx *sql.Tx, ids []int64) error {
 		batchID := ids[0]
 		for _, id := range ids {

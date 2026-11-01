@@ -1463,9 +1463,11 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
     last_error  TEXT NOT NULL DEFAULT '',
     -- digest 模式同批次共享；realtime 恒为 NULL。整批渲染成一条消息后一起置 sent。
     batch_id    BIGINT,
+    quiet_held  BOOLEAN NOT NULL DEFAULT false,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     sent_at     TIMESTAMPTZ
 );
+ALTER TABLE notification_deliveries ADD COLUMN IF NOT EXISTS quiet_held BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_due
     ON notification_deliveries(next_attempt_at) WHERE state='pending';
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_history
@@ -1474,6 +1476,8 @@ CREATE INDEX IF NOT EXISTS idx_notification_deliveries_batch
     ON notification_deliveries(batch_id) WHERE batch_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_channel
     ON notification_deliveries(channel_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_quiet_due
+    ON notification_deliveries(channel_id, next_attempt_at) WHERE quiet_held AND state IN ('pending','sending');
 
 -- A case collects repeated observations of one defect without rewriting findings.
 CREATE TABLE IF NOT EXISTS finding_cases (

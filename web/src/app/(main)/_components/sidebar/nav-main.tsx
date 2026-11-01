@@ -84,6 +84,8 @@ function hasSubItems(item: NavMainItem): item is NavMainParentItem {
   return Boolean(item.subItems?.length);
 }
 
+const activeClass = "data-active:bg-primary/15 data-active:font-semibold data-active:text-primary data-active:shadow-sm dark:data-active:bg-primary/20";
+
 export function NavMain({ items }: NavMainProps) {
   const rawPath = usePathname();
   // 路由段含中文，pathname 可能是百分号编码，解码后再与导航 url 比较，保证高亮命中。
@@ -95,20 +97,22 @@ export function NavMain({ items }: NavMainProps) {
     }
   })();
 
+  const matchesPath = (url: string) => path === url || path.startsWith(`${url}/`);
+
   const isItemActive = (item: NavMainItem) => {
     if (hasSubItems(item)) {
-      return item.subItems.some((sub) => path.startsWith(sub.url));
+      return item.subItems.some((sub) => matchesPath(sub.url));
     }
 
-    return path === item.url;
+    return matchesPath(item.url);
   };
 
   const isSubItemActive = (url: string) => {
-    return path === url;
+    return matchesPath(url);
   };
 
   const isSubmenuOpen = (item: NavMainParentItem) => {
-    return item.subItems.some((sub) => path.startsWith(sub.url));
+    return item.subItems.some((sub) => matchesPath(sub.url));
   };
 
   return (
@@ -188,12 +192,13 @@ function InterceptPendingBadge() {
 function NavLinkItem({ item, isActive, showIconFallback }: NavLinkItemProps) {
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton asChild aria-disabled={item.disabled} tooltip={item.title} isActive={isActive}>
+      <SidebarMenuButton asChild aria-disabled={item.disabled} tooltip={item.title} isActive={isActive} className={activeClass}>
         <Link
           prefetch={false}
           href={item.url}
           target={item.newTab ? "_blank" : undefined}
           rel={item.newTab ? "noreferrer" : undefined}
+          aria-current={isActive ? "page" : undefined}
         >
           <NavLinkIcon item={item} showFallback={showIconFallback} />
           <span>{item.title}</span>
@@ -225,7 +230,7 @@ function NavDropdownItem({ item, isActive, isSubItemActive }: NavDropdownItemPro
     <SidebarMenuItem>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <SidebarMenuButton tooltip={item.title} isActive={isActive} disabled={item.disabled}>
+          <SidebarMenuButton tooltip={item.title} isActive={isActive} disabled={item.disabled} className={activeClass}>
             {Icon ? <Icon /> : <CollapsedIconFallback title={item.title} />}
             <span>{item.title}</span>
           </SidebarMenuButton>
@@ -244,7 +249,7 @@ function NavDropdownItem({ item, isActive, isSubItemActive }: NavDropdownItemPro
                     target={subItem.newTab ? "_blank" : undefined}
                     rel={subItem.newTab ? "noreferrer" : undefined}
                     aria-current={isSubItemActive(subItem.url) ? "page" : undefined}
-                    className="flex items-center gap-2"
+                    className="flex items-center gap-2 aria-[current=page]:bg-primary/15 aria-[current=page]:font-semibold aria-[current=page]:text-primary"
                   >
                     {SubIcon && <SubIcon />}
                     <span>{subItem.title}</span>
@@ -266,7 +271,7 @@ function NavCollapsibleItem({ item, isActive, defaultOpen, isSubItemActive }: Na
     <Collapsible asChild defaultOpen={defaultOpen} className="group/collapsible">
       <SidebarMenuItem>
         <CollapsibleTrigger asChild>
-          <SidebarMenuButton tooltip={item.title} isActive={isActive} disabled={item.disabled}>
+          <SidebarMenuButton tooltip={item.title} isActive={isActive} disabled={item.disabled} className={activeClass}>
             {Icon && <Icon />}
             <span>{item.title}</span>
             <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
@@ -285,12 +290,14 @@ function NavCollapsibleItem({ item, isActive, defaultOpen, isSubItemActive }: Na
                     asChild
                     aria-disabled={subItem.disabled}
                     isActive={isSubItemActive(subItem.url)}
+                    className="data-active:bg-primary/15 data-active:font-semibold data-active:text-primary"
                   >
                     <Link
                       prefetch={false}
                       href={subItem.url}
                       target={subItem.newTab ? "_blank" : undefined}
                       rel={subItem.newTab ? "noreferrer" : undefined}
+                      aria-current={isSubItemActive(subItem.url) ? "page" : undefined}
                     >
                       {SubIcon && <SubIcon />}
                       <span>{subItem.title}</span>

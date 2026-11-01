@@ -24,6 +24,7 @@ import (
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
+	"github.com/Autumn-27/artex/notify"
 	"github.com/Autumn-27/artex/report"
 	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/norma/llm"
@@ -3672,12 +3673,20 @@ func (s *Server) settingsPayload() map[string]any {
 		"notify_enabled":             s.m.pg.GetBool(settingNotifyEnabled, true),
 		"notify_public_base_url":     notifyPublicBaseURL(s.m.pg),
 		"notify_digest_interval_min": notifyDigestIntervalMin(s.m.pg),
+		"notify_quiet_start":         notifySetting(s.m.pg, settingNotifyQuietStart),
+		"notify_quiet_end":           notifySetting(s.m.pg, settingNotifyQuietEnd),
+		"notify_quiet_send_after":    s.m.pg.GetBool(settingNotifyQuietSendAfter, true),
 	}
 }
 
 // notifyPublicBaseURL 读推送回链用的外部地址。
 func notifyPublicBaseURL(pg *db.DB) string {
 	v, _, _ := pg.GetSetting(settingNotifyPublicBaseURL)
+	return v
+}
+
+func notifySetting(pg *db.DB, key string) string {
+	v, _, _ := pg.GetSetting(key)
 	return v
 }
 
@@ -3757,13 +3766,30 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		NoaCompaction *bool `json:"noa_compaction"`
 		// 漏洞 IM 推送的全局项。三者都由投递引擎每轮读一次，改完即时生效，
 		// 不需要重建 agent 或重启。
-		NotifyEnabled    *bool   `json:"notify_enabled"`
-		NotifyBaseURL    *string `json:"notify_public_base_url"`
-		NotifyDigestMins *int    `json:"notify_digest_interval_min"`
+		NotifyEnabled        *bool   `json:"notify_enabled"`
+		NotifyBaseURL        *string `json:"notify_public_base_url"`
+		NotifyDigestMins     *int    `json:"notify_digest_interval_min"`
+		NotifyQuietStart     *string `json:"notify_quiet_start"`
+		NotifyQuietEnd       *string `json:"notify_quiet_end"`
+		NotifyQuietSendAfter *bool   `json:"notify_quiet_send_after"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	if req.NotifyQuietStart != nil || req.NotifyQuietEnd != nil {
+		start := notifySetting(s.m.pg, settingNotifyQuietStart)
+		end := notifySetting(s.m.pg, settingNotifyQuietEnd)
+		if req.NotifyQuietStart != nil {
+			start = *req.NotifyQuietStart
+		}
+		if req.NotifyQuietEnd != nil {
+			end = *req.NotifyQuietEnd
+		}
+		if _, err := notify.ParseQuietHours(start, end); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
 	}
 	if req.ConstraintsInjectPlanner != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectPlanner, *req.ConstraintsInjectPlanner); err != nil {
@@ -3811,6 +3837,22 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.m.pg.SetSetting(settingNotifyDigestMinutes, strconv.Itoa(*req.NotifyDigestMins)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.NotifyQuietStart != nil || req.NotifyQuietEnd != nil || req.NotifyQuietSendAfter != nil {
+		values := map[string]string{}
+		if req.NotifyQuietStart != nil {
+			values[settingNotifyQuietStart] = *req.NotifyQuietStart
+		}
+		if req.NotifyQuietEnd != nil {
+			values[settingNotifyQuietEnd] = *req.NotifyQuietEnd
+		}
+		if req.NotifyQuietSendAfter != nil {
+			values[settingNotifyQuietSendAfter] = strconv.FormatBool(*req.NotifyQuietSendAfter)
+		}
+		if err := s.m.pg.SetSettingsAtomic(r.Context(), values); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}

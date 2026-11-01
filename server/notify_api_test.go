@@ -445,6 +445,99 @@ func TestNotifyDigestBatchesMultipleFindingsIntoOneMessage(t *testing.T) {
 	}
 }
 
+func TestQuietHoursSummarizesHeldRealtimeAndDropsWhenDisabled(t *testing.T) {
+	f := newNotifyFixture(t)
+	hook := newFakeWebhook(t)
+	chID := f.createChannel(t, map[string]any{
+		"name": "免打扰汇总", "kind": notify.KindDingTalk,
+		"config": map[string]any{"webhook": hook.URL},
+	})
+	ctx := context.Background()
+	quiet, err := notify.ParseQuietHours("22:00", "07:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiet.SendAfter = true
+	for i := 1; i <= 2; i++ {
+		finding := f.record(t, fmt.Sprintf("静音漏洞%d", i), "high")
+		if _, err := f.pg.Exec(`UPDATE notification_events SET created_at=$2 WHERE finding_id=$1`,
+			finding, time.Date(2026, 11, 1, 15, 0, 0, 0, time.UTC)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := f.pg.FanOutPendingEvents(ctx, 500, quiet); err != nil {
+		t.Fatal(err)
+	}
+	f.n.stepRealtime(ctx, f.channel(t, chID), 5, "")
+	if hook.count() != 0 {
+		t.Fatal("免打扰消息进入了实时投递")
+	}
+	due, err := f.pg.QuietBatchDue(ctx, chID)
+	if err != nil || !due {
+		t.Fatalf("静音汇总应到期: due=%v err=%v", due, err)
+	}
+	f.n.stepQuietDigest(ctx, f.channel(t, chID), "")
+	if hook.count() != 1 {
+		t.Fatalf("两条静音消息应汇总发送一次，得到 %d", hook.count())
+	}
+	body := markdownText(t, hook.last(t))
+	if !strings.Contains(body, "静音漏洞1") || !strings.Contains(body, "静音漏洞2") {
+		t.Fatalf("汇总缺少静音消息: %s", body)
+	}
+
+	quiet.SendAfter = false
+	finding := f.record(t, "不补推漏洞", "high")
+	if _, err := f.pg.Exec(`UPDATE notification_events SET created_at=$2 WHERE finding_id=$1`,
+		finding, time.Date(2026, 11, 1, 15, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.pg.FanOutPendingEvents(ctx, 500, quiet); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err := f.pg.QueryRow(`SELECT d.state FROM notification_deliveries d JOIN notification_events e ON e.id=d.event_id WHERE e.finding_id=$1 AND d.channel_id=$2`, finding, chID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != db.NotifyStateSkipped {
+		t.Fatalf("关闭补推后应记录跳过，得到 %s", state)
+	}
+}
+
+func TestQuietHoursDefersAlreadyClaimedDelivery(t *testing.T) {
+	f := newNotifyFixture(t)
+	hook := newFakeWebhook(t)
+	chID := f.createChannel(t, map[string]any{
+		"name": "免打扰暂停", "kind": notify.KindDingTalk,
+		"config": map[string]any{"webhook": hook.URL},
+	})
+	f.record(t, "待暂停漏洞", "high")
+	ctx := context.Background()
+	if _, _, err := f.pg.FanOutPendingEvents(ctx, 500); err != nil {
+		t.Fatal(err)
+	}
+	beijing := time.Now().UTC().Add(8 * time.Hour)
+	start := beijing.Add(-time.Hour).Format("15:04")
+	end := beijing.Add(time.Hour).Format("15:04")
+	if err := f.pg.SetSettingsAtomic(ctx, map[string]string{settingNotifyQuietStart: start, settingNotifyQuietEnd: end}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		f.pg.Exec(`DELETE FROM settings WHERE key IN ($1,$2)`, settingNotifyQuietStart, settingNotifyQuietEnd)
+	})
+	f.n.stepRealtime(ctx, f.channel(t, chID), 5, "")
+	if hook.count() != 0 {
+		t.Fatal("免打扰期间发送了已领取消息")
+	}
+	var state string
+	var attempts int
+	if err := f.pg.QueryRow(`SELECT state, attempts FROM notification_deliveries WHERE channel_id=$1`, chID).Scan(&state, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if state != db.NotifyStatePending || attempts != 0 {
+		t.Fatalf("应无损回队，得到 state=%s attempts=%d", state, attempts)
+	}
+}
+
 func TestNotifyDisabledChannelDoesNotSend(t *testing.T) {
 	f := newNotifyFixture(t)
 	hook := newFakeWebhook(t)
@@ -648,12 +741,12 @@ func TestNotifyMetaAndSettingsRoundTrip(t *testing.T) {
 		}
 	}
 
-	// 三项全局设置往返。尾部斜杠应被规范化掉，否则回链会拼出 "//function/..."。
-	if r := f.request("PUT", "/api/settings", `{"notify_public_base_url":"https://artex.example.com/","notify_digest_interval_min":15,"notify_enabled":true}`); r.Code != 200 {
+	// 全局设置往返。尾部斜杠应被规范化掉，否则回链会拼出 "//function/..."。
+	if r := f.request("PUT", "/api/settings", `{"notify_public_base_url":"https://artex.example.com/","notify_digest_interval_min":15,"notify_enabled":true,"notify_quiet_start":"22:00","notify_quiet_end":"07:00","notify_quiet_send_after":true}`); r.Code != 200 {
 		t.Fatalf("写设置失败 %d: %s", r.Code, r.Body)
 	}
 	t.Cleanup(func() {
-		f.pg.Exec(`DELETE FROM settings WHERE key IN ($1,$2)`, settingNotifyPublicBaseURL, settingNotifyDigestMinutes)
+		f.pg.Exec(`DELETE FROM settings WHERE key IN ($1,$2,$3,$4,$5)`, settingNotifyPublicBaseURL, settingNotifyDigestMinutes, settingNotifyQuietStart, settingNotifyQuietEnd, settingNotifyQuietSendAfter)
 	})
 	payload := f.s.settingsPayload()
 	if payload["notify_public_base_url"] != "https://artex.example.com" {
@@ -662,12 +755,17 @@ func TestNotifyMetaAndSettingsRoundTrip(t *testing.T) {
 	if payload["notify_digest_interval_min"] != 15 {
 		t.Fatalf("汇总周期未生效: %v", payload["notify_digest_interval_min"])
 	}
+	if payload["notify_quiet_start"] != "22:00" || payload["notify_quiet_end"] != "07:00" || payload["notify_quiet_send_after"] != true {
+		t.Fatalf("免打扰设置未生效: %v", payload)
+	}
 
 	// 非法值应被拒。
 	for _, body := range []string{
 		`{"notify_public_base_url":"ftp://x"}`,
 		`{"notify_digest_interval_min":0}`,
 		`{"notify_digest_interval_min":99999}`,
+		`{"notify_quiet_start":"22:00","notify_quiet_end":"22:00"}`,
+		`{"notify_quiet_start":"24:00"}`,
 	} {
 		if r := f.request("PUT", "/api/settings", body); r.Code != 400 {
 			t.Errorf("%s 应返回 400，得到 %d", body, r.Code)

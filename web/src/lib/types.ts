@@ -1042,6 +1042,9 @@ export interface Settings {
   notify_enabled?: boolean; // 推送总开关，默认开；用于维护期一键止血
   notify_public_base_url?: string; // 漏洞详情回链的外部访问地址；空=消息不带回链
   notify_digest_interval_min?: number; // 汇总模式周期（分钟），默认 30
+  notify_quiet_start?: string; // 北京时间 HH:MM；与结束时间均为空则关闭免打扰
+  notify_quiet_end?: string;
+  notify_quiet_send_after?: boolean; // 结束后汇总推送期间消息
 }
 
 export interface WorkerPool {
@@ -1092,6 +1095,9 @@ export interface NotificationMeta {
   enabled: boolean;
   public_base_url: string;
   digest_interval_min: string;
+  quiet_start: string;
+  quiet_end: string;
+  quiet_send_after: boolean;
   defaults: { digest_interval_min: number };
   stats: {
     channels: number;

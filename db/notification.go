@@ -272,7 +272,7 @@ func (d *DB) AddNotificationEvent(ctx context.Context, kind string, findingID in
 //
 // 未命中任何渠道的事件同样会被标记 fanned_out ——否则它会永远留在待分派集合里，
 // 每个 tick 被重扫一遍。
-func (d *DB) FanOutPendingEvents(ctx context.Context, limit int) (eventCount, deliveryCount int, err error) {
+func (d *DB) FanOutPendingEvents(ctx context.Context, limit int, quiet ...notify.QuietHours) (eventCount, deliveryCount int, err error) {
 	if limit <= 0 {
 		limit = 200
 	}
@@ -286,7 +286,7 @@ func (d *DB) FanOutPendingEvents(ctx context.Context, limit int) (eventCount, de
 	if err != nil {
 		return 0, 0, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id, kind, finding_id, snapshot FROM notification_events
+	rows, err := tx.QueryContext(ctx, `SELECT id, kind, finding_id, snapshot, created_at FROM notification_events
 WHERE NOT fanned_out ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
 	if err != nil {
 		return 0, 0, err
@@ -297,7 +297,7 @@ WHERE NOT fanned_out ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
 	)
 	for rows.Next() {
 		var ev NotificationEvent
-		if err := rows.Scan(&ev.ID, &ev.Kind, &ev.FindingID, &ev.Snapshot); err != nil {
+		if err := rows.Scan(&ev.ID, &ev.Kind, &ev.FindingID, &ev.Snapshot, &ev.CreatedAt); err != nil {
 			rows.Close()
 			return 0, 0, err
 		}
@@ -322,14 +322,18 @@ WHERE NOT fanned_out ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
 	type pending struct {
 		eventID   int64
 		channelID int64
+		held      bool
+		skipped   bool
 	}
 	var toInsert []pending
 	for i, snap := range parsedSnaps {
+		inQuiet := len(quiet) > 0 && quiet[0].Contains(events[i].CreatedAt)
 		for _, ch := range channels {
 			if !notify.Match(notify.ParseFilter(ch.Filter), snap) {
 				continue
 			}
-			toInsert = append(toInsert, pending{eventID: events[i].ID, channelID: ch.ID})
+			toInsert = append(toInsert, pending{eventID: events[i].ID, channelID: ch.ID,
+				held: inQuiet && quiet[0].SendAfter, skipped: inQuiet && !quiet[0].SendAfter})
 		}
 	}
 	if len(toInsert) > 0 {
@@ -338,10 +342,14 @@ WHERE NOT fanned_out ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
 			args []any
 		)
 		for _, p := range toInsert {
-			vals = append(vals, fmt.Sprintf("($%d,$%d)", len(args)+1, len(args)+2))
-			args = append(args, p.eventID, p.channelID)
+			state, reason := NotifyStatePending, ""
+			if p.skipped {
+				state, reason = NotifyStateSkipped, "免打扰期间未开启补推"
+			}
+			vals = append(vals, fmt.Sprintf("($%d,$%d,$%d,$%d,$%d)", len(args)+1, len(args)+2, len(args)+3, len(args)+4, len(args)+5))
+			args = append(args, p.eventID, p.channelID, p.held, state, reason)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO notification_deliveries(event_id,channel_id) VALUES `+strings.Join(vals, ","), args...); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO notification_deliveries(event_id,channel_id,quiet_held,state,last_error) VALUES `+strings.Join(vals, ","), args...); err != nil {
 			return 0, 0, err
 		}
 	}

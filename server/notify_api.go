@@ -137,6 +137,9 @@ func (s *Server) notifyMeta(w http.ResponseWriter, r *http.Request) {
 		"enabled":             pg.GetBool(settingNotifyEnabled, true),
 		"public_base_url":     baseURL,
 		"digest_interval_min": digest,
+		"quiet_start":         notifySetting(pg, settingNotifyQuietStart),
+		"quiet_end":           notifySetting(pg, settingNotifyQuietEnd),
+		"quiet_send_after":    pg.GetBool(settingNotifyQuietSendAfter, true),
 		"defaults": map[string]any{
 			"digest_interval_min": notifyDefaultDigestMinutes,
 		},

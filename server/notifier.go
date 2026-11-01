@@ -22,7 +22,10 @@ const (
 	// 项目里没有可复用的外部地址配置，所以这里新增一项。
 	settingNotifyPublicBaseURL = "notify_public_base_url"
 	// settingNotifyDigestMinutes 是汇总模式的周期（分钟）。
-	settingNotifyDigestMinutes = "notify_digest_interval_min"
+	settingNotifyDigestMinutes  = "notify_digest_interval_min"
+	settingNotifyQuietStart     = "notify_quiet_start"
+	settingNotifyQuietEnd       = "notify_quiet_end"
+	settingNotifyQuietSendAfter = "notify_quiet_send_after"
 )
 
 const (
@@ -122,8 +125,12 @@ func (n *Notifier) step(ctx context.Context) {
 	if !n.enabled() {
 		return
 	}
-	if _, _, err := n.pg.FanOutPendingEvents(ctx, notifyFanOutPerTick); err != nil {
+	quiet := n.quietHours()
+	if _, _, err := n.pg.FanOutPendingEvents(ctx, notifyFanOutPerTick, quiet); err != nil {
 		log.Printf("[notify] 分派事件失败: %v", err)
+		return
+	}
+	if quiet.Contains(time.Now()) {
 		return
 	}
 	channels, err := n.pg.ListNotificationChannels(ctx)
@@ -143,6 +150,17 @@ func (n *Notifier) step(ctx context.Context) {
 		// 两种模式都先问令牌桶、再按额度去领——顺序不能反，否则被限流挡下的
 		// 投递已经消耗过重试次数。
 		now := time.Now()
+		held, err := n.pg.QuietBatchDue(ctx, ch.ID)
+		if err != nil {
+			log.Printf("[notify] 判断免打扰汇总失败 channel=%d: %v", ch.ID, err)
+			continue
+		}
+		if held {
+			if n.takeTokens(ch.ID, ch.RatePerMin, 1, now) > 0 {
+				n.stepQuietDigest(ctx, ch, baseURL)
+			}
+			continue
+		}
 		if ch.Mode == db.NotifyModeDigest {
 			tokens, claimLimit := digestTickPlan()
 			if n.takeTokens(ch.ID, ch.RatePerMin, tokens, now) <= 0 {
@@ -225,12 +243,27 @@ func (n *Notifier) stepDigest(ctx context.Context, ch *db.NotificationChannel, a
 	if len(deliveries) == 0 {
 		return
 	}
+	n.sendBatch(ctx, ch, deliveries, baseURL, int(window.Minutes()))
+}
+
+func (n *Notifier) stepQuietDigest(ctx context.Context, ch *db.NotificationChannel, baseURL string) {
+	deliveries, err := n.pg.ClaimQuietBatch(ctx, ch.ID, db.MaxDigestBatchSize, notifyLease)
+	if err != nil {
+		log.Printf("[notify] 领取免打扰汇总失败 channel=%d: %v", ch.ID, err)
+		return
+	}
+	if len(deliveries) > 0 {
+		n.sendBatch(ctx, ch, deliveries, baseURL, 0)
+	}
+}
+
+func (n *Notifier) sendBatch(ctx context.Context, ch *db.NotificationChannel, deliveries []*db.NotificationDelivery, baseURL string, windowMinutes int) {
 	channel, cfg, ok := n.adapt(ch)
 	if !ok {
 		_ = n.pg.FailDeliveries(ctx, deliveryIDs(deliveries), fmt.Sprintf("渠道类型 %q 未注册", ch.Kind))
 		return
 	}
-	msg, included, err := n.renderBatch(ctx, deliveries, baseURL, int(window.Minutes()))
+	msg, included, err := n.renderBatch(ctx, deliveries, baseURL, windowMinutes)
 	if err != nil {
 		_ = n.pg.FailDeliveries(ctx, deliveryIDs(deliveries), err.Error())
 		return
@@ -259,6 +292,12 @@ func (n *Notifier) stepDigest(ctx context.Context, ch *db.NotificationChannel, a
 // 那么第 K+1 条起必须留到下一批，而不是跟着一起被标记成功。否则被截掉的
 // 那些漏洞既不在消息里、也不在失败列表里，彻底消失。
 func (n *Notifier) send(ctx context.Context, channel notify.Channel, cfg map[string]any, msg notify.Message, deliveries []*db.NotificationDelivery) {
+	if n.quietHours().Contains(time.Now()) {
+		if err := n.pg.DeferDeliveries(ctx, deliveryIDs(deliveries), "免打扰期间暂停推送"); err != nil {
+			log.Printf("[notify] 免打扰投递回队失败 channel=%s: %v", channel.Kind(), err)
+		}
+		return
+	}
 	// 单次投递设上限，避免某个渠道卡住把这一轮剩余渠道全部拖住。
 	sendCtx, cancel := context.WithTimeout(ctx, notifySendTimeout)
 	defer cancel()
@@ -492,6 +531,18 @@ func (n *Notifier) takeTokens(channelID int64, ratePerMin, want int, now time.Ti
 // enabled 读取总开关。
 func (n *Notifier) enabled() bool {
 	return n.pg.GetBool(settingNotifyEnabled, true)
+}
+
+func (n *Notifier) quietHours() notify.QuietHours {
+	start, _, _ := n.pg.GetSetting(settingNotifyQuietStart)
+	end, _, _ := n.pg.GetSetting(settingNotifyQuietEnd)
+	q, err := notify.ParseQuietHours(start, end)
+	if err != nil {
+		log.Printf("[notify] 免打扰时间无效: %v", err)
+		return notify.QuietHours{}
+	}
+	q.SendAfter = n.pg.GetBool(settingNotifyQuietSendAfter, true)
+	return q
 }
 
 // publicBaseURL 返回回链用的外部地址，去掉尾部斜杠。

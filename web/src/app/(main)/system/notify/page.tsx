@@ -50,6 +50,9 @@ export default function NotifyPage() {
   const [globalSaving, setGlobalSaving] = React.useState(false);
   const [baseURL, setBaseURL] = React.useState("");
   const [digestMin, setDigestMin] = React.useState("");
+  const [quietStart, setQuietStart] = React.useState("");
+  const [quietEnd, setQuietEnd] = React.useState("");
+  const [quietSendAfter, setQuietSendAfter] = React.useState(true);
 
   const load = React.useCallback(() => {
     api
@@ -57,7 +60,10 @@ export default function NotifyPage() {
       .then((m) => {
         setMeta(m);
         setBaseURL(m.public_base_url);
-        setDigestMin(m.digest_interval_min);
+        setDigestMin(m.digest_interval_min || String(m.defaults.digest_interval_min));
+        setQuietStart(m.quiet_start);
+        setQuietEnd(m.quiet_end);
+        setQuietSendAfter(m.quiet_send_after);
       })
       .catch((e) => toast.error("读取推送配置失败：" + (e as Error).message));
     // 渠道列表加载失败要报出来：静默失败会显示成「一个渠道都没有」，
@@ -254,7 +260,18 @@ export default function NotifyPage() {
     try {
       const patch: Record<string, unknown> = { notify_public_base_url: baseURL.trim() };
       const n = Number(digestMin);
-      if (Number.isFinite(n) && n > 0) patch.notify_digest_interval_min = n;
+      if (!Number.isInteger(n) || n < 1 || n > 1440) {
+        toast.error("汇总周期需在 1 到 1440 分钟之间");
+        return;
+      }
+      if ((quietStart && !quietEnd) || (!quietStart && quietEnd) || (quietStart && quietStart === quietEnd)) {
+        toast.error("免打扰需填写不同的开始和结束时间，或同时留空以关闭");
+        return;
+      }
+      patch.notify_digest_interval_min = n;
+      patch.notify_quiet_start = quietStart;
+      patch.notify_quiet_end = quietEnd;
+      patch.notify_quiet_send_after = quietSendAfter;
       await api.setSettings(patch);
       toast.success("已保存");
       load();
@@ -337,8 +354,22 @@ export default function NotifyPage() {
             />
             <p className="text-muted-foreground text-xs">仅对「汇总」模式的渠道生效。</p>
           </div>
+          <div className="grid gap-2">
+            <Label htmlFor="n-quiet-start">免打扰开始（北京时间）</Label>
+            <Input id="n-quiet-start" type="time" value={quietStart} onChange={(e) => setQuietStart(e.target.value)} />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="n-quiet-end">免打扰结束（北京时间）</Label>
+            <Input id="n-quiet-end" type="time" value={quietEnd} onChange={(e) => setQuietEnd(e.target.value)} />
+            <p className="text-muted-foreground text-xs">结束早于开始时自动跨天；两项都留空则关闭免打扰。</p>
+          </div>
+          <div className="flex items-center gap-3 sm:col-span-2">
+            <Switch id="n-quiet-send" checked={quietSendAfter} onCheckedChange={setQuietSendAfter} />
+            <Label htmlFor="n-quiet-send">推送免打扰期间消息</Label>
+            <span className="text-muted-foreground text-xs">开启后在免打扰结束时按渠道汇总发送；关闭则跳过期间消息。</span>
+          </div>
           <div className="sm:col-span-2">
-            <Button onClick={saveGlobal} disabled={globalSaving}>
+            <Button onClick={saveGlobal} disabled={globalSaving || !meta}>
               保存全局设置
             </Button>
           </div>
