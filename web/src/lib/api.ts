@@ -1182,6 +1182,7 @@ export const api = {
     priority?: number; // 轮询顺位，越大越先用
     pool_exclude?: boolean; // true=不作为故障转移目标
     streaming?: boolean; // true(默认)=流式 | false=非流式
+    ultra?: boolean; // Artex Ultra 模式：对话链路前置注入覆盖块（实验性）
     max_tokens?: number; // 单次回复输出上限；0=不发送，由服务端默认值决定
     max_tokens_field?: string; // ""=max_tokens(默认) | "max_completion_tokens"（仅 openai 格式）
     session_header_key?: string; // 非空=每次请求带该 HTTP 头，头值=当前会话 session id；""=不发送

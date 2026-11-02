@@ -654,6 +654,15 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 		webSearch = a.WebSearch
 	}
 	sessionID := s.convBusyKey(c.ID) // "conv-<id>" transcript session
+	// Artex Ultra 首轮自检：只有真的注入了 system prompt，才谈得上「是否注入成功」，
+	// 所以探针跟着 Ultra 走，不额外加开关。只在会话首轮追加——每轮都塞会把探针压进
+	// 用户消息正文、随历史反复重发，成本随轮次线性增长而信息量不增。前端按回复里是否
+	// 出现 UltraProbeMarker 判定，判定失败只影响 UI 提示，不影响对话本身。
+	if ca.Ultra() {
+		if acts, _, err := pg.ConvActivityList(c.ID, 0, 1); err == nil && len(acts) == 0 {
+			msg += agent.UltraProbeInstruction
+		}
+	}
 	emit := func(rec db.Activity) {
 		if _, err := pg.AppendConvActivity(c.ID, rec); err != nil {
 			log.Printf("[conv %d] append activity failed: %v", c.ID, err)

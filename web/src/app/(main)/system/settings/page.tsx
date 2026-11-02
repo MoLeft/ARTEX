@@ -849,7 +849,8 @@ export default function SystemSettingsPage() {
                       OPSEC 准则
                     </Label>
                     <p className="text-muted-foreground mt-1 text-xs">
-                      要求执行型 Agent 复用流量和浏览器特征、控制请求噪声，并遵守平台代理与授权范围。
+                      要求执行型 Agent 复用流量和浏览器特征、控制请求噪声，并遵守平台代理与授权范围。 与 Artex Ultra
+                      模式互斥：若有 LLM 配置开着 Ultra，需先到 系统 → LLM 配置 关闭它才能开启本项。
                     </p>
                   </div>
                   <Switch

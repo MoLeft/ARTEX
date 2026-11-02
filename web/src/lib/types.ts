@@ -1160,6 +1160,9 @@ export interface LLMProfile {
   // 自定义会话头名：非空时每次请求带该 HTTP 头，头值=当前会话/意图的 session id。
   // ""=不发送。用于按 session-id 头做提示缓存/粘性路由的网关。
   session_header_key?: string;
+  // Artex Ultra 模式（实验性）：true = 对话链路在 system prompt 最前面注入一段
+  // 前置覆盖，压低模型自带内容政策的拒答率。按配置存，不同供应商容忍度不同。
+  ultra?: boolean;
   // 本配置对重试的覆盖（建连/空响应/同 provider 安全窗口）。留空/全 0 = 跟随全局策略。
   retry?: LLMRetryOverride;
 }

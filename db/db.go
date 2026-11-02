@@ -160,6 +160,12 @@ func Open(dsn string) (*DB, error) {
 		if err := applySchemaWithRetry(context.Background(), conn, time.Sleep); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}
+		// 第二道保险：schema.sql 是整段 Exec 的，一旦哪次改动漏了 ALTER，服务就会
+		// 带着缺列的库跑起来，错误推迟到某条 SELECT 上才炸。这里按显式契约表核对
+		// 一遍，缺列当场补上并留日志。放在 seed 之前——seed 可能写新列。
+		if err := d.EnsureSchemaColumns(context.Background()); err != nil {
+			return fmt.Errorf("verify schema columns: %w", err)
+		}
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
 		}

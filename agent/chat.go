@@ -35,6 +35,7 @@ type ChatAgent struct {
 	nonStreamingFn func() bool  // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn   func() bool  // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn    func() int   // resolver: per-reply output cap (nil/0 = send no cap)
+	ultraFn        func() bool  // resolver: prepend Artex Ultra coverage? (nil = off)
 }
 
 func NewChatAgent(prov llm.Provider, model, workDir string, tx *transcript.Store, window int) *ChatAgent {
@@ -63,6 +64,19 @@ func (c *ChatAgent) maxTokens() int {
 	return c.maxTokensFn()
 }
 
+// SetUltra wires a resolver deciding whether this chat run prepends the Artex
+// Ultra coverage block to its system prompt. A per-profile switch, not a global
+// one: two conversations can pin two different LLM profiles and must not share
+// the same injected text. Read per run so saving a profile takes effect without
+// rebuilding the agent.
+func (c *ChatAgent) SetUltra(fn func() bool) { c.ultraFn = fn }
+
+// Ultra reports whether this agent currently runs with the Ultra block, so the
+// conversation runner can decide whether to append the first-turn self-check
+// probe without re-resolving the profile. OPSEC 开启时这里同样是 false——探针
+// 不该为一段没有注入的文本做校验。
+func (c *ChatAgent) Ultra() bool { return UltraEnabled(c.ultraFn) && !opsecActive() }
+
 // SetProxy points the chat agent's WebFetch/Bash at the recording proxy plus the
 // CA cert it trusts (empty addr = direct). Kept for parity with the other agents.
 func (c *ChatAgent) SetProxy(addr, caCert string) { c.proxyAddr, c.proxyCACert = addr, caCert }
@@ -83,8 +97,19 @@ func chatWorkDirSpec(workDir string) string {
 
 // chatSystem renders the DB-managed prompt body for agentKey. Custom agents have
 // no per-key in-code default, so DefaultAssistantPrompt is the render fallback.
-func chatSystem(agentKey, dataDir, workDir string) string {
-	return renderSystem(agentKey, DefaultAssistantPrompt, chatVars{DataDir: dataDir, Now: nowStr()}) + chatWorkDirSpec(workDir)
+//
+// ultra=true prepends the Artex Ultra block AHEAD of the body (and ahead of the
+// opsec tail renderSystem appends), so it reads as a precondition on everything
+// that follows while still leaving the authorization boundary intact — the Ultra
+// text itself refuses to override scope/OPSEC.
+func chatSystem(agentKey, dataDir, workDir string, ultra bool) string {
+	body := renderSystem(agentKey, DefaultAssistantPrompt, chatVars{DataDir: dataDir, Now: nowStr()})
+	// OPSEC 开着就不注入：两段指令在「能不能拒绝」上直接对立，同时出现时谁胜出
+	// 取决于位置而不是意图。以 OPSEC 为准，见 ultra.go 的 opsecActive。
+	if ultra && !opsecActive() {
+		body = ultraBlock + "\n\n" + body
+	}
+	return body + chatWorkDirSpec(workDir)
 }
 
 // chatVars carries the runtime variables a custom agent's prompt may reference.
@@ -123,7 +148,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	tools, def, cleanup := AugmentTools(ctx, agentKey, base)
 	defer cleanup()
 
-	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir, sessionWorkDir), def)
+	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir, sessionWorkDir, c.Ultra()), def)
 	opts := agentcore.Options{
 		Provider:        c.prov,
 		SystemPrompt:    system,
