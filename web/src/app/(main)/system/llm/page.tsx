@@ -452,12 +452,15 @@ function ProfileSheet({
     }
   }
 
-  async function save() {
+  // overrides 只服务于「确认开启 Ultra 后立刻落库」这一条路径：React 的 setState
+  // 是异步的，确认回调里刚 setUltra(true) 就读不到新值，所以把它显式传进来，
+  // 而不是指望下一次 re-render。
+  async function save(overrides?: { ultra?: boolean }): Promise<boolean> {
     if (!name.trim() || !model.trim()) {
       toast.error("请填写名称与模型");
-      return;
+      return false;
     }
-    if (saving) return;
+    if (saving) return false;
     setSaving(true);
     try {
       const { id } = await api.saveLLMProfile({
@@ -476,7 +479,7 @@ function ProfileSheet({
         priority: Number(priority) || 0,
         pool_exclude: poolExclude,
         streaming,
-        ultra,
+        ultra: overrides?.ultra ?? ultra,
         max_tokens: Math.max(0, Number(maxTokens) || 0),
         // 字段名开关只对 openai(Chat Completions) 有意义，其它格式一律回落到默认；
         // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
@@ -488,8 +491,10 @@ function ProfileSheet({
       else toast.success(profile?.is_default ? "已保存，激活配置即时生效，无需重启" : "已保存");
       onSaved(String(id));
       onOpenChange(false);
+      return true;
     } catch (e) {
       toast.error(`保存失败：${(e as Error).message}`);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -500,6 +505,18 @@ function ProfileSheet({
       <SheetContent
         side="right"
         className="flex flex-col gap-0 p-0 data-[side=right]:min-w-[420px] data-[side=right]:sm:max-w-xl"
+        // Ultra 的确认弹窗是另一个 Radix Dialog，它的 Portal 挂在 body 上——对 Sheet
+        // 的 DismissableLayer 来说，点弹窗里任何地方都是「点到了外面」，默认会直接把
+        // 整个 Sheet 关掉：表单随之卸载，刚确认的开关连同没保存的其它字段一起没了。
+        // 弹窗开着时把这次 outside 交互吞掉，弹窗自己仍按自己的规则关闭。
+        onInteractOutside={(e) => {
+          if (ultraOpen) e.preventDefault();
+        }}
+        // Escape 同理：两层 Radix Dialog 都在 document 上听 keydown，弹窗开着时
+        // 按 Esc 应该只关弹窗，不该把底下的配置抽屉一起带走。
+        onEscapeKeyDown={(e) => {
+          if (ultraOpen) e.preventDefault();
+        }}
       >
         <SheetHeader className="px-4">
           <SheetTitle className="flex items-center gap-2">
@@ -864,7 +881,7 @@ function ProfileSheet({
             {testing ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />}
             {testing ? "测试中…" : "测试连接"}
           </Button>
-          <Button onClick={save} disabled={saving} className="flex-1">
+          <Button onClick={() => void save()} disabled={saving} className="flex-1">
             {saving && <Loader2Icon className="animate-spin" />}
             {!saving && (isNew ? <PlusIcon /> : <SaveIcon />)}
             {isNew ? "新建" : "保存"}
@@ -923,15 +940,20 @@ function ProfileSheet({
             </Button>
             <Button
               variant="destructive"
-              disabled={ultraAck.trim() !== ULTRA_ACK}
+              disabled={ultraAck.trim() !== ULTRA_ACK || saving}
               onClick={() => {
                 setUltra(true);
                 setUltraOpen(false);
                 setUltraAck("");
-                toast.success("已开启 Artex Ultra；保存配置后对该配置的对话生效");
+                // 点了确认就直接落库：以前这里只改本地 state，还得再点一次「保存」，
+                // 而弹窗交互又会把 Sheet 关掉，于是开关看起来「开了又没开」。
+                // 落库失败就把开关退回关闭，别留一个假「已开启」。
+                void save({ ultra: true }).then((ok) => {
+                  if (!ok) setUltra(false);
+                });
               }}
             >
-              确认开启
+              {saving ? "保存中…" : "确认开启"}
             </Button>
           </DialogFooter>
         </DialogContent>
