@@ -308,10 +308,12 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 					log.Printf("[auto-title] active profile lookup failed: %v", activeErr)
 				} else if active == nil {
 					log.Printf("[auto-title] no active profile")
-				} else if prov, _, providerOK := s.llmForActive(active.ID); providerOK {
+				} else if prov, cfg, providerOK := s.llmForActive(active.ID); providerOK {
 					titleCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 					defer cancel()
-					generated, titleErr := agent.GenerateAutoTitle(titleCtx, prov, a.Description+"\n"+a.Goal)
+					// cfg.Ultra: 任务名和对话标题走同一条规则——起名调用的
+					// Ultra 注入跟着这条请求实际使用的配置，不跟全局设置。
+					generated, titleErr := agent.GenerateAutoTitle(titleCtx, prov, a.Description+"\n"+a.Goal, cfg.Ultra)
 					if err := ctx.Err(); err != nil {
 						return actool.Errorf(err.Error()), nil
 					}

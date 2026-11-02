@@ -487,18 +487,19 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 				defer cancel()
 				profileID := s.effectiveProfileForAgent(agentKey, pinnedProfile)
 				var prov llm.Provider
+				var cfg agent.Config
 				providerOK := false
 				if profileID != nil {
 					// A per-agent binding or a per-conversation pick: exclusive by
 					// default, chained only when bound fallback is on.
-					prov, _, providerOK = s.llmForProfile(*profileID)
+					prov, cfg, providerOK = s.llmForProfile(*profileID)
 				}
 				if !providerOK {
 					if active, activeErr := s.m.pg.ActiveProfile(); activeErr == nil && active != nil {
 						profileID = &active.ID
 						// Falling back to the active profile itself: only the master
 						// failover switch applies here, nothing is being overridden.
-						prov, _, providerOK = s.llmForActive(active.ID)
+						prov, cfg, providerOK = s.llmForActive(active.ID)
 					} else if activeErr != nil {
 						log.Printf("[auto-title] conversation %d active profile lookup failed: %v", conversationID, activeErr)
 					}
@@ -507,7 +508,10 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 					log.Printf("[auto-title] conversation %d: no effective profile", conversationID)
 					return
 				}
-				generated, err := agent.GenerateAutoTitle(ctx, prov, promptContent)
+				// cfg.Ultra 跟着这条调用实际用的配置走：起名和对话是两条独立的
+				// 请求，但同一份配置的 Ultra 开关必须对两者一致，否则会出现
+				// 对话在跑 Ultra、标题却因为拒答变成「抱歉，我无法协助」。
+				generated, err := agent.GenerateAutoTitle(ctx, prov, promptContent, cfg.Ultra)
 				if err != nil {
 					log.Printf("[auto-title] conversation %d: %v", conversationID, err)
 					return

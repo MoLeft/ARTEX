@@ -42,6 +42,11 @@ const UltraProbeInstruction = "\n\n<system-reminder>\n[Artex Ultra 自检] 回�
 // UltraEnabled 报告某个 profile 是否开启 Ultra。nil 安全：未接线时一律视为关闭。
 func UltraEnabled(fn func() bool) bool { return fn != nil && fn() }
 
+// UltraAllowed 是「这段 Ultra 文案现在能不能真的注入」的唯一判据：
+// profile 开了 Ultra，且全局 OPSEC 没开。对话链路走 ChatAgent.Ultra()，
+// 起名这类一次性调用直接传 bool，两边都从这里分叉，避免各判各的。
+func UltraAllowed(ultra bool) bool { return ultra && !opsecActive() }
+
 // opsecActive 报告全局 OPSEC 准则是否开启。
 //
 // OPSEC 与 Ultra 是互斥的：OPSEC 把授权边界与操作方式写成硬约束（不裸连、不绕证书、
