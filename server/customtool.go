@@ -447,9 +447,6 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		if spec.UseRecordingProxy || strings.TrimSpace(spec.Proxy) == strings.TrimSpace(s.m.GlobalProxy()) {
-			s.handleProxyToolFailure(runCtx, err)
-		}
 		return actool.Errorf("请求失败: " + err.Error()), nil
 	}
 	defer resp.Body.Close()

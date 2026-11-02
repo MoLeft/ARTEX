@@ -7,10 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
-
-	"github.com/Autumn-27/artex/agent"
 )
 
 const (
@@ -19,44 +16,6 @@ const (
 	defaultProxyReconnectMax      = 5
 	defaultProxyReconnectInterval = 30
 )
-
-// isProxyFailure is used for LLM/planner errors, where the error has no trusted
-// indication that it came from the global target proxy. Keep this deliberately
-// narrow: generic EOF/reset/refused errors belong to the model_error retry path.
-func isProxyFailure(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	for _, part := range []string{"proxyconnect", "proxy connection", "proxy error", "proxy handshake", "socks handshake", "failed to connect to proxy", "connect to proxy"} {
-		if strings.Contains(s, part) {
-			return true
-		}
-	}
-	return false
-}
-
-// isGlobalProxyDialFailure is only used by the MITM upstream callback. That
-// callback is on the actual configured global-proxy path; the saved proxy is
-// still probed before any task is paused, so a target-side RequestError cannot
-// pause tasks while the proxy itself remains healthy.
-func isGlobalProxyDialFailure(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := strings.ToLower(err.Error())
-	for _, part := range []string{"proxyconnect", "proxy connection", "proxy error", "proxy handshake", "socks", "connect to proxy", "upstream proxy", "connection refused", "connection reset", "network is unreachable", "broken pipe", "unexpected eof", "eof"} {
-		if strings.Contains(s, part) {
-			return true
-		}
-	}
-	return false
-}
-
-type proxyReconnectSupervisor struct {
-	mu   sync.Mutex
-	wake chan struct{}
-}
 
 type proxyReconnectGuard struct {
 	generation   uint64
@@ -88,23 +47,6 @@ func proxyReconnectGuardMatches(st taskLifecycleState, guard proxyReconnectGuard
 		(!guard.checkAttempt || st.ReconnectAttempt == guard.attempt)
 }
 
-func (s *Server) ensureProxySupervisor() {
-	s.proxyReconnect.mu.Lock()
-	if s.proxyReconnect.wake == nil {
-		s.proxyReconnect.wake = make(chan struct{}, 1)
-		go s.runProxyReconnect(s.ctx)
-	}
-	s.proxyReconnect.mu.Unlock()
-}
-
-func (s *Server) signalProxySupervisor() {
-	s.ensureProxySupervisor()
-	select {
-	case s.proxyReconnect.wake <- struct{}{}:
-	default:
-	}
-}
-
 func (s *Server) proxyReconnectConfig() (int, time.Duration) {
 	max := defaultProxyReconnectMax
 	interval := defaultProxyReconnectInterval
@@ -131,200 +73,16 @@ func (s *Server) runProxyProbe(ctx context.Context, proxyRaw, caPEMPath string, 
 	return probeEgress(ctx, proxyRaw, caPEMPath, probes, timeout)
 }
 
-func (s *Server) handleProxyFailure(taskID string, cause error) {
-	if strings.TrimSpace(s.m.GlobalProxy()) == "" {
-		return
-	}
-	if probe := probeEgress(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second); probe.OK {
-		return
-	}
-	s.pauseProxyTask(taskID, cause)
-}
-
-func (s *Server) pauseProxyTask(taskID string, cause error) {
-	if strings.TrimSpace(s.m.GlobalProxy()) == "" {
-		return
-	}
-	max, interval := s.proxyReconnectConfig()
-	now := time.Now().Add(interval).Unix()
-	lastError := truncateProxyError(cause)
-	transitioned, err := s.m.ApplyProxyPauseWithCallback(taskID, func() {
-		if s.engine != nil {
-			s.engine.Pause(taskID, agent.AbortPausedByProxy)
-		}
-		if t, ok := s.m.Task(taskID); ok {
-			t.updateLifecycle(func(st *taskLifecycleState) {
-				// A successful admission clears the prior round's counters. This
-				// transition starts a fresh round, so make that reset atomic with
-				// the persisted proxy pause and install a new generation.
-				st.ReconnectGeneration++
-				st.ReconnectAttempt = 0
-				st.ReconnectMax = max
-				st.ReconnectNextAt = now
-				st.ReconnectExhausted = false
-				st.ReconnectLastError = lastError
-			})
-		}
-	})
-	if err != nil {
-		log.Printf("[proxy] pause task %s: %v", taskID, err)
-		return
-	}
-	if !transitioned {
-		// A no-op means the task was already paused (possibly by a user,
-		// schedule, or an exhausted proxy attempt). Preserve its reason and
-		// reconnect state exactly as-is.
-		return
-	}
-	s.cancelTaskChat(taskID, agent.AbortChatPausedWithTask)
-	s.ensureProxySupervisor()
-	s.signalProxySupervisor()
-}
-
-func (s *Server) handleProxyTrafficFailure(cause error) {
-	if !isGlobalProxyDialFailure(cause) || strings.TrimSpace(s.m.GlobalProxy()) == "" {
-		return
-	}
-	// Confirm the saved global proxy itself before pausing. MITM RequestError can
-	// also represent a target-side failure, and those must not pause a task.
-	if probe := probeEgress(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second); probe.OK {
-		return
-	}
-	for _, t := range s.m.List() {
-		st := t.lifecycleSnapshot()
-		if isTerminalStatus(st.Status) || st.Paused || s.engine.IsDeleting(t.ID) {
-			continue
-		}
-		s.pauseProxyTask(t.ID, cause)
-	}
-}
-
-func (s *Server) handleProxyToolFailure(ctx context.Context, cause error) {
-	if !isGlobalProxyDialFailure(cause) || strings.TrimSpace(s.m.GlobalProxy()) == "" {
-		return
-	}
-	if probe := probeEgress(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second); probe.OK {
-		return
-	}
-	if info := agent.RunInfoFrom(ctx); info.TaskID > 0 {
-		s.pauseProxyTask(fmt.Sprint(info.TaskID), cause)
-	}
-}
-
-func truncateProxyError(err error) string {
-	if err == nil {
-		return ""
-	}
-	s := err.Error()
-	if len(s) > 240 {
-		return s[:240] + "…"
-	}
-	return s
-}
-
-func (s *Server) runProxyReconnect(ctx context.Context) {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.proxyReconnectTick()
-		case <-s.proxyReconnect.wake:
-			s.proxyReconnectTick()
-		}
-	}
-}
-
-func (s *Server) proxyReconnectTick() {
-	if strings.TrimSpace(s.m.GlobalProxy()) == "" {
-		return
-	}
-	now := time.Now().Unix()
-	max, interval := s.proxyReconnectConfig()
-	for _, t := range s.m.List() {
-		st := t.lifecycleSnapshot()
-		if isTerminalStatus(st.Status) {
-			t.updateLifecycle(func(v *taskLifecycleState) {
-				if v.PauseReason == "paused_by_proxy" {
-					v.PauseReason = ""
-				}
-				v.ReconnectAttempt, v.ReconnectMax, v.ReconnectNextAt = 0, 0, 0
-				v.ReconnectExhausted, v.ReconnectLastError = false, ""
-			})
-			continue
-		}
-		if st.PauseReason != "paused_by_proxy" || st.ReconnectExhausted || (st.ReconnectNextAt > 0 && st.ReconnectNextAt > now) {
-			continue
-		}
-		attempt := st.ReconnectAttempt + 1
-		round := st.ReconnectGeneration
-		claimed := false
-		t.updateLifecycle(func(v *taskLifecycleState) {
-			if v.PauseReason != "paused_by_proxy" || v.ReconnectGeneration != round || v.ReconnectAttempt != st.ReconnectAttempt {
-				return
-			}
-			v.ReconnectAttempt = attempt
-			v.ReconnectMax = max
-			v.ReconnectNextAt = 0
-			claimed = true
-		})
-		if !claimed {
-			continue
-		}
-		res := s.runProxyProbe(context.Background(), s.m.GlobalProxy(), "", defaultEgressProbes, 10*time.Second)
-		if res.OK {
-			s.proxyReconnectSuccessWithGuards(map[string]proxyReconnectGuard{
-				t.ID: {generation: round, attempt: attempt, checkAttempt: true},
-			}, nil)
-			return
-		}
-		err := res.Error
-		exhausted := attempt >= max
-		next := time.Now().Add(interval).Unix()
-		t.updateLifecycle(func(v *taskLifecycleState) {
-			if v.PauseReason != "paused_by_proxy" || v.ReconnectGeneration != round || v.ReconnectAttempt != attempt {
-				return
-			}
-			v.ReconnectNextAt = next
-			v.ReconnectExhausted = exhausted
-			v.ReconnectLastError = err
-		})
-		log.Printf("[proxy] reconnect attempt %d/%d failed: %s", attempt, max, err)
-	}
-}
-
 func (s *Server) proxyReconnectSuccess() {
 	s.proxyReconnectSuccessWithGuards(s.snapshotProxyReconnectGuards(false), nil)
 }
 
-func (s *Server) proxyReconnectSuccessFor(taskID string, generation uint64, attempt int) {
-	s.proxyReconnectSuccessWithGuards(map[string]proxyReconnectGuard{
-		taskID: {generation: generation, attempt: attempt, checkAttempt: true},
-	}, nil)
-}
-
-// proxyReconnectSuccessWithHook is kept small and private so tests can
-// deterministically place a competing pause immediately after admission has
-// released concMu. Production callers use proxyReconnectSuccess without a
-// hook.
+// The hook lets recovery tests place a competing pause after admission.
 func (s *Server) proxyReconnectSuccessWithHook(afterAdmission func()) {
 	s.proxyReconnectSuccessWithGuards(s.snapshotProxyReconnectGuards(false), afterAdmission)
 }
 
-func (s *Server) proxyReconnectSuccessWithGuard(expectedID string, expectedGeneration uint64, expectedAttempt int, afterAdmission func()) {
-	guards := s.snapshotProxyReconnectGuards(false)
-	if expectedID != "" {
-		guards = map[string]proxyReconnectGuard{
-			expectedID: {generation: expectedGeneration, attempt: expectedAttempt, checkAttempt: true},
-		}
-	}
-	s.proxyReconnectSuccessWithGuards(guards, afterAdmission)
-}
-
 func (s *Server) proxyReconnectSuccessWithGuards(guards map[string]proxyReconnectGuard, afterAdmission func()) {
-	max, interval := s.proxyReconnectConfig()
 	s.scheduleMu.Lock()
 	defer s.scheduleMu.Unlock()
 	for _, t := range s.m.List() {
@@ -358,16 +116,6 @@ func (s *Server) proxyReconnectSuccessWithGuards(guards map[string]proxyReconnec
 			err = s.m.ClearPauseReason(t.ID)
 		}
 		if err != nil {
-			// Admission re-checks the persisted reason under concMu. A user pause,
-			// terminal transition, delete, or archive therefore cannot be revived;
-			// only keep probing if the proxy pause is still eligible.
-			st := t.lifecycleSnapshot()
-			if proxyReconnectGuardMatches(st, guard) && !isTerminalStatus(st.Status) {
-				t.updateLifecycle(func(v *taskLifecycleState) {
-					v.ReconnectMax = max
-					v.ReconnectNextAt = time.Now().Add(interval).Unix()
-				})
-			}
 			log.Printf("[proxy] resume task %s: %v", t.ID, err)
 			continue
 		}

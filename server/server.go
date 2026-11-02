@@ -133,7 +133,6 @@ type Server struct {
 	archiveWake            chan struct{}
 	archiveWG              sync.WaitGroup
 	credentialWake         chan struct{}
-	proxyReconnect         proxyReconnectSupervisor
 	lightpandaProxyUpdater func(string, string)
 	// proxyProbe is injectable for deterministic reconnect race tests. Production
 	// servers leave it nil and use probeEgress directly.
@@ -203,10 +202,6 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		defer s.cfgMu.Unlock()
 		return s.llmOn
 	})
-	s.engine.SetProxyFailureHandler(s.handleProxyFailure)
-	if m.traffic != nil {
-		m.traffic.SetUpstreamFailureHandler(s.handleProxyTrafficFailure)
-	}
 	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {
@@ -303,7 +298,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		log.Printf("[engine] no LLM provider configured — engine idle until set via /api/llm or env")
 	}
 	s.restoreTaskRuntimes()
-	s.ensureProxySupervisor()
+	s.proxyReconnectSuccess()
 	go s.reconcileConcurrency()
 	s.startTaskArchiveWorker()
 	if m.pg != nil {

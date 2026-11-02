@@ -153,11 +153,8 @@ type Engine struct {
 	slotPlans            sync.Map // task -> map[slot name]profile ID; immutable for a run
 	// readiness reports whether a global LLM provider is configured — the signal behind
 	// Ready()/the llm_configured indicator. Wired once at startup; nil → not ready.
-	readiness    func() bool
-	proxyFailure func(taskID string, err error)
+	readiness func() bool
 }
-
-func (e *Engine) SetProxyFailureHandler(fn func(string, error)) { e.proxyFailure = fn }
 
 type slotAvailability struct {
 	available bool
@@ -956,9 +953,6 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		e.stampFirstRun(t) // 首次真正规划 → 盖 first_run_at + 算 deadline(仅带 timeout 的任务)
 		e.touch(t.ID)
 		emit := func(r db.Activity) {
-			if r.Kind == "tool_result" && r.IsError && e.proxyFailure != nil && isGlobalProxyDialFailure(errors.New(r.Detail+" "+r.Summary)) {
-				e.proxyFailure(t.ID, errors.New(r.Detail+" "+r.Summary))
-			}
 			e.emitActivity(t, r)
 		}
 		ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
@@ -985,12 +979,6 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 规划出错: %v", t.ID, err)
-			if e.proxyFailure != nil && isProxyFailure(err) {
-				// 出口代理故障有自己的探测与恢复路径；再叠一层模型错误退避会让
-				// 两个状态机互相打脸。
-				e.proxyFailure(t.ID, err)
-				break
-			}
 			e.recordPlannerFailure(t, err)
 		case met:
 			log.Printf("[planner] task %s 判定目标达成: %s", t.ID, reason)
@@ -1114,9 +1102,6 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	e.stampFirstRun(t) // 首次真正执行 → 盖 first_run_at + 算 deadline(仅带 timeout 的任务)
 	e.touch(t.ID)
 	emit := func(r db.Activity) {
-		if r.Kind == "tool_result" && r.IsError && e.proxyFailure != nil && isGlobalProxyDialFailure(errors.New(r.Detail+" "+r.Summary)) {
-			e.proxyFailure(t.ID, errors.New(r.Detail+" "+r.Summary))
-		}
 		e.emitActivity(t, r)
 	}
 	ectx := e.clockCtx(e.execContextFor(ctx, t.ID), t, false) // cancellable by Pause; 带任务 deadline
@@ -1160,9 +1145,6 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
 	} else {
 		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
-	}
-	if err != nil && e.proxyFailure != nil && isProxyFailure(err) {
-		e.proxyFailure(t.ID, err)
 	}
 	e.EndLLMCall(t.ID)
 	// model_error 收场 → 额外重跑几次（退避后再试）。仅在意图仍属本 work、任务
