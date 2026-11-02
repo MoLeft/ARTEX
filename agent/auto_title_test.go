@@ -14,10 +14,14 @@ type autoTitleProvider struct {
 	reply string
 	err   error
 	req   llm.CompletionRequest
+	rejectDisabled bool
 }
 
 func (p *autoTitleProvider) Complete(_ context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	p.req = req
+	if p.rejectDisabled && req.Thinking == "disabled" {
+		return llm.Message{}, "", llm.Usage{}, errors.New("MiniMax requires adaptive thinking (2013)")
+	}
 	if p.err != nil {
 		return llm.Message{}, "", llm.Usage{}, p.err
 	}
@@ -38,7 +42,7 @@ func TestGenerateAutoTitleCleansResponse(t *testing.T) {
 	if strings.ContainsAny(got, "\r\n") || strings.Contains(got, "标题：") || strings.HasPrefix(got, "\"") || len([]rune(got)) > 40 {
 		t.Fatalf("unclean title %q", got)
 	}
-	if p.req.Thinking != "disabled" || p.req.MaxTokens != 96 || len(p.req.Tools) != 0 {
+	if p.req.Thinking != "" || p.req.MaxTokens != 96 || len(p.req.Tools) != 0 {
 		t.Fatalf("request options: %+v", p.req)
 	}
 
@@ -49,6 +53,14 @@ func TestGenerateAutoTitleCleansResponse(t *testing.T) {
 	}
 	if got != "整理项目设置" {
 		t.Fatalf("nested quote/prefix cleanup: got %q", got)
+	}
+}
+
+func TestGenerateAutoTitleAllowsAdaptiveThinkingModel(t *testing.T) {
+	p := &autoTitleProvider{reply: "任务进展", rejectDisabled: true}
+	got, err := GenerateAutoTitle(t.Context(), p, "检查任务进展")
+	if err != nil || got != "任务进展" {
+		t.Fatalf("title=%q, err=%v", got, err)
 	}
 }
 
