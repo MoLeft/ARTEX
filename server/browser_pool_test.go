@@ -85,6 +85,78 @@ func TestBrowserPoolWaitsAndForceCloseReleasesSlot(t *testing.T) {
 	}
 }
 
+func TestBrowserPoolReportsConversationWaitingUntilSlotReleased(t *testing.T) {
+	p := newBrowserPool(nil)
+	p.setLimit(browserMCPKindChrome, 1)
+	first, err := p.acquire(context.Background(), browserMCPKindChrome, "worker", agent.RunInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+
+	status, ok := any(p).(interface{ waitingKind(string) string })
+	if !ok {
+		t.Fatal("browser pool does not report which browser a conversation is waiting for")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result := make(chan *browserLease, 1)
+	go func() {
+		lease, _ := p.acquire(ctx, browserMCPKindChrome, "auto", agent.RunInfo{SessionID: "conv-42"})
+		result <- lease
+	}()
+	deadline := time.Now().Add(time.Second)
+	for status.waitingKind("conv-42") != browserMCPKindChrome && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := status.waitingKind("conv-42"); got != browserMCPKindChrome {
+		t.Fatalf("waiting browser = %q, want chrome", got)
+	}
+	if got := status.waitingKind("conv-43"); got != "" {
+		t.Fatalf("unrelated conversation waiting browser = %q", got)
+	}
+	first.Close()
+	select {
+	case lease := <-result:
+		if lease == nil {
+			t.Fatal("conversation did not acquire released Chrome slot")
+		}
+		defer lease.Close()
+	case <-ctx.Done():
+		t.Fatal("conversation remained waiting after Chrome slot was released")
+	}
+	if got := status.waitingKind("conv-42"); got != "" {
+		t.Fatalf("waiting browser after acquire = %q", got)
+	}
+
+	blocker, err := p.acquire(context.Background(), browserMCPKindLightpanda, "worker", agent.RunInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+	p.setLimit(browserMCPKindLightpanda, 1)
+	cancelCtx, cancelWait := context.WithCancel(context.Background())
+	canceled := make(chan error, 1)
+	go func() {
+		_, err := p.acquire(cancelCtx, browserMCPKindLightpanda, "auto", agent.RunInfo{SessionID: "conv-43"})
+		canceled <- err
+	}()
+	deadline = time.Now().Add(time.Second)
+	for status.waitingKind("conv-43") != browserMCPKindLightpanda && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := status.waitingKind("conv-43"); got != browserMCPKindLightpanda {
+		t.Fatalf("waiting browser = %q, want lightpanda", got)
+	}
+	cancelWait()
+	if err := <-canceled; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled wait returned %v", err)
+	}
+	if got := status.waitingKind("conv-43"); got != "" {
+		t.Fatalf("waiting browser after cancel = %q", got)
+	}
+}
+
 func TestBrowserPoolWaiterCannotBeBypassed(t *testing.T) {
 	p := newBrowserPool(nil)
 	p.setLimit(browserMCPKindChrome, 1)

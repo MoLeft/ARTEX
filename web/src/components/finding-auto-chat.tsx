@@ -44,6 +44,7 @@ export function FindingAutoChat({
   const [messages, setMessages] = React.useState<Activity[]>([]);
   const [input, setInput] = React.useState("");
   const [running, setRunning] = React.useState(false);
+  const [waitingBrowser, setWaitingBrowser] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [sending, setSending] = React.useState(false);
   const [stopping, setStopping] = React.useState(false);
@@ -59,6 +60,7 @@ export function FindingAutoChat({
     setManualEmpty(false);
     setMessages([]);
     setRunning(false);
+    setWaitingBrowser("");
     setLoading(true);
     try {
       const created = await api.createConversation(agentKey, `漏洞 #${findingId} · ${safeTitle}`);
@@ -125,6 +127,7 @@ export function FindingAutoChat({
         setMessages((current) => mergeActivities(current, page.items));
         cursor.current = page.cursor;
         setRunning(page.running);
+        setWaitingBrowser(page.running ? page.waitingBrowser : "");
       })
       .catch((error: Error) => {
         if (error.message.includes("404")) {
@@ -160,6 +163,7 @@ export function FindingAutoChat({
         if (page.items.length) setMessages((current) => mergeActivities(current, page.items));
         cursor.current = Math.max(cursor.current, page.cursor);
         setRunning(page.running);
+        setWaitingBrowser(page.running ? page.waitingBrowser : "");
         if (page.running) timer = setTimeout(() => void poll(), 1000);
       } catch {
         if (live) timer = setTimeout(() => void poll(), 1500);
@@ -182,6 +186,7 @@ export function FindingAutoChat({
     try {
       await api.sendConversationMessage(conversation.id, message);
       setRunning(true);
+      setWaitingBrowser("");
     } catch (error) {
       setInput(question);
       toast.error(`发送失败：${(error as Error).message}`);
@@ -194,6 +199,7 @@ export function FindingAutoChat({
     setManualEmpty(false);
     setMessages([]);
     setRunning(false);
+    setWaitingBrowser("");
     setConversation(item);
     window.localStorage.setItem(storageKey, String(item.id));
     setHistoryOpen(false);
@@ -207,6 +213,7 @@ export function FindingAutoChat({
       setConversation(null);
       setMessages([]);
       setRunning(false);
+      setWaitingBrowser("");
       setManualEmpty(true);
       setHistory((items) => items.filter((item) => item.id !== conversation.id));
       toast.success("已删除当前漏洞对话");
@@ -297,7 +304,7 @@ export function FindingAutoChat({
                 <Loader2Icon className="mr-2 size-4 animate-spin" /> 正在创建 Auto 对话…
               </div>
             ) : messages.length ? (
-              <Transcript activity={messages} chat live={running} fetchDetail={(seq) => api.conversationMsgDetail(conversation?.id ?? 0, seq)} />
+              <Transcript activity={messages} chat live={running} waitingBrowser={waitingBrowser} fetchDetail={(seq) => api.conversationMsgDetail(conversation?.id ?? 0, seq)} />
             ) : (
               <p className="py-10 text-center text-muted-foreground text-sm">{conversation ? "请输入你想了解的内容。" : "点击上方 + 新建漏洞对话。"}</p>
             )}

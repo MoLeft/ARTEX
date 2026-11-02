@@ -314,6 +314,10 @@ func (s *Server) pgConversationMessages(w http.ResponseWriter, r *http.Request) 
 	s.chatMu.Lock()
 	running := s.chatBusy[s.convBusyKey(c.ID)]
 	s.chatMu.Unlock()
+	waitingBrowser := ""
+	if running {
+		waitingBrowser = s.browserPool.waitingKind(s.convBusyKey(c.ID))
+	}
 
 	// Incremental tail: ?since=N returns steps after id N (ASC) — used by the live
 	// poll and the post-send fetch. A generous cap so a burst is never dropped.
@@ -324,7 +328,7 @@ func (s *Server) pgConversationMessages(w http.ResponseWriter, r *http.Request) 
 			writeErr(w, 500, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "hasMore": false})
+		writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "waiting_browser": waitingBrowser, "hasMore": false})
 		return
 	}
 
@@ -341,7 +345,7 @@ func (s *Server) pgConversationMessages(w http.ResponseWriter, r *http.Request) 
 	if n := len(items); n > 0 {
 		cursor = items[n-1].ID
 	}
-	writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "hasMore": hasMore})
+	writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "waiting_browser": waitingBrowser, "hasMore": hasMore})
 }
 
 // pgConversationMsgDetail lazily returns one step's full detail blob.

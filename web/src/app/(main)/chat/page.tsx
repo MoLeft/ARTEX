@@ -497,6 +497,7 @@ function ChatView({
   const approvalFocus = useApprovalFocus({ conversationId: conv.id });
   const [messages, setMessages] = React.useState<Activity[]>([]);
   const [running, setRunning] = React.useState(false);
+  const [waitingBrowser, setWaitingBrowser] = React.useState("");
   const [input, setInput] = React.useState(initial?.input ?? "");
   const [sending, setSending] = React.useState(false);
   const [stopping, setStopping] = React.useState(false);
@@ -549,6 +550,7 @@ function ChatView({
     setMessages([]);
     setHistoryLoaded(false);
     setRunning(false);
+    setWaitingBrowser("");
     let live = true;
     api
       .conversationHistory(conv.id, 0, HISTORY_PAGE)
@@ -560,6 +562,7 @@ function ChatView({
         hasMoreRef.current = r.hasMore;
         setHasMore(r.hasMore);
         setRunning((current) => current || r.running);
+        setWaitingBrowser(r.running ? r.waitingBrowser : "");
         setHistoryLoaded(true);
       })
       .catch(() => {
@@ -594,6 +597,7 @@ function ChatView({
         cursorRef.current = Math.max(cursorRef.current, r.cursor);
         keepPolling = r.running;
         setRunning(r.running);
+        setWaitingBrowser(r.running ? r.waitingBrowser : "");
         if (!r.running) onTitleMaybeChanged(); // first-turn auto-title landed
       } catch {
         /* transient — keep polling */
@@ -737,6 +741,7 @@ function ChatView({
       // The live loop pulls the persisted human turn immediately. Sharing that
       // fetch avoids racing a separate post-send request against the poller.
       setRunning(true);
+      setWaitingBrowser("");
     } catch (e) {
       toast.error("发送失败：" + (e as Error).message);
       setInput(msg); // restore so the user doesn't lose their text
@@ -812,7 +817,7 @@ function ChatView({
               {hasMore && (
                 <div className="text-muted-foreground/70 pb-2 text-center text-[11px]">向上滚动加载更早的消息…</div>
               )}
-              <Transcript activity={messages} live={running} chat fetchDetail={fetchDetail} focusedSeq={focusHistory.ready ? approvalFocus.state?.source?.seq : undefined} />
+              <Transcript activity={messages} live={running} waitingBrowser={waitingBrowser} chat fetchDetail={fetchDetail} focusedSeq={focusHistory.ready ? approvalFocus.state?.source?.seq : undefined} />
             </>
           )}
         </div>

@@ -729,6 +729,7 @@ function ExecView({
 export function Transcript({
   activity,
   live,
+  waitingBrowser,
   taskId,
   chat,
   fetchDetail,
@@ -736,6 +737,7 @@ export function Transcript({
 }: {
   activity: Activity[];
   live?: boolean;
+  waitingBrowser?: string;
   taskId?: string;
   chat?: boolean;
   fetchDetail?: (seq: number) => Promise<string>;
@@ -743,6 +745,9 @@ export function Transcript({
 }) {
   const transcriptRef = React.useRef<HTMLDivElement>(null);
   const [focusPadding, setFocusPadding] = React.useState(0);
+  let liveStatus = "实时流式中…";
+  if (waitingBrowser === "chrome") liveStatus = "等待 Chrome 浏览器会话空位；其他会话结束后自动继续…";
+  if (waitingBrowser === "lightpanda") liveStatus = "等待 Lightpanda 浏览器会话空位；其他会话结束后自动继续…";
   React.useLayoutEffect(() => {
     if (focusedSeq == null) { setFocusPadding(0); return; }
     const viewport = transcriptRef.current?.closest('[data-slot="scroll-area-viewport"]');
@@ -757,13 +762,13 @@ export function Transcript({
     <div ref={transcriptRef} className="flex w-full min-w-0 max-w-full flex-col gap-1" style={focusPadding ? { paddingBlock: focusPadding } : undefined}>
       <ExecView activity={activity} taskId={taskId} chat={chat} fetchDetail={fetchDetail} focusedSeq={focusedSeq} />
       {live && (
-        <div className="flex items-center gap-2 pl-2 pt-1 text-xs text-muted-foreground">
+        <div role="status" className="flex items-center gap-2 pl-2 pt-1 text-xs text-muted-foreground">
           <span className="flex gap-1">
             <span className="size-1.5 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.3s]" />
             <span className="size-1.5 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.15s]" />
             <span className="size-1.5 animate-bounce rounded-full bg-blue-500" />
           </span>
-          实时流式中…
+          {liveStatus}
         </div>
       )}
     </div>
