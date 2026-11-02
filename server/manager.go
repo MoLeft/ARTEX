@@ -666,9 +666,8 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if v, ok, _ := pg.GetSetting(settingWebSearchProxy); ok {
 		m.webSearchProxy = v
 	}
-	// Global egress proxy (default: direct). When capture is on, feed it to the
-	// MITM as its upstream so recorded traffic exits through it; when capture is
-	// off, ProxyAddr hands it to agents directly (bash env / WebFetch).
+	// Global egress proxy (default: direct). The local egress entry is the MITM's
+	// upstream when capturing and the agents' route when capture is off.
 	if v, ok, _ := pg.GetSetting(settingGlobalProxy); ok {
 		m.globalProxy = strings.TrimSpace(v)
 	}
@@ -716,10 +715,8 @@ func (m *Manager) SetTrafficEnabled(on bool) error {
 	m.mu.Lock()
 	m.trafficOn = on
 	m.mu.Unlock()
-	// Inject (on) or strip (off) the recording proxy + CA on the browser MCP so
-	// Playwright routes through the MITM. Must run after the flag flip above, since
-	// ProxyAddr/ProxyCACert honor it. putSettings rebuilds agents next (applyLLM),
-	// which re-spawns the MCP with the new args/env.
+	// Reconcile Playwright's effective route after the flag flip. putSettings
+	// rebuilds agents next (applyLLM), which re-spawns the MCP with new args/env.
 	m.syncBrowserMCPProxy()
 	return nil
 }
@@ -881,10 +878,8 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, pro
 	return nil
 }
 
-// syncBrowserMCPProxy reconciles the browser (Chrome/Playwright) MCP's proxy args
-// + CA env with the current traffic-capture state: capture on → route Playwright
-// through the recording proxy (--proxy-server) and trust its MITM CA
-// (NODE_EXTRA_CA_CERTS); capture off → strip both. The MCP is optional, so a
+// syncBrowserMCPProxy reconciles Chrome/Playwright's effective egress route and
+// capture CA. The MCP is optional, so a
 // database without that row is simply left alone. Idempotent. Must be called
 // WITHOUT m.mu held (ProxyAddr/ProxyCACert take the lock).
 func (m *Manager) syncBrowserMCPProxy() {
@@ -904,8 +899,8 @@ func (m *Manager) syncBrowserMCPProxy() {
 		return
 	}
 
-	proxy := m.ProxyAddr()  // "" when capture off
-	cert := m.ProxyCACert() // "" when capture off
+	proxy := m.ProxyAddr()
+	cert := m.ProxyCACert()
 
 	args := ensureBrowserMCPArgs(stripProxyArgs(decodeStrSlice(srv.Args)), m.pg.GetBool(settingBrowserScreenshot, false))
 	env := decodeStrMap(srv.Env)
@@ -923,9 +918,9 @@ func (m *Manager) syncBrowserMCPProxy() {
 		return
 	}
 	if proxy != "" {
-		log.Printf("[mcp] browser MCP 已挂捕获代理 %s (CA %s)", proxy, cert)
+		log.Printf("[mcp] browser MCP 已挂出口代理 %s (CA %s)", proxy, cert)
 	} else {
-		log.Printf("[mcp] browser MCP 已移除捕获代理配置")
+		log.Printf("[mcp] browser MCP 已移除代理配置")
 	}
 }
 
@@ -1043,8 +1038,8 @@ func (m *Manager) Traffic() *traffic.Traffic { return m.traffic }
 // ProxyAddr returns the egress proxy address agents route target traffic through:
 //   - capture ON  → the recording MITM proxy (which itself exits via the global
 //     proxy when one is set); agents also get its CA (see ProxyCACert).
-//   - capture OFF → the global egress proxy directly (empty CA — real target
-//     certs), or "" when no global proxy is set (direct, no recording).
+//   - capture OFF → the local egress proxy when configured (empty CA — real
+//     target certs), or "" when no global proxy is set (direct, no recording).
 //
 // So the global proxy takes effect in both modes: at the MITM's upstream when
 // capturing, in the agent's own bash env / WebFetch when not.

@@ -130,10 +130,11 @@ type Server struct {
 
 	// Cold task archives run through one persistent FIFO worker. The buffered wake
 	// channel coalesces enqueue bursts; the database remains the source of truth.
-	archiveWake    chan struct{}
-	archiveWG      sync.WaitGroup
-	credentialWake chan struct{}
-	proxyReconnect proxyReconnectSupervisor
+	archiveWake            chan struct{}
+	archiveWG              sync.WaitGroup
+	credentialWake         chan struct{}
+	proxyReconnect         proxyReconnectSupervisor
+	lightpandaProxyUpdater func(string, string)
 	// proxyProbe is injectable for deterministic reconnect race tests. Production
 	// servers leave it nil and use probeEgress directly.
 	proxyProbe func(context.Context, string, string, []string, time.Duration) egressProbeResult
@@ -317,6 +318,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	}
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
 	return s
+}
+
+func (s *Server) SetLightpandaProxyUpdater(fn func(string, string)) {
+	s.lightpandaProxyUpdater = fn
 }
 
 // Restored deadline and worker loops must inherit the same context as new tasks,
@@ -4054,6 +4059,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if req.BrowserLightpandaMax != nil {
 		s.browserPool.setLimit(browserMCPKindLightpanda, *req.BrowserLightpandaMax)
 	}
+	oldProxy, oldCert := s.m.ProxyAddr(), s.m.ProxyCACert()
 	if req.TrafficCapture != nil {
 		if err := s.m.SetTrafficEnabled(*req.TrafficCapture); err != nil {
 			writeErr(w, 500, err.Error())
@@ -4081,6 +4087,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
+	}
+	if s.lightpandaProxyUpdater != nil && (s.m.ProxyAddr() != oldProxy || s.m.ProxyCACert() != oldCert) {
+		s.lightpandaProxyUpdater(s.m.ProxyAddr(), s.m.ProxyCACert())
 	}
 	if req.ProxyReconnectMax != nil || req.ProxyReconnectInterval != nil {
 		if err := s.setProxyReconnectSettings(req.ProxyReconnectMax, req.ProxyReconnectInterval); err != nil {
