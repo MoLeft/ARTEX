@@ -74,36 +74,42 @@ func (p *EgressProxy) serveConnect(w http.ResponseWriter, r *http.Request, cfg *
 		http.Error(w, "invalid CONNECT target", http.StatusBadRequest)
 		return
 	}
-	conn, proxyFault, err := dialEgress(r.Context(), cfg.upstream, address)
-	if err != nil && proxyFault && cfg.directRetry {
-		log.Printf("[egress] direct retry after proxy connection failure: target=%s", address)
-		conn, err = directEgressDial(r.Context(), address)
-	}
-	if err != nil {
-		http.Error(w, "target connection failed", http.StatusBadGateway)
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "CONNECT not supported", http.StatusBadGateway)
 		return
 	}
-	defer conn.Close()
-	client, rw, err := w.(http.Hijacker).Hijack()
+	client, rw, err := hijacker.Hijack()
 	if err != nil {
 		return
 	}
 	defer client.Close()
+	clientReader, clientWriter := io.Pipe()
+	defer clientReader.Close()
+	defer clientWriter.Close()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go func() {
+		_, copyErr := io.Copy(clientWriter, rw)
+		_ = clientWriter.CloseWithError(copyErr)
+		cancel()
+	}()
+	conn, proxyFault, err := dialEgress(ctx, cfg.upstream, address)
+	if err != nil && proxyFault && cfg.directRetry {
+		log.Printf("[egress] direct retry after proxy connection failure: target=%s", address)
+		conn, err = directEgressDial(ctx, address)
+	}
+	if err != nil {
+		_, _ = rw.WriteString("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+		_ = rw.Flush()
+		return
+	}
+	defer conn.Close()
 	_, _ = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 	if err := rw.Flush(); err != nil {
 		return
 	}
-	done := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(conn, rw)
-		if tcp, ok := conn.(*net.TCPConn); ok {
-			_ = tcp.CloseWrite()
-		}
-		close(done)
-	}()
-	_, _ = io.Copy(client, conn)
-	_ = client.Close()
-	<-done
+	pipeEgress(client, clientReader, conn)
 }
 
 func (p *EgressProxy) serveHTTP(w http.ResponseWriter, r *http.Request, cfg *egressConfig) {
@@ -127,6 +133,9 @@ func (p *EgressProxy) serveHTTP(w http.ResponseWriter, r *http.Request, cfg *egr
 		return
 	}
 	defer conn.Close()
+	stop := closeEgressOnCancel(r.Context(), conn)
+	defer stop()
+	setEgressDeadline(conn, r.Context(), 30*time.Second)
 	req := r.Clone(r.Context())
 	req.RequestURI = ""
 	req.Header.Del("Proxy-Authorization")
@@ -143,15 +152,39 @@ func (p *EgressProxy) serveHTTP(w http.ResponseWriter, r *http.Request, cfg *egr
 		http.Error(w, "target request failed", http.StatusBadGateway)
 		return
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
-	if err != nil {
-		http.Error(w, "target response failed", http.StatusBadGateway)
-		return
+	reader := bufio.NewReader(conn)
+	var resp *http.Response
+	for {
+		resp, err = http.ReadResponse(reader, req)
+		if err != nil {
+			http.Error(w, "target response failed", http.StatusBadGateway)
+			return
+		}
+		if resp.StatusCode >= 200 || resp.StatusCode == http.StatusSwitchingProtocols {
+			break
+		}
+		_ = resp.Body.Close()
 	}
+	_ = conn.SetDeadline(time.Time{})
 	defer resp.Body.Close()
 	if useHTTPProxy && resp.StatusCode == http.StatusProxyAuthRequired && cfg.directRetry && (r.Body == nil || r.Body == http.NoBody) {
 		log.Printf("[egress] direct retry after proxy authentication failure: target=%s", r.URL.Hostname())
+		_ = conn.Close()
 		p.serveHTTP(w, r, &egressConfig{})
+		return
+	}
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		client, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer client.Close()
+		_, _ = fmt.Fprintf(rw, "HTTP/1.1 %s\r\n", resp.Status)
+		_ = resp.Header.Write(rw)
+		_, _ = rw.WriteString("\r\n")
+		if err := rw.Flush(); err == nil {
+			pipeEgress(client, rw, &egressBufferedConn{Conn: conn, reader: reader})
+		}
 		return
 	}
 	for key, values := range resp.Header {
@@ -167,6 +200,54 @@ func directEgressDial(ctx context.Context, address string) (net.Conn, error) {
 	return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", address)
 }
 
+func closeEgressOnCancel(ctx context.Context, conn net.Conn) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+	return func() { close(done) }
+}
+
+func setEgressDeadline(conn net.Conn, ctx context.Context, max time.Duration) {
+	deadline := time.Now().Add(max)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+}
+
+func pipeEgress(client net.Conn, clientReader io.Reader, upstream net.Conn) {
+	toUpstream := make(chan struct{})
+	toClient := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(upstream, clientReader)
+		if half, ok := upstream.(interface{ CloseWrite() error }); ok {
+			_ = half.CloseWrite()
+		}
+		close(toUpstream)
+	}()
+	go func() {
+		_, _ = io.Copy(client, upstream)
+		close(toClient)
+	}()
+	select {
+	case <-toClient:
+	case <-toUpstream:
+		select {
+		case <-toClient:
+		case <-time.After(30 * time.Second):
+		}
+	}
+	_ = client.Close()
+	_ = upstream.Close()
+	<-toUpstream
+	<-toClient
+}
+
 func dialEgress(ctx context.Context, upstream *url.URL, address string) (net.Conn, bool, error) {
 	if upstream == nil {
 		conn, err := directEgressDial(ctx, address)
@@ -179,6 +260,9 @@ func dialEgress(ctx context.Context, upstream *url.URL, address string) (net.Con
 	if err != nil {
 		return nil, true, err
 	}
+	stop := closeEgressOnCancel(ctx, conn)
+	defer stop()
+	setEgressDeadline(conn, ctx, 5*time.Second)
 	req := &http.Request{Method: http.MethodConnect, URL: &url.URL{Opaque: address}, Host: address, Header: make(http.Header)}
 	if auth := proxyBasicAuth(upstream); auth != "" {
 		req.Header.Set("Proxy-Authorization", auth)
@@ -197,6 +281,7 @@ func dialEgress(ctx context.Context, upstream *url.URL, address string) (net.Con
 		conn.Close()
 		return nil, resp.StatusCode == http.StatusProxyAuthRequired, fmt.Errorf("proxy CONNECT status %d", resp.StatusCode)
 	}
+	_ = conn.SetDeadline(time.Time{})
 	return &egressBufferedConn{Conn: conn, reader: reader}, false, nil
 }
 
@@ -226,12 +311,14 @@ func dialProxyEndpoint(ctx context.Context, upstream *url.URL) (net.Conn, error)
 		return nil, err
 	}
 	if upstream.Scheme == "https" {
+		setEgressDeadline(conn, ctx, 5*time.Second)
 		secured := tls.Client(conn, &tls.Config{ServerName: upstream.Hostname()})
 		if err := secured.HandshakeContext(ctx); err != nil {
 			conn.Close()
 			return nil, err
 		}
 		conn = secured
+		_ = conn.SetDeadline(time.Time{})
 	}
 	return conn, nil
 }
@@ -250,6 +337,8 @@ func dialSocks5(ctx context.Context, upstream *url.URL, address string) (net.Con
 	if err != nil {
 		return nil, true, err
 	}
+	stop := closeEgressOnCancel(ctx, conn)
+	defer stop()
 	fail := func(proxyFault bool, err error) (net.Conn, bool, error) {
 		conn.Close()
 		return nil, proxyFault, err
@@ -364,3 +453,10 @@ type egressBufferedConn struct {
 }
 
 func (c *egressBufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+func (c *egressBufferedConn) CloseWrite() error {
+	if half, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return half.CloseWrite()
+	}
+	return c.Conn.Close()
+}

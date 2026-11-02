@@ -15,6 +15,231 @@ import (
 	"time"
 )
 
+func TestEgressProxyForwardsFinalResponseAfterEarlyHints(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusEarlyHints)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("final body"))
+	}))
+	defer target.Close()
+	p, err := OpenEgressProxy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	client := egressTestClient(t, p)
+	client.Timeout = time.Second
+	resp, err := client.Get(target.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK || string(body) != "final body" {
+		t.Fatalf("status=%d body=%q error=%v", resp.StatusCode, body, err)
+	}
+}
+
+func TestEgressProxyClosesUpstreamWhenClientCancels(t *testing.T) {
+	for _, secure := range []bool{false, true} {
+		t.Run(fmt.Sprint("connect=", secure), func(t *testing.T) {
+			readLimit, waitLimit := time.Second, 400*time.Millisecond
+			if secure {
+				readLimit, waitLimit = 7*time.Second, 6*time.Second // CONNECT clients do not always close their socket on timeout.
+			}
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			closed := make(chan error, 1)
+			go func() {
+				conn, err := ln.Accept()
+				if err != nil {
+					closed <- err
+					return
+				}
+				defer conn.Close()
+				_ = conn.SetReadDeadline(time.Now().Add(readLimit))
+				_, err = http.ReadRequest(bufio.NewReader(conn))
+				if err == nil {
+					_, err = io.Copy(io.Discard, conn)
+				}
+				closed <- err
+			}()
+			p, err := OpenEgressProxy()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer p.Close()
+			if err := p.SetUpstream("http://"+ln.Addr().String(), false); err != nil {
+				t.Fatal(err)
+			}
+			client := egressTestClient(t, p)
+			client.Timeout = 100 * time.Millisecond
+			target := "http://example.invalid/"
+			if secure {
+				target = "https://example.invalid/"
+			}
+			resp, _ := client.Get(target)
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			select {
+			case err := <-closed:
+				if err != nil && err != io.EOF {
+					t.Fatalf("upstream read: %v", err)
+				}
+			case <-time.After(waitLimit):
+				t.Fatal("upstream connection remained open after client timeout")
+			}
+		})
+	}
+}
+
+func TestEgressProxyConnectHalfCloseReachesHTTPUpstream(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	closed := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			closed <- err
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		_, err = http.ReadRequest(bufio.NewReader(conn))
+		if err == nil {
+			_, err = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		}
+		if err == nil {
+			_, err = io.Copy(io.Discard, conn)
+		}
+		closed <- err
+	}()
+	p, err := OpenEgressProxy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if err := p.SetUpstream("http://"+ln.Addr().String(), false); err != nil {
+		t.Fatal(err)
+	}
+	proxy, _ := url.Parse(p.Addr())
+	client, err := net.Dial("tcp", proxy.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetDeadline(time.Now().Add(time.Second))
+	_, _ = io.WriteString(client, "CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\n\r\n")
+	response, err := http.ReadResponse(bufio.NewReader(client), &http.Request{Method: http.MethodConnect})
+	if err != nil || response.StatusCode != http.StatusOK {
+		var body []byte
+		if response != nil {
+			body, _ = io.ReadAll(response.Body)
+		}
+		select {
+		case upstreamErr := <-closed:
+			t.Fatalf("CONNECT response=%v body=%q error=%v upstream=%v", response, body, err, upstreamErr)
+		default:
+			t.Fatalf("CONNECT response=%v body=%q error=%v", response, body, err)
+		}
+	}
+	_ = client.Close()
+	select {
+	case err := <-closed:
+		if err != nil && err != io.EOF {
+			t.Fatalf("upstream read: %v", err)
+		}
+	case <-time.After(400 * time.Millisecond):
+		t.Fatal("upstream did not see client close")
+	}
+}
+
+func TestEgressProxyPreservesProtocolUpgrade(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+		_ = rw.Flush()
+		var payload [4]byte
+		if _, err := io.ReadFull(rw, payload[:]); err == nil {
+			_, _ = conn.Write(payload[:])
+		}
+	}))
+	defer target.Close()
+	p, err := OpenEgressProxy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	proxy, _ := url.Parse(p.Addr())
+	client, err := net.Dial("tcp", proxy.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
+	targetURL, _ := url.Parse(target.URL)
+	_, _ = fmt.Fprintf(client, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n", target.URL, targetURL.Host)
+	reader := bufio.NewReader(client)
+	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil || response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade response=%v error=%v", response, err)
+	}
+	defer response.Body.Close()
+	_, _ = client.Write([]byte("ping"))
+	var echo [4]byte
+	if _, err := io.ReadFull(reader, echo[:]); err != nil || string(echo[:]) != "ping" {
+		t.Fatalf("echo=%q error=%v", echo, err)
+	}
+}
+
+func TestEgressProxyAmbiguousConnectFailureDoesNotFallback(t *testing.T) {
+	var hits atomic.Int32
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			_, _ = http.ReadRequest(bufio.NewReader(conn))
+			_ = conn.Close() // proxy may close because the target was blocked
+		}
+	}()
+	p, err := OpenEgressProxy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if err := p.SetUpstream("http://"+ln.Addr().String(), true); err != nil {
+		t.Fatal(err)
+	}
+	client := egressTestClient(t, p)
+	client.Timeout = time.Second
+	resp, _ := client.Get(target.URL)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if hits.Load() != 0 {
+		t.Fatal("ambiguous CONNECT failure reached target directly")
+	}
+}
+
 func egressTestClient(t *testing.T, p *EgressProxy) *http.Client {
 	t.Helper()
 	pu, err := url.Parse(p.Addr())
