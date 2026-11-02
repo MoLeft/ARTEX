@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"reflect"
 	"testing"
+	"time"
 )
 
 // TestPoolProfilesOrder pins the failover chain query: keyless profiles can't
@@ -61,6 +64,37 @@ func TestDeleteProfileContextHonorsCancellation(t *testing.T) {
 	var d DB
 	if err := d.DeleteProfileContext(ctx, 1); !errors.Is(err, context.Canceled) {
 		t.Fatalf("DeleteProfileContext error=%v, want context cancellation", err)
+	}
+}
+
+func TestMCPToolsCachePreservesSchema(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer d.Close()
+	id, err := d.SaveMCP(&MCPServer{Name: fmt.Sprintf("test_lazy_browser_cache_%d", time.Now().UnixNano()), Transport: "stdio", Command: "true", Enabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteMCP(id)
+	want := json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}`)
+	if err := d.SaveMCPTools(id, []MCPTool{{Name: "mcp__browser__navigate", Description: "Open a page", Schema: want}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.MCPToolsDetailed(id)
+	if err != nil || len(got) != 1 || got[0].Name != "mcp__browser__navigate" || got[0].Description != "Open a page" {
+		t.Fatalf("cached tools = %+v, err = %v", got, err)
+	}
+	var gotSchema, wantSchema map[string]any
+	if err := json.Unmarshal(got[0].Schema, &gotSchema); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(want, &wantSchema); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotSchema, wantSchema) {
+		t.Fatalf("cached schema = %s, want %s", got[0].Schema, want)
 	}
 }
 

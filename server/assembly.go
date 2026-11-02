@@ -63,10 +63,10 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			}
 		}
 
-		// --- mcp: connect enabled servers that are directly visible to this agent
+		// --- mcp: register enabled servers that are directly visible to this agent
 		// OR skill-gated (named in a visible skill's mcps field). Directly-visible
 		// and NOT gated → global (unlocked from session start). Skill-gated →
-		// deferred until that skill is invoked (regardless of direct visibility).
+		// hidden until that skill is invoked (regardless of direct visibility).
 		var closers []io.Closer
 		serverTools := map[string][]string{} // server name → its tool names
 		var allNames, globalNames []string
@@ -84,18 +84,29 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
 				}
-				cl, err := pool.connect(ctx, m, agentKey, agent.RunInfoFrom(ctx))
-				if err != nil {
-					log.Printf("[mcp] %s 连接失败: %v", m.Name, err)
-					continue
+				var ts []actool.CoreTool
+				if browserKind(m.Name) != "" {
+					catalog, err := pg.MCPToolsDetailed(m.ID)
+					if err != nil {
+						log.Printf("[mcp] %s 读取工具缓存失败，改用按需发现: %v", m.Name, err)
+					}
+					var lazy *lazyBrowserClient
+					ts, lazy = pool.lazyTools(ctx, pg, m, agentKey, agent.RunInfoFrom(ctx), catalog)
+					closers = append(closers, lazy)
+				} else {
+					cl, err := pool.connect(ctx, m, agentKey, agent.RunInfoFrom(ctx))
+					if err != nil {
+						log.Printf("[mcp] %s 连接失败: %v", m.Name, err)
+						continue
+					}
+					ts, err = cl.Tools(ctx)
+					if err != nil {
+						log.Printf("[mcp] %s tools/list 失败: %v", m.Name, err)
+						_ = cl.Close()
+						continue
+					}
+					closers = append(closers, cl)
 				}
-				ts, err := cl.Tools(ctx)
-				if err != nil {
-					log.Printf("[mcp] %s tools/list 失败: %v", m.Name, err)
-					_ = cl.Close()
-					continue
-				}
-				closers = append(closers, cl)
 				for _, t := range ts {
 					// Playwright exposes the screenshot capability as a separate tool. Keep
 					// it opt-in so a normal browser MCP session does not unexpectedly send

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -45,8 +46,8 @@ func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 	}
 }
 
-// discoverAndCacheMCP connects to one MCP, lists its tools, and persists the tool
-// names to mcp_tools_cache so the UI shows them without a live connection.
+// discoverAndCacheMCP connects to one MCP and caches tool metadata for the UI
+// and for browser tools that register before opening a live session.
 func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error {
 	cl, err := s.browserPool.connect(ctx, m, "工具发现", agent.RunInfo{})
 	if err != nil {
@@ -59,7 +60,11 @@ func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error
 	}
 	tools := make([]db.MCPTool, 0, len(ts))
 	for _, t := range ts {
-		tools = append(tools, db.MCPTool{Name: t.Name(), Description: t.Description()})
+		schema, err := json.Marshal(t.InputSchema())
+		if err != nil {
+			return fmt.Errorf("%s 工具参数格式无效: %w", t.Name(), err)
+		}
+		tools = append(tools, db.MCPTool{Name: t.Name(), Description: t.Description(), Schema: schema})
 	}
 	if err := s.m.pg.SaveMCPTools(m.ID, tools); err != nil {
 		return err
@@ -68,9 +73,9 @@ func (s *Server) discoverAndCacheMCP(ctx context.Context, m *db.MCPServer) error
 	return nil
 }
 
-// discoverEmptyMCPsOnStartup fills the tool cache for any enabled MCP that has none
-// yet (notably the seeded browser MCP on first run). Runs sequentially in one
-// goroutine so we never spawn many stdio servers (npx) at once, and never blocks
+// discoverEmptyMCPsOnStartup fills missing tool metadata and browser schemas.
+// It runs sequentially in one goroutine so we never spawn many stdio servers
+// (npx) at once, and never blocks
 // startup. Best-effort: a failure leaves the cache empty to retry next start.
 func (s *Server) discoverEmptyMCPsOnStartup() {
 	servers, err := s.m.pg.ListMCP()
@@ -79,8 +84,26 @@ func (s *Server) discoverEmptyMCPsOnStartup() {
 		return
 	}
 	for _, m := range servers {
-		if !m.Enabled || len(m.Tools) > 0 {
+		if !m.Enabled {
 			continue
+		}
+		if len(m.Tools) > 0 {
+			if browserKind(m.Name) == "" {
+				continue
+			}
+			cached, err := s.m.pg.MCPToolsDetailed(m.ID)
+			if err == nil && len(cached) > 0 {
+				complete := true
+				for _, t := range cached {
+					if len(t.Schema) == 0 {
+						complete = false
+						break
+					}
+				}
+				if complete {
+					continue
+				}
+			}
 		}
 		ctx, cancel := context.WithTimeout(s.ctx, 90*time.Second)
 		if err := s.discoverAndCacheMCP(ctx, m); err != nil {

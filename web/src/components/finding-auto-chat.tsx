@@ -45,6 +45,8 @@ export function FindingAutoChat({
   const [input, setInput] = React.useState("");
   const [running, setRunning] = React.useState(false);
   const [waitingBrowser, setWaitingBrowser] = React.useState("");
+  const [waitingAhead, setWaitingAhead] = React.useState(0);
+  const [browserActive, setBrowserActive] = React.useState(0);
   const [loading, setLoading] = React.useState(false);
   const [sending, setSending] = React.useState(false);
   const [stopping, setStopping] = React.useState(false);
@@ -128,6 +130,8 @@ export function FindingAutoChat({
         cursor.current = page.cursor;
         setRunning(page.running);
         setWaitingBrowser(page.running ? page.waitingBrowser : "");
+        setWaitingAhead(page.waitingAhead);
+        setBrowserActive(page.browserActive);
       })
       .catch((error: Error) => {
         if (error.message.includes("404")) {
@@ -164,6 +168,8 @@ export function FindingAutoChat({
         cursor.current = Math.max(cursor.current, page.cursor);
         setRunning(page.running);
         setWaitingBrowser(page.running ? page.waitingBrowser : "");
+        setWaitingAhead(page.waitingAhead);
+        setBrowserActive(page.browserActive);
         if (page.running) timer = setTimeout(() => void poll(), 1000);
       } catch {
         if (live) timer = setTimeout(() => void poll(), 1500);
@@ -304,7 +310,7 @@ export function FindingAutoChat({
                 <Loader2Icon className="mr-2 size-4 animate-spin" /> 正在创建 Auto 对话…
               </div>
             ) : messages.length ? (
-              <Transcript activity={messages} chat live={running} waitingBrowser={waitingBrowser} fetchDetail={(seq) => api.conversationMsgDetail(conversation?.id ?? 0, seq)} />
+              <Transcript activity={messages} chat live={running} waitingBrowser={waitingBrowser} waitingAhead={waitingAhead} browserActive={browserActive} conversationId={conversation?.id} onPriorityChanged={() => setWaitingAhead(0)} fetchDetail={(seq) => api.conversationMsgDetail(conversation?.id ?? 0, seq)} />
             ) : (
               <p className="py-10 text-center text-muted-foreground text-sm">{conversation ? "请输入你想了解的内容。" : "点击上方 + 新建漏洞对话。"}</p>
             )}
