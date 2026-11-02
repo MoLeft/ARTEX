@@ -310,6 +310,8 @@ type Manager struct {
 	// capture is on it becomes the MITM's upstream; when capture is off it is
 	// injected into agent bash env / WebFetch directly. See ProxyAddr.
 	globalProxy string
+	directRetry bool
+	egress      *traffic.EgressProxy
 }
 
 // SetTaskControlMutex lets lifecycle operations that originate in Manager
@@ -331,11 +333,12 @@ const (
 	// settingGlobalProxy is the global egress proxy for all target traffic
 	// (http/https/socks5). Empty = direct. Distinct from web_search_proxy (which
 	// only routes the search backend) and the per-profile LLM proxy.
-	settingGlobalProxy  = "global_proxy"
-	settingShowEgressIP = "show_egress_ip"
-	settingWorkers      = "workers"
-	settingWorkerPools  = "worker_pools"
-	settingLLMRecord    = "llm_record"
+	settingGlobalProxy      = "global_proxy"
+	settingProxyDirectRetry = "proxy_direct_retry_on_connect_failure"
+	settingShowEgressIP     = "show_egress_ip"
+	settingWorkers          = "workers"
+	settingWorkerPools      = "worker_pools"
+	settingLLMRecord        = "llm_record"
 	// LLM 轮询(故障转移)。默认关闭——开启后走「全局激活配置」的 agent 在当前配置
 	// 不可用(余额不足/key 失效/限流/服务异常)时自动切到下一个配置。
 	// settingLLMPoolBindFallback 仅在轮询开启时有意义:默认关闭,即 agent/任务显式
@@ -669,8 +672,23 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if v, ok, _ := pg.GetSetting(settingGlobalProxy); ok {
 		m.globalProxy = strings.TrimSpace(v)
 	}
+	m.directRetry = pg.GetBool(settingProxyDirectRetry, false)
+	egress, err := traffic.OpenEgressProxy()
+	if err != nil {
+		_ = m.Close()
+		return nil, fmt.Errorf("open egress proxy: %w", err)
+	}
+	m.egress = egress
+	if err := egress.SetUpstream(m.globalProxy, m.directRetry); err != nil {
+		_ = m.Close()
+		return nil, fmt.Errorf("configure egress proxy: %w", err)
+	}
 	if m.traffic != nil {
-		if err := m.traffic.SetUpstreamProxy(m.globalProxy); err != nil {
+		upstream := ""
+		if m.globalProxy != "" {
+			upstream = egress.Addr()
+		}
+		if err := m.traffic.SetUpstreamProxy(upstream); err != nil {
 			log.Printf("[proxy] 全局代理 %q 无效，已忽略: %v", m.globalProxy, err)
 		}
 	}
@@ -1036,7 +1054,29 @@ func (m *Manager) ProxyAddr() string {
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.globalProxy != "" && m.egress != nil {
+		return m.egress.Addr()
+	}
 	return m.globalProxy
+}
+
+func (m *Manager) ProxyDirectRetry() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.directRetry
+}
+
+func (m *Manager) SetProxyDirectRetry(on bool) error {
+	if err := m.pg.SetBool(settingProxyDirectRetry, on); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.directRetry = on
+	if m.egress != nil {
+		return m.egress.SetUpstream(m.globalProxy, on)
+	}
+	return nil
 }
 
 // ProxyCACert returns the CA cert path agents must trust to verify HTTPS through
@@ -1074,9 +1114,19 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 	}
 	m.mu.Lock()
 	m.globalProxy = raw
+	if m.egress != nil {
+		if err := m.egress.SetUpstream(raw, m.directRetry); err != nil {
+			m.mu.Unlock()
+			return err
+		}
+	}
 	m.mu.Unlock()
 	if m.traffic != nil {
-		if err := m.traffic.SetUpstreamProxy(raw); err != nil {
+		upstream := ""
+		if raw != "" && m.egress != nil {
+			upstream = m.egress.Addr()
+		}
+		if err := m.traffic.SetUpstreamProxy(upstream); err != nil {
 			return err
 		}
 	}
@@ -1090,6 +1140,9 @@ func (m *Manager) Close() error {
 	defer m.mu.Unlock()
 	if m.traffic != nil {
 		m.traffic.Close()
+	}
+	if m.egress != nil {
+		_ = m.egress.Close()
 	}
 	return m.pg.Close()
 }

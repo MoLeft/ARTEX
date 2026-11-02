@@ -267,13 +267,13 @@ func TestEgressWarnings(t *testing.T) {
 		want    string // 必须出现的子串（空 = 不检查）
 		wantNot string // 必须不出现的子串
 	}{
-		{"W2 关捕获 + socks5", egressReport{Capture: false, Configured: "socks5://1.2.3.4:1080", Checks: okChecks},
-			false, "socks5://1.2.3.4:1080", "python urllib", ""},
-		{"W2 不误报：已保存走的是 http", egressReport{Capture: false, Configured: "socks5://1.2.3.4:1080", Checks: okChecks},
+		{"SOCKS5 已由本地出口代理接管", egressReport{Capture: false, Configured: "socks5://1.2.3.4:1080", Checks: okChecks},
+			false, "socks5://1.2.3.4:1080", "", "python urllib"},
+		{"已保存走的是 http", egressReport{Capture: false, Configured: "socks5://1.2.3.4:1080", Checks: okChecks},
 			true, "http://1.2.3.4:8080", "", "python urllib"},
-		{"W2 不漏报：已保存才是 socks5", egressReport{Capture: false, Configured: "http://1.2.3.4:8080", Checks: okChecks},
-			true, "socks5://1.2.3.4:1080", "python urllib", ""},
-		{"W2 ② 没通时不提", egressReport{Capture: false, Configured: "socks5://1.2.3.4:1080", Checks: proxyDown},
+		{"已保存才是 socks5", egressReport{Capture: false, Configured: "http://1.2.3.4:8080", Checks: okChecks},
+			true, "socks5://1.2.3.4:1080", "", "python urllib"},
+		{"② 没通时不提", egressReport{Capture: false, Configured: "socks5://1.2.3.4:1080", Checks: proxyDown},
 			false, "socks5://1.2.3.4:1080", "", "python urllib"},
 		{"W3 两行 IP 相同", egressReport{Configured: "http://1.2.3.4:8080", Checks: sameIP},
 			false, "", "出口 IP 相同", ""},
@@ -343,7 +343,7 @@ func TestEgressTarget(t *testing.T) {
 	}{
 		{"捕获关：直连表单值", cfg, false, false, mitm, cfg, "", false},
 		{"捕获关 + 未保存：仍直连表单值", cfg, false, true, mitm, cfg, "", false},
-		{"捕获开 + 已保存：走 MITM 并带 CA", cfg, true, false, mitm, mitm, ca, true},
+		{"捕获开 + 已保存：测试上游本身", cfg, true, false, mitm, cfg, "", false},
 		{"捕获开 + 未保存：跳过 MITM", cfg, true, true, mitm, cfg, "", false},
 		{"空代理：不发请求", "", true, false, mitm, "", "", false},
 		// 边界：捕获开着但拿不到 MITM 地址时，退回表单值，不能返回空地址。
@@ -358,6 +358,13 @@ func TestEgressTarget(t *testing.T) {
 					addr, gotCA, viaM, c.wantAddr, c.wantCA, c.wantViaM)
 			}
 		})
+	}
+}
+
+func TestEgressTargetHealthCheckBypassesFallbackProxy(t *testing.T) {
+	addr, ca, viaMITM := egressTarget("socks5://127.0.0.1:1080", true, false, "http://127.0.0.1:8081", "/tmp/mitm-ca.pem")
+	if addr != "socks5://127.0.0.1:1080" || ca != "" || viaMITM {
+		t.Fatalf("proxy health test used fallback route: addr=%q ca=%q viaMITM=%v", addr, ca, viaMITM)
 	}
 }
 

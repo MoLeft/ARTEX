@@ -474,8 +474,10 @@ func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 				caFile = s.m.ProxyCACert()
 			}
 		} else if global := strings.TrimSpace(s.m.GlobalProxy()); global != "" {
-			proxyStr = global
+			proxyStr = s.m.ProxyAddr()
 		}
+	} else if proxyStr != "" && proxyStr == strings.TrimSpace(s.m.GlobalProxy()) && s.m.egress != nil {
+		proxyStr = s.m.egress.Addr()
 	}
 	if proxyStr == "" {
 		return nil
