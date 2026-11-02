@@ -1015,8 +1015,9 @@ export interface Settings {
   // 独立出口代理(http/https/socks5)，用于访问搜索端点；与记录流量的 MITM 代理无关。空=直连。
   web_search_proxy?: string;
   // 全局出口代理(http/https/socks5，可带 user:pass)，所有目标流量走它。开启流量捕获时作为
-  // MITM 上游；关闭捕获时直接注入 agent 的 bash/WebFetch。空=直连。
+  // MITM 上游；关闭捕获时由本地出口代理转发 agent 目标流量。空=直连。
   global_proxy?: string;
+  proxy_direct_retry_on_connect_failure?: boolean; // 代理连接失败时仅当前请求直连重试；默认关闭
   proxy_reconnect_max_attempts?: number;
   proxy_reconnect_interval_seconds?: number;
   show_egress_ip?: boolean; // 在顶栏显示直连 / 全局代理出口 IP；默认关闭

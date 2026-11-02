@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/traffic"
 )
@@ -132,5 +135,63 @@ func TestGlobalHTTPToolsUseEgressProxy(t *testing.T) {
 	got, err := tr.Proxy(request)
 	if err != nil || got.String() != "http://127.0.0.1:18081" {
 		t.Fatalf("explicit custom proxy=%v error=%v", got, err)
+	}
+}
+
+func TestProxyDirectRetryBothCaptureModes(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	_ = listener.Close()
+	m, err := NewManager(t.TempDir(), addr)
+	if err != nil {
+		t.Skipf("isolated postgres unavailable: %v", err)
+	}
+	defer m.Close()
+	oldGlobal, oldCapture, oldRetry := m.GlobalProxy(), m.TrafficEnabled(), m.ProxyDirectRetry()
+	defer func() {
+		_ = m.SetGlobalProxy(oldGlobal)
+		_ = m.SetTrafficEnabled(oldCapture)
+		_ = m.SetProxyDirectRetry(oldRetry)
+	}()
+	if m.traffic == nil {
+		t.Fatal("capture proxy unavailable")
+	}
+	var hits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("direct"))
+	}))
+	defer target.Close()
+	if err := m.SetGlobalProxy("http://127.0.0.1:1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, capture := range []bool{false, true} {
+		if err := m.SetTrafficEnabled(capture); err != nil {
+			t.Fatal(err)
+		}
+		for _, retry := range []bool{false, true} {
+			if err := m.SetProxyDirectRetry(retry); err != nil {
+				t.Fatal(err)
+			}
+			proxyURL, _ := url.Parse(m.ProxyAddr())
+			client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 3 * time.Second}
+			before := hits.Load()
+			resp, requestErr := client.Get(target.URL)
+			status := 0
+			if resp != nil {
+				status = resp.StatusCode
+				_ = resp.Body.Close()
+			}
+			if retry {
+				if requestErr != nil || status != http.StatusOK || hits.Load() != before+1 {
+					t.Fatalf("capture=%v retry=%v: status=%d err=%v hits=%d", capture, retry, status, requestErr, hits.Load()-before)
+				}
+			} else if status == http.StatusOK || hits.Load() != before {
+				t.Fatalf("capture=%v retry=%v unexpectedly reached target: status=%d err=%v hits=%d", capture, retry, status, requestErr, hits.Load()-before)
+			}
+		}
 	}
 }
