@@ -659,7 +659,15 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 	// 用户消息正文、随历史反复重发，成本随轮次线性增长而信息量不增。前端按回复里是否
 	// 出现 UltraProbeMarker 判定，判定失败只影响 UI 提示，不影响对话本身。
 	if ca.Ultra() {
-		if acts, _, err := pg.ConvActivityList(c.ID, 0, 1); err == nil && len(acts) == 0 {
+		// 不能拿「会话里有没有 activity」判断首轮：用户这条消息在 runConversation
+		// 之前就写进去了（conversations.go 的 AppendConvActivity），所以那一刻
+		// activities 永远非空，探针一次都不会注入。按 user 轮数判断才对——当前这条
+		// 是第 1 条，才说明这是新会话的首轮。
+		var userTurns int
+		if err := pg.QueryRow(
+			`SELECT count(*) FROM conversation_activities WHERE conversation_id=$1 AND kind='user'`,
+			c.ID,
+		).Scan(&userTurns); err == nil && userTurns <= 1 {
 			msg += agent.UltraProbeInstruction
 		}
 	}
