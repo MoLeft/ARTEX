@@ -2,8 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"net"
 	"strings"
 	"testing"
+
+	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/traffic"
 )
 
 func TestNormalizeBrowserMCPKind(t *testing.T) {
@@ -68,6 +72,66 @@ func TestDefaultBrowserMCPConfigs(t *testing.T) {
 	if err := json.Unmarshal(light.Env, &headers); err != nil || headers["Host"] == "" {
 		t.Fatalf("lightpanda headers: %s (%v)", light.Env, err)
 	}
+}
+
+func TestBrowserMCPUsesEffectiveProxyInBothCaptureModes(t *testing.T) {
+	m := proxyTestManager(t)
+	port, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := port.Addr().String()
+	_ = port.Close()
+	m.traffic, err = traffic.Open(t.TempDir(), addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers, err := m.pg.ListMCP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var browser *db.MCPServer
+	for _, row := range servers {
+		if row.Name == browserMCPName {
+			browser = row
+			break
+		}
+	}
+	if browser == nil {
+		browser = defaultBrowserMCP(browserMCPKindChrome)
+		id, err := m.pg.SaveMCP(browser)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = m.pg.DeleteMCP(id) })
+	} else {
+		original := *browser
+		t.Cleanup(func() { _, _ = m.pg.SaveMCP(&original) })
+	}
+	m.globalProxy = "http://127.0.0.1:18080"
+	m.syncBrowserMCPProxy()
+	check := func(wantProxy, wantCA string) {
+		t.Helper()
+		rows, err := m.pg.ListMCP()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range rows {
+			if row.Name != browserMCPName {
+				continue
+			}
+			args := strings.Join(decodeStrSlice(row.Args), " ")
+			if !strings.Contains(args, "--proxy-server "+wantProxy) || decodeStrMap(row.Env)["NODE_EXTRA_CA_CERTS"] != wantCA {
+				t.Fatalf("args=%q env=%s, want proxy=%q CA=%q", args, row.Env, wantProxy, wantCA)
+			}
+			return
+		}
+		t.Fatal("browser MCP row vanished")
+	}
+	check(m.egress.Addr(), "")
+	m.trafficOn = true
+	m.syncBrowserMCPProxy()
+	check(m.traffic.ProxyAddr(), m.traffic.CACertPath())
 }
 
 func TestEnsureBrowserMCPArgsKeepsContainerFlags(t *testing.T) {

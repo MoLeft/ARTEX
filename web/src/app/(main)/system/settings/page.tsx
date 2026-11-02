@@ -60,8 +60,8 @@ export default function SystemSettingsPage() {
   const [savingProxy, setSavingProxy] = React.useState(false);
   const [globalProxyInput, setGlobalProxyInput] = React.useState("");
   const [savingGlobalProxy, setSavingGlobalProxy] = React.useState(false);
-  const [proxyReconnectMax, setProxyReconnectMax] = React.useState("5");
-  const [proxyReconnectInterval, setProxyReconnectInterval] = React.useState("30");
+  const [proxyDirectRetry, setProxyDirectRetry] = React.useState(false);
+  const [savingProxyDirectRetry, setSavingProxyDirectRetry] = React.useState(false);
   const [savingEgressVisibility, setSavingEgressVisibility] = React.useState(false);
   // 出口探测：测一次真实请求，拿到"直连 / 经全局代理"两条出口 IP。
   const [egressTesting, setEgressTesting] = React.useState(false);
@@ -129,8 +129,7 @@ export default function SystemSettingsPage() {
     setProxyInput(s.web_search_proxy ?? "");
     const savedProxy = s.global_proxy ?? "";
     setGlobalProxyInput(savedProxy);
-    setProxyReconnectMax(String(s.proxy_reconnect_max_attempts ?? 5));
-    setProxyReconnectInterval(String(s.proxy_reconnect_interval_seconds ?? 30));
+    setProxyDirectRetry(!!s.proxy_direct_retry_on_connect_failure);
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
     setWorkerPools(s.worker_pools ?? []);
@@ -576,10 +575,17 @@ export default function SystemSettingsPage() {
       .finally(() => setSavingGlobalProxy(false));
   };
 
-  const saveProxyReconnect = () => {
-    api.setSettings({ proxy_reconnect_max_attempts: Number(proxyReconnectMax), proxy_reconnect_interval_seconds: Number(proxyReconnectInterval) })
-      .then((s) => { apply(s); toast.success("已保存代理重连策略"); })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message));
+  const toggleProxyDirectRetry = (v: boolean) => {
+    setProxyDirectRetry(v);
+    setSavingProxyDirectRetry(true);
+    api
+      .setSettings({ proxy_direct_retry_on_connect_failure: v })
+      .then((s) => apply(s))
+      .catch((e) => {
+        setProxyDirectRetry(!v);
+        toast.error(`保存失败：${(e as Error).message}`);
+      })
+      .finally(() => setSavingProxyDirectRetry(false));
   };
 
   // 测表单里当前的值，不要求先保存；后端返回直连 / 经代理两条。
@@ -972,7 +978,7 @@ export default function SystemSettingsPage() {
             </Card>
 
             <Card
-              className={`${isSettingVisible("traffic", "全局代理 出口 IP socks5 http https") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
+              className={`${isSettingVisible("traffic", "全局代理 出口 IP socks5 http https 直连重试") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
             >
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base">
@@ -980,16 +986,13 @@ export default function SystemSettingsPage() {
                   全局代理
                 </CardTitle>
                 <CardDescription>
-                  所有 Agent 的<b>目标流量</b>经此代理出网（隐藏源 IP / 走跳板）。支持 <b>http / https / socks5</b>
+                  所有 Agent 的<b>目标流量</b>经此代理出网。支持 <b>http / https / socks5</b>
                   ，可带 <code>user:pass</code> 认证。留空=直连。
                   <br />
-                  开启<b>流量捕获</b>时，它作为记录代理的<b>上游</b>
-                  （流量仍全量落库，再经此代理出网）；关闭捕获时，直接注入 Agent 的 bash / WebFetch
-                  出网。与网络搜索代理、LLM 代理相互独立。
+                  开启<b>流量捕获</b>时，它作为记录代理的<b>上游</b>；关闭捕获时，Agent 的 Bash、WebFetch、
+                  自定义 HTTP 工具和内置浏览器经本地出口代理转发。与网络搜索代理、LLM 代理相互独立。
                   <br />
-                  <b>提示</b>：socks5 在<b>关闭捕获</b>时依赖各命令行工具对 <code>ALL_PROXY</code> 的支持——curl
-                  可用，python urllib 等会直接报错； 若主要用 socks5，建议开启流量捕获——此路径由 MITM
-                  亲自拨号，工具无感知、稳定生效。
+                  更改代理路由或流量捕获模式时，内置 Lightpanda 会重启，当前 Lightpanda 会话会中断。
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-2">
@@ -1021,12 +1024,23 @@ export default function SystemSettingsPage() {
                 <p className="text-muted-foreground text-xs">
                   {globalProxyInput.trim() ? "已配置 · 所有目标流量经此代理出网" : "未配置 · 目标流量直连出网"}
                 </p>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 items-end">
-                  <div><Label htmlFor="proxy-reconnect-max">最大重连次数</Label><Input id="proxy-reconnect-max" type="number" min={1} value={proxyReconnectMax} onChange={(e) => setProxyReconnectMax(e.target.value)} /></div>
-                  <div><Label htmlFor="proxy-reconnect-interval">重连间隔（秒）</Label><Input id="proxy-reconnect-interval" type="number" min={1} value={proxyReconnectInterval} onChange={(e) => setProxyReconnectInterval(e.target.value)} /></div>
-                  <Button type="button" variant="outline" onClick={saveProxyReconnect}>保存重连策略</Button>
+                <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+                  <div className="min-w-0">
+                    <Label htmlFor="proxy-direct-retry" className="text-sm font-normal">
+                      代理连接失败时直连重试
+                    </Label>
+                    <p className="text-muted-foreground text-xs">
+                      仅代理连接或认证失败时，当前请求直连重试一次。目标网站自身失败不会重试；关闭时仅当前请求失败。
+                      开启后直连请求会暴露本机出口 IP。
+                    </p>
+                  </div>
+                  <Switch
+                    id="proxy-direct-retry"
+                    checked={proxyDirectRetry}
+                    disabled={!settingsLoaded || savingProxyDirectRetry}
+                    onCheckedChange={toggleProxyDirectRetry}
+                  />
                 </div>
-                <p className="text-muted-foreground text-xs">代理异常暂停的任务会按此策略探测；次数耗尽后保持暂停，可手动恢复。</p>
                 <div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
                   <div className="min-w-0">
                     <Label htmlFor="show-egress-ip" className="text-sm font-normal">

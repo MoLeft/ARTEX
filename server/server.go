@@ -130,10 +130,10 @@ type Server struct {
 
 	// Cold task archives run through one persistent FIFO worker. The buffered wake
 	// channel coalesces enqueue bursts; the database remains the source of truth.
-	archiveWake    chan struct{}
-	archiveWG      sync.WaitGroup
-	credentialWake chan struct{}
-	proxyReconnect proxyReconnectSupervisor
+	archiveWake            chan struct{}
+	archiveWG              sync.WaitGroup
+	credentialWake         chan struct{}
+	lightpandaProxyUpdater func(string, string)
 	// proxyProbe is injectable for deterministic reconnect race tests. Production
 	// servers leave it nil and use probeEgress directly.
 	proxyProbe func(context.Context, string, string, []string, time.Duration) egressProbeResult
@@ -202,10 +202,6 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		defer s.cfgMu.Unlock()
 		return s.llmOn
 	})
-	s.engine.SetProxyFailureHandler(s.handleProxyFailure)
-	if m.traffic != nil {
-		m.traffic.SetUpstreamFailureHandler(s.handleProxyTrafficFailure)
-	}
 	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {
@@ -302,7 +298,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		log.Printf("[engine] no LLM provider configured — engine idle until set via /api/llm or env")
 	}
 	s.restoreTaskRuntimes()
-	s.ensureProxySupervisor()
+	s.proxyReconnectSuccess()
 	go s.reconcileConcurrency()
 	s.startTaskArchiveWorker()
 	if m.pg != nil {
@@ -317,6 +313,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	}
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
 	return s
+}
+
+func (s *Server) SetLightpandaProxyUpdater(fn func(string, string)) {
+	s.lightpandaProxyUpdater = fn
 }
 
 // Restored deadline and worker loops must inherit the same context as new tasks,
@@ -439,7 +439,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 		APIKey: cfg.APIKey, RatePerSecond: cfg.RatePerSecond, RatePerMinute: cfg.RatePerMinute,
 		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
 		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
-		Ultra: ultra,
+		Ultra:     ultra,
 		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey,
 		Retry: retry,
 	})
@@ -3643,30 +3643,31 @@ func (s *Server) settingsPayload() map[string]any {
 		"browser_screenshot_timestamp_enabled": s.m.pg.GetBool(settingScreenshotTimestamp, false),
 		"opsec_enabled":                        s.m.pg.GetBool(settingOpsecEnabled, false),
 		// 实验功能：多个浏览器 MCP 都可用时 Agent 优先用哪个（chrome|lightpanda）。
-		"browser_mcp_priority":             browserMCPPriority(s.m.pg),
-		"browser_chrome_max_instances":     s.browserPool.limit(browserMCPKindChrome),
-		"browser_lightpanda_max_instances": s.browserPool.limit(browserMCPKindLightpanda),
-		"agent_traffic_binding":            s.m.pg.GetBool(settingAgentTrafficBinding, false),
-		"task_intelligence_enabled":        s.m.pg.GetBool(db.SettingTaskIntelligence, false),
-		db.SettingTaskAutoTitle:            s.m.pg.GetBool(db.SettingTaskAutoTitle, false),
-		db.SettingChatAutoTitle:            s.m.pg.GetBool(db.SettingChatAutoTitle, false),
-		db.SettingCredentialAgent:          s.m.pg.GetBool(db.SettingCredentialAgent, false),
-		db.SettingCredentialTraffic:        s.m.pg.GetBool(db.SettingCredentialAgent, false) && s.m.pg.GetBool(db.SettingCredentialTraffic, false),
-		"llm_record":                       s.m.LLMRecordEnabled(),
-		"web_search_enabled":               on,
-		"web_search_backend":               backend,
-		"brave_key_set":                    strings.TrimSpace(braveKey) != "",
-		"tavily_key_set":                   strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":                 proxy,             // 独立出口代理(http/https/socks5)，空=直连
-		"global_proxy":                     s.m.GlobalProxy(), // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
-		"proxy_reconnect_max_attempts":     func() int { n, _ := s.proxyReconnectConfig(); return n }(),
-		"proxy_reconnect_interval_seconds": func() int { _, d := s.proxyReconnectConfig(); return int(d / time.Second) }(),
-		"show_egress_ip":                   s.m.pg.GetBool(settingShowEgressIP, false),
-		"python_interpreter":               strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
-		"workers":                          s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
-		"worker_pools":                     s.m.WorkerPools(),           // 非空时按池顺序绑定 worker 会话
-		"task_concurrency_enabled":         concOn,                      // 任务并发上限开关(默认关)
-		"task_concurrency_limit":           concLimit,                   // 同时运行任务上限(开启后默认5)
+		"browser_mcp_priority":                  browserMCPPriority(s.m.pg),
+		"browser_chrome_max_instances":          s.browserPool.limit(browserMCPKindChrome),
+		"browser_lightpanda_max_instances":      s.browserPool.limit(browserMCPKindLightpanda),
+		"agent_traffic_binding":                 s.m.pg.GetBool(settingAgentTrafficBinding, false),
+		"task_intelligence_enabled":             s.m.pg.GetBool(db.SettingTaskIntelligence, false),
+		db.SettingTaskAutoTitle:                 s.m.pg.GetBool(db.SettingTaskAutoTitle, false),
+		db.SettingChatAutoTitle:                 s.m.pg.GetBool(db.SettingChatAutoTitle, false),
+		db.SettingCredentialAgent:               s.m.pg.GetBool(db.SettingCredentialAgent, false),
+		db.SettingCredentialTraffic:             s.m.pg.GetBool(db.SettingCredentialAgent, false) && s.m.pg.GetBool(db.SettingCredentialTraffic, false),
+		"llm_record":                            s.m.LLMRecordEnabled(),
+		"web_search_enabled":                    on,
+		"web_search_backend":                    backend,
+		"brave_key_set":                         strings.TrimSpace(braveKey) != "",
+		"tavily_key_set":                        strings.TrimSpace(tavilyKey) != "",
+		"web_search_proxy":                      proxy,             // 独立出口代理(http/https/socks5)，空=直连
+		"global_proxy":                          s.m.GlobalProxy(), // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
+		"proxy_direct_retry_on_connect_failure": s.m.ProxyDirectRetry(),
+		"proxy_reconnect_max_attempts":          func() int { n, _ := s.proxyReconnectConfig(); return n }(),
+		"proxy_reconnect_interval_seconds":      func() int { _, d := s.proxyReconnectConfig(); return int(d / time.Second) }(),
+		"show_egress_ip":                        s.m.pg.GetBool(settingShowEgressIP, false),
+		"python_interpreter":                    strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
+		"workers":                               s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"worker_pools":                          s.m.WorkerPools(),           // 非空时按池顺序绑定 worker 会话
+		"task_concurrency_enabled":              concOn,                      // 任务并发上限开关(默认关)
+		"task_concurrency_limit":                concLimit,                   // 同时运行任务上限(开启后默认5)
 		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时
 		// 自动切到下一个配置。bind_fallback 仅在轮询开启时有意义(默认关)。
 		"llm_pool_enabled":       s.m.LLMPoolEnabled(),
@@ -3755,6 +3756,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		TavilyKey              *string       `json:"tavily_search_api_key"`
 		WebSearchProxy         *string       `json:"web_search_proxy"` // 独立出口代理(http/https/socks5)；null=不改，""=清空
 		GlobalProxy            *string       `json:"global_proxy"`     // 全局出口代理(http/https/socks5)；null=不改，""=清空(直连)
+		ProxyDirectRetry       *bool         `json:"proxy_direct_retry_on_connect_failure"`
 		ProxyReconnectMax      *int          `json:"proxy_reconnect_max_attempts"`
 		ProxyReconnectInterval *int          `json:"proxy_reconnect_interval_seconds"`
 		ShowEgressIP           *bool         `json:"show_egress_ip"`     // 在顶栏显示直连/全局代理出口 IP；默认关
@@ -4052,6 +4054,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if req.BrowserLightpandaMax != nil {
 		s.browserPool.setLimit(browserMCPKindLightpanda, *req.BrowserLightpandaMax)
 	}
+	oldProxy, oldCert := s.m.ProxyAddr(), s.m.ProxyCACert()
 	if req.TrafficCapture != nil {
 		if err := s.m.SetTrafficEnabled(*req.TrafficCapture); err != nil {
 			writeErr(w, 500, err.Error())
@@ -4073,6 +4076,15 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(*req.GlobalProxy) == "" {
 			s.proxyReconnectSuccessWithGuards(proxyGuards, nil)
 		}
+	}
+	if req.ProxyDirectRetry != nil {
+		if err := s.m.SetProxyDirectRetry(*req.ProxyDirectRetry); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if s.lightpandaProxyUpdater != nil && (s.m.ProxyAddr() != oldProxy || s.m.ProxyCACert() != oldCert) {
+		s.lightpandaProxyUpdater(s.m.ProxyAddr(), s.m.ProxyCACert())
 	}
 	if req.ProxyReconnectMax != nil || req.ProxyReconnectInterval != nil {
 		if err := s.setProxyReconnectSettings(req.ProxyReconnectMax, req.ProxyReconnectInterval); err != nil {

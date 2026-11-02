@@ -356,18 +356,11 @@ func probeOne(ctx context.Context, client *http.Client, target string) (string, 
 	return "", fmt.Errorf("无法从响应中解析出 IP（收到 %d 字节，可能是反爬页或代理错误页）", len(body))
 }
 
-// egressTarget 决定 ② 把请求发到哪：
-//
-//	捕获关 → 表单值；捕获开+已保存 → MITM；捕获开+未保存 → 表单值（跳过 MITM）
-//
-// 第三种不能走 MITM：MITM 的上游只由 SetGlobalProxy 更新，读不到请求体里的新值，
-// 走它只会测出旧代理。viaMITM 供调用方放宽超时。
+// A proxy health test must bypass the recording/fallback proxy so it cannot
+// report a direct fallback as a healthy configured upstream.
 func egressTarget(cfg string, capture, pending bool, agentProxy, agentCA string) (addr, ca string, viaMITM bool) {
 	if cfg == "" {
 		return "", "", false
-	}
-	if capture && !pending && agentProxy != "" {
-		return agentProxy, agentCA, true
 	}
 	return cfg, "", false
 }
@@ -457,8 +450,7 @@ func (s *Server) testEgressProxy(w http.ResponseWriter, r *http.Request) {
 	rep.Warnings = egressWarnings(rep, pending, savedProxy)
 	if rep.OK && !pending {
 		// The settings page uses this endpoint for its manual "测试代理" action.
-		// A successful probe is the same signal as an automatic reconnect success,
-		// but it must never consume an automatic attempt.
+		// A successful manual probe may release a legacy proxy pause.
 		s.proxyReconnectSuccessWithGuards(proxyGuards, nil)
 	}
 	writeJSON(w, 200, rep)
@@ -504,7 +496,6 @@ func egressWarnings(rep egressReport, pending bool, savedProxy string) []string 
 	}
 
 	var directIP, proxyIP string
-	proxyOK := false
 	for _, c := range rep.Checks {
 		switch c.Key {
 		case "direct":
@@ -512,16 +503,8 @@ func egressWarnings(rep egressReport, pending bool, savedProxy string) []string 
 		case "global":
 			if !c.Skipped {
 				proxyIP = c.Result.ExitIP
-				proxyOK = c.Result.OK
 			}
 		}
-	}
-
-	// W2 看已保存值；只在 ② 通过时提示——没通的话"这里通不代表"本身就不成立。
-	if !rep.Capture && proxyOK && strings.HasPrefix(strings.ToLower(savedProxy), "socks5") {
-		out = append(out, "当前是「关闭捕获 + socks5」：本测试用的是 Go 客户端（一定遵守代理），"+
-			"但 agent 的工具不一定——curl 能走，python urllib 会直接报错。"+
-			"所以这里通不代表工具都能走；要稳定生效请开启流量捕获（由 MITM 亲自拨号）。")
 	}
 
 	// W3 两行相同 → 代理可能没生效，或对端只是透明转发。

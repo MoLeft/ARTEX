@@ -447,9 +447,6 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		if spec.UseRecordingProxy || strings.TrimSpace(spec.Proxy) == strings.TrimSpace(s.m.GlobalProxy()) {
-			s.handleProxyToolFailure(runCtx, err)
-		}
 		return actool.Errorf("请求失败: " + err.Error()), nil
 	}
 	defer resp.Body.Close()
@@ -474,8 +471,10 @@ func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 				caFile = s.m.ProxyCACert()
 			}
 		} else if global := strings.TrimSpace(s.m.GlobalProxy()); global != "" {
-			proxyStr = global
+			proxyStr = s.m.ProxyAddr()
 		}
+	} else if proxyStr != "" && proxyStr == strings.TrimSpace(s.m.GlobalProxy()) && s.m.egress != nil {
+		proxyStr = s.m.egress.Addr()
 	}
 	if proxyStr == "" {
 		return nil

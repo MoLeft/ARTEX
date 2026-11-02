@@ -94,13 +94,13 @@ func run() int {
 	defer stop()
 	ctx, shutdown := shutdownContext(sigCtx)
 	defer shutdown(agent.AbortShutdown)
-	startLightpanda(ctx)
 
 	mgr, err := server.NewManager(*dataDir, *proxy)
 	if err != nil {
 		log.Fatalf("open stores: %v", err)
 	}
 	defer mgr.Close()
+	lightpanda := startLightpanda(ctx, mgr.ProxyAddr(), mgr.ProxyCACert())
 
 	// Surviving this long means a freshly swapped-in build actually works, so drop
 	// the upgrade marker and stop counting attempts. Until it fires, every boot
@@ -114,6 +114,9 @@ func run() int {
 	}
 	log.Printf("[config] skill 目录: %s", skillDir)
 	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+	if lightpanda != nil {
+		srv.SetLightpandaProxyUpdater(lightpanda.Update)
+	}
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),
