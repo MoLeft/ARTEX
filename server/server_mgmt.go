@@ -1819,6 +1819,9 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 		db.LLMProfile
 		APIKey    string `json:"api_key"`
 		Streaming *bool  `json:"streaming"`
+		// Ultra 同样用 *bool 遮蔽嵌入字段：这个开关是安全相关的，老前端没带该字段时
+		// 不能把它静默关成 false，否则一次「保存」就会悄悄撤掉已经确认过的注入。
+		Ultra *bool `json:"ultra"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, 400, err.Error())
@@ -1827,6 +1830,20 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	p := body.LLMProfile
 	p.APIKey = body.APIKey
 	p.Streaming = body.Streaming == nil || *body.Streaming
+	if body.Ultra != nil {
+		p.Ultra = *body.Ultra
+	} else if p.ID != 0 {
+		// 未携带 → 保留库里已有的值（新建时保持 false）。
+		if old, err := pg.ProfileByID(p.ID); err == nil && old != nil {
+			p.Ultra = old.Ultra
+		}
+	}
+	// OPSEC 与 Ultra 互斥。注入路径（agent.opsecActive）也会拦一次，但在这里挡住的
+	// 好处是用户当场知道原因，而不是保存成功、对话里却发现没生效。
+	if p.Ultra && pg.GetBool(settingOpsecEnabled, false) {
+		writeErr(w, 400, "Artex Ultra 与 OPSEC 准则互斥：请先在 系统 → 设置 关闭「OPSEC 准则」，再开启 Ultra")
+		return
+	}
 	// 输出上限:负数无意义,归零(= 不发送该字段)。字段名开关只有 Chat Completions
 	// 用得上——anthropic 与 openai-responses 各自定死了字段名,存下来只会误导后续读者,
 	// 故非 openai 格式一律清空。未知取值同样清空,避免把 DB CHECK 的报错甩给用户。

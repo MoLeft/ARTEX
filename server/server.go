@@ -394,6 +394,7 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg.Stream = p.Streaming
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
+	cfg.Ultra = p.Ultra
 	s.applyProfileRetry(&cfg, p)
 	if cfg.APIKey == "" {
 		return cfg, false
@@ -416,6 +417,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	var priority int
 	var poolExclude bool
 	streaming := true // 旧库/新建默认流式
+	var ultra bool    // 同理：这个端点不带 Ultra 开关，别把它清零
 	var maxTokens int
 	var maxTokensField string
 	var sessionHeaderKey string
@@ -424,6 +426,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 		for _, p := range profs {
 			if p.Name == "default" {
 				id, priority, poolExclude, streaming = p.ID, p.Priority, p.PoolExclude, p.Streaming
+				ultra = p.Ultra
 				maxTokens, maxTokensField = p.MaxTokens, p.MaxTokensField
 				sessionHeaderKey = p.SessionHeaderKey
 				retry = p.Retry
@@ -436,6 +439,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 		APIKey: cfg.APIKey, RatePerSecond: cfg.RatePerSecond, RatePerMinute: cfg.RatePerMinute,
 		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
 		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
+		Ultra: ultra,
 		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey,
 		Retry: retry,
 	})
@@ -562,6 +566,7 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg.Stream = p.Streaming
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
+	cfg.Ultra = p.Ultra
 	s.applyProfileRetry(&cfg, p)
 	if cfg.APIKey == "" {
 		return cfg, false
@@ -738,6 +743,9 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	ca.SetNonStreaming(nonStreamingResolver(cfg))
 	ca.SetMaxTokens(maxTokensResolver(cfg))
 	ca.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
+	// Artex Ultra 是 profile 级开关：保存配置时 invalidateProfileAgents 会重建这个
+	// ChatAgent，所以闭包捕获构造时的 cfg 值即可，不会读到过期状态。
+	ca.SetUltra(func() bool { return cfg.Ultra })
 	s.profMu.Lock()
 	if ex := s.profChatAgents[id]; ex != nil { // lost the race → keep the winner
 		ca = ex
@@ -3788,6 +3796,25 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, err := notify.ParseQuietHours(start, end); err != nil {
 			writeErr(w, 400, err.Error())
+			return
+		}
+	}
+	// OPSEC 与 Artex Ultra 双向互斥，且一方已开时另一方必须由用户手动关掉——
+	// 这里只拒绝，不替用户改配置。静默把别人的 Ultra 关掉是一次看不见的状态变更：
+	// 用户下次打开配置页只会看到「Ultra 已关闭」，不知道为什么。
+	//
+	// 校验放在任何写入之前：putSettings 是逐条 SetXxx，没有事务，中途 return 会
+	// 留下一半生效的设置。
+	if req.OpsecEnabled != nil && *req.OpsecEnabled {
+		var ultraCount int
+		if err := s.m.pg.QueryRow(`SELECT count(*) FROM llm_profiles WHERE ultra`).Scan(&ultraCount); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if ultraCount > 0 {
+			writeErr(w, 400, fmt.Sprintf(
+				"Artex Ultra 与 OPSEC 准则互斥：还有 %d 个 LLM 配置开着 Ultra，请先到 系统 → LLM 配置 里关闭它们，再开启 OPSEC",
+				ultraCount))
 			return
 		}
 	}

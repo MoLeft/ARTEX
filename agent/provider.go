@@ -77,6 +77,10 @@ type Config struct {
 	// Retry 是该配置解析后的重试参数(profile 覆盖 → 全局策略 → 内置默认,由
 	// server 侧解析)。三层的含义见 RetryConfig;零值 = 完全沿用内置默认。
 	Retry RetryConfig
+	// Ultra 是「Artex Ultra 模式」开关(实验性,按 LLM 配置存)。开启后 chat 类 agent
+	// 会在 system prompt 最前面拼一段前置覆盖,压低模型自带内容政策带来的拒答率。
+	// 只作用于对话链路;worker/planner 的 system 是任务级的,不吃这段文本。
+	Ultra bool
 }
 
 // RetryConfig 是随一个 LLM 配置走的重试参数。每层的「次数」统一语义:

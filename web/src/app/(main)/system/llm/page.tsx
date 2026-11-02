@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import {
+  FlaskConicalIcon,
   Loader2Icon,
   PlugZapIcon,
   PlusIcon,
@@ -18,6 +19,14 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -37,6 +46,9 @@ import { ProfileRetryFields, RetryPolicyPanel, ZERO_OVERRIDE } from "./_componen
 // 存库空字符串 = 该字段【不发送】；Radix Select 不接受空 value，故 UI 用 "none"
 // 哨兵表示不发送，存取时与 "" 互转（NONE / fromStore / toStore）。
 const NONE = "none";
+// Artex Ultra 的免责确认串：必须一字不差地输入才允许开启。它不是防误触的装饰，
+// 而是把「我知道可能被封号」变成一次显式动作，避免有人顺手拨开开关再来找后账。
+const ULTRA_ACK = "我已知晓并同意";
 const fromStore = (v?: string) => (v ? v : NONE);
 const toStore = (v: string) => (v === NONE ? "" : v);
 const THINKING_TYPES: { value: string; label: string }[] = [
@@ -325,6 +337,10 @@ function ProfileSheet({
   const [priority, setPriority] = React.useState("0"); // 轮询顺位;越大越先
   const [poolExclude, setPoolExclude] = React.useState(false);
   const [streaming, setStreaming] = React.useState(true); // true=流式(默认);false=非流式
+  const [ultra, setUltra] = React.useState(false); // Artex Ultra(实验性);默认关
+  const [ultraOpen, setUltraOpen] = React.useState(false); // 二次确认弹窗
+  const [ultraAck, setUltraAck] = React.useState(""); // 免责确认输入框
+  const [opsecOn, setOpsecOn] = React.useState(false); // 全局 OPSEC 开关;开着时 Ultra 不可用
   const [maxTokens, setMaxTokens] = React.useState("0"); // 单次回复输出上限;0=不发送
   const [maxTokensField, setMaxTokensField] = React.useState(NONE); // 上限用哪个字段名;NONE=max_tokens
   const [sessionHeaderKey, setSessionHeaderKey] = React.useState(""); // 自定义会话头名;空=不发送
@@ -352,6 +368,9 @@ function ProfileSheet({
     setPriority(String(profile?.priority ?? 0));
     setPoolExclude(profile?.pool_exclude ?? false);
     setStreaming(profile?.streaming ?? true);
+    setUltra(profile?.ultra ?? false);
+    setUltraOpen(false);
+    setUltraAck("");
     setMaxTokens(String(profile?.max_tokens ?? 0));
     setMaxTokensField(fromStore(profile?.max_tokens_field));
     setSessionHeaderKey(profile?.session_header_key ?? "");
@@ -361,6 +380,24 @@ function ProfileSheet({
     setModels([]);
     setModelsOpen(false);
   }, [open, profile]);
+
+  // OPSEC 是全局设置，与当前编辑的配置无关，所以独立于上面的表单灌值读一次。
+  // 读失败不阻塞表单：后端保存时还会再挡一次，界面只是少了那句禁用说明。
+  React.useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    api
+      .settings()
+      .then((s) => {
+        if (alive) setOpsecOn(!!s.opsec_enabled);
+      })
+      .catch(() => {
+        /* 缺省视为关闭，由后端最终裁决 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open]);
 
   const profileId = profile ? Number(profile.id) : undefined;
 
@@ -439,6 +476,7 @@ function ProfileSheet({
         priority: Number(priority) || 0,
         pool_exclude: poolExclude,
         streaming,
+        ultra,
         max_tokens: Math.max(0, Number(maxTokens) || 0),
         // 字段名开关只对 openai(Chat Completions) 有意义，其它格式一律回落到默认；
         // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
@@ -632,6 +670,60 @@ function ProfileSheet({
             1M）；设太高会导致压缩不触发。
           </p>
 
+          {/* 实验性功能：Artex Ultra。放在轮询优先级上方——它改的是对话内容层，
+              不是路由/配额层，视觉上也该和轮询那块分开。开关开启要走二次确认：
+              这个功能的风险是账号级（可能被供应商封禁），不是配置级。 */}
+          <div
+            className={cn(
+              "grid gap-3 rounded-lg border p-3",
+              ultra && !opsecOn && "border-red-500/40 bg-red-500/5",
+              opsecOn && "border-muted-foreground/20 bg-muted/30",
+            )}
+          >
+            <div className="flex items-center justify-between gap-4">
+              <div className="grid gap-1">
+                <Label className="flex items-center gap-1.5 text-sm">
+                  <FlaskConicalIcon className="size-3.5 text-amber-500" />
+                  Artex Ultra 模式
+                  <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                    实验性
+                  </Badge>
+                </Label>
+                <p className="text-muted-foreground text-xs">
+                  开启后，对话的 system prompt 会在最前面注入一段前置覆盖，降低模型以内容政策为由拒答的概率。
+                  部分模型提供商可能因此无法正确理解任务需求；注入内容始终让位于授权范围与 OPSEC 准则。
+                </p>
+                {opsecOn ? (
+                  <p className="font-medium text-amber-600 text-xs dark:text-amber-400">
+                    OPSEC 准则已开启，Artex Ultra 不可用。两者对「能否拒绝」的指令直接对立，同时启用会让模型
+                    只能二选一地相信。要使用 Ultra，请先到 系统 → 设置 关闭 OPSEC 准则。
+                  </p>
+                ) : (
+                  ultra && (
+                    <p className="font-medium text-red-600 text-xs dark:text-red-400">
+                      已开启：该配置下的对话会带上 Ultra 覆盖块，并会消耗额外 token。
+                    </p>
+                  )
+                )}
+              </div>
+              <Switch
+                checked={ultra && !opsecOn}
+                disabled={opsecOn}
+                onCheckedChange={(v) => {
+                  if (!v) {
+                    setUltra(false);
+                    return;
+                  }
+                  // 关闭不需要确认，开启必须走免责弹窗；这里只打开弹窗，
+                  // 真正的 setUltra(true) 在弹窗确认按钮里。
+                  setUltraAck("");
+                  setUltraOpen(true);
+                }}
+                aria-label="Artex Ultra 模式"
+              />
+            </div>
+          </div>
+
           <div className="grid gap-3 rounded-lg border p-3">
             <div className="flex items-center justify-between gap-4">
               <div className="grid gap-0.5">
@@ -779,6 +871,71 @@ function ProfileSheet({
           </Button>
         </div>
       </SheetContent>
+
+      {/* 二次确认：开 Ultra 的风险是账号级（可能被封），不是配置级，所以必须
+          一次显式动作 + 免责确认串，避免顺手拨开之后再回头找原因。 */}
+      <Dialog open={ultraOpen} onOpenChange={setUltraOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FlaskConicalIcon className="size-4 text-amber-500" />
+              开启 Artex Ultra 模式？
+            </DialogTitle>
+            <DialogDescription>实验性功能，请读完下面的说明再决定。</DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3 text-sm">
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              <span className="text-foreground font-medium">原理：</span>
+              每次对话请求都会把一段「前置覆盖」提示词注入到你的 Agent 人格提示词
+              <span className="text-foreground font-medium">之前</span>
+              ，用它压低模型自带内容政策带来的拒答倾向。
+            </p>
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              对部分模型提供商，这段注入可能导致 LLM
+              无法正确理解任务需求（表现为格式跑偏、忽略工具、答非所问）；对大多数模型，它可以明显降低被拒绝的可能性。
+              注入内容不会覆盖授权范围与 OPSEC 准则。
+            </p>
+
+            <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-red-600 text-xs leading-relaxed dark:text-red-400">
+              <span className="font-semibold">注意：</span>
+              开启 Artex Ultra 功能可能会导致您的模型提供商封禁您的账号，请斟酌后再决定是否开启。
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="ultra-ack" className="text-xs">
+                输入「{ULTRA_ACK}」以确认
+              </Label>
+              <Input
+                id="ultra-ack"
+                value={ultraAck}
+                onChange={(e) => setUltraAck(e.target.value)}
+                placeholder={ULTRA_ACK}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUltraOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={ultraAck.trim() !== ULTRA_ACK}
+              onClick={() => {
+                setUltra(true);
+                setUltraOpen(false);
+                setUltraAck("");
+                toast.success("已开启 Artex Ultra；保存配置后对该配置的对话生效");
+              }}
+            >
+              确认开启
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Sheet>
   );
 }

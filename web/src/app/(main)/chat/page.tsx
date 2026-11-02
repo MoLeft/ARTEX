@@ -7,6 +7,7 @@ import {
   Bot,
   ChevronDownIcon,
   ChevronRightIcon,
+  FlaskConicalIcon,
   ListChecksIcon,
   Loader2Icon,
   MoreHorizontalIcon,
@@ -59,6 +60,7 @@ import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { isBtwCommand } from "@/lib/side-questions";
 import type { Activity, Agent, ChatAttachment, Conversation, LLMProfile } from "@/lib/types";
+import { ULTRA_PROBE_MARKER, type UltraProbeState, ultraProbeHit } from "@/lib/ultra";
 import { cn } from "@/lib/utils";
 
 // fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
@@ -276,6 +278,59 @@ function Composer({
   );
 }
 
+// UltraBanner 是对话顶部的状态条：说明这条会话跑在 Ultra 模式上、显示首轮自检的
+// 结果、提供一个就地关闭的入口。
+//
+// 三种状态分开显示是刻意的：pending 不能当成成功（探针还没被回答），failed 也不能
+// 当成破甲失败（它只说明模型没复述那个串，可能是因为注入没到达，也可能只是不遵循
+// 格式）。把状态说准，比给一个笼统的「已生效」有用。
+function UltraBanner({
+  state,
+  profile,
+  onDisable,
+}: {
+  state: UltraProbeState;
+  profile: LLMProfile;
+  onDisable: () => Promise<void>;
+}) {
+  const [disabling, setDisabling] = React.useState(false);
+  const tone =
+    state === "failed"
+      ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+      : "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400";
+  const title =
+    state === "hit" ? "Artex Ultra 已生效" : state === "failed" ? "Artex Ultra 自检未通过" : "Artex Ultra 已开启";
+  const detail =
+    state === "hit"
+      ? `自检通过 · ${ULTRA_PROBE_MARKER}`
+      : state === "failed"
+        ? "模型没有复述自检串：注入可能没到达，或该模型不遵循这个格式。新建会话可重新校验。"
+        : "首轮对话后会自动校验注入是否到达。";
+  return (
+    <div role="status" className={cn("flex flex-wrap items-center gap-x-2 gap-y-1 border-b px-4 py-1.5 text-xs", tone)}>
+      <FlaskConicalIcon className="size-3.5 shrink-0" />
+      <span className="font-medium">{title}</span>
+      <span className="min-w-0 truncate opacity-80">{detail}</span>
+      <span className="shrink-0 opacity-60">· 配置：{profile.name}</span>
+      <button
+        type="button"
+        disabled={disabling}
+        onClick={async () => {
+          setDisabling(true);
+          try {
+            await onDisable();
+          } finally {
+            setDisabling(false);
+          }
+        }}
+        className="ml-auto shrink-0 underline underline-offset-2 hover:no-underline disabled:opacity-40"
+      >
+        {disabling ? "关闭中…" : "关闭 Ultra"}
+      </button>
+    </div>
+  );
+}
+
 // LLMProfileRow shows the active LLM config below the composer and lets the user
 // switch it via a Popover. `selected` is the profile id or null for default.
 function LLMProfileRow({
@@ -484,6 +539,8 @@ function ChatView({
   initial,
   onTitleMaybeChanged,
   onConvUpdated,
+  onProfilesChanged,
+  opsecOn,
 }: {
   conv: Conversation;
   agents: Agent[];
@@ -493,6 +550,10 @@ function ChatView({
   initial?: { input?: string; attachments?: ChatAttachment[] };
   onTitleMaybeChanged: () => void;
   onConvUpdated: () => void;
+  // 就地把某个配置的 Ultra 关掉之后，让上层重拉 profiles，否则 banner 不会消失。
+  onProfilesChanged: () => void;
+  // OPSEC 与 Ultra 互斥：OPSEC 开着时后端根本不注入 Ultra 块，banner 也不该出现。
+  opsecOn: boolean;
 }) {
   const approvalFocus = useApprovalFocus({ conversationId: conv.id });
   const [messages, setMessages] = React.useState<Activity[]>([]);
@@ -514,6 +575,66 @@ function ChatView({
   const side = useSideQuestions(`/api/conversations/${conv.id}`);
   const lastTurn = messages.findLast((a) => a.kind === "result" || a.kind === "user");
   const canContinue = !running && lastTurn?.kind === "result" && lastTurn.is_error && lastTurn.summary.includes("model_error");
+
+  // 本会话实际生效的 LLM 配置：会话 pin 优先，否则全局激活配置。Ultra 是按配置
+  // 存的，所以这里必须读这「一个」，而不是「任意一个开了 Ultra 的配置」。
+  const effectiveProfile = React.useMemo(() => {
+    if (conv.llm_profile_id != null) {
+      return profiles.find((p) => Number(p.id) === Number(conv.llm_profile_id)) ?? null;
+    }
+    return profiles.find((p) => p.is_default) ?? null;
+  }, [profiles, conv.llm_profile_id]);
+  const ultraOn = effectiveProfile?.ultra === true && !opsecOn;
+
+  // 自检只看助手侧输出：text 是正文，result 是收尾。user 消息里也带着探针指令本身，
+  // 把它算进来会让每一轮都「命中」——那是自欺。
+  //
+  // 为什么要数 user 条数：探针只在会话首轮注入（后端 runConversationTurn 判断），
+  // 所以「首轮已答但没 marker」才是真的失败；多轮之后仍没命中，说明这个会话压根
+  // 没被注入过（例如开 Ultra 之前就存在的老会话），同样该提示用户新开会话重试。
+  const probeState = React.useMemo<UltraProbeState>(() => {
+    const assistantTexts = messages
+      .filter((a) => a.kind === "text" || a.kind === "result")
+      .map((a) => a.summary ?? "");
+    if (assistantTexts.some(ultraProbeHit)) return "hit";
+    const users = messages.filter((a) => a.kind === "user").length;
+    if (users <= 1) return assistantTexts.length > 0 ? "failed" : "pending";
+    return "failed";
+  }, [messages]);
+
+  // 就地关闭 Ultra：后端是全量更新，所以要把配置的其余字段原样回传，否则一次
+  // 「关闭」会把 priority / retry / max_tokens 这些悄悄重置。api_key 留空 = 保留原 key。
+  async function disableUltra() {
+    const p = effectiveProfile;
+    if (!p) return;
+    try {
+      await api.saveLLMProfile({
+        id: Number(p.id),
+        name: p.name,
+        format: p.format,
+        model: p.model,
+        base_url: p.base_url ?? "",
+        proxy: p.proxy ?? "",
+        rate_per_second: p.rate_per_second,
+        rate_per_minute: p.rate_per_minute,
+        context_window_k: p.context_window_k,
+        thinking_type: p.thinking_type ?? "",
+        reasoning_effort: p.reasoning_effort ?? "",
+        priority: p.priority ?? 0,
+        pool_exclude: p.pool_exclude ?? false,
+        streaming: p.streaming ?? true,
+        ultra: false,
+        max_tokens: p.max_tokens ?? 0,
+        max_tokens_field: p.max_tokens_field ?? "",
+        session_header_key: p.session_header_key ?? "",
+        retry: p.retry,
+      });
+      onProfilesChanged();
+      toast.success("已关闭 Artex Ultra；该配置的后续对话不再注入");
+    } catch (e) {
+      toast.error(`关闭失败：${(e as Error).message}`);
+    }
+  }
 
   async function changeProfile(id: number | null) {
     try {
@@ -797,6 +918,10 @@ function ChatView({
           )}
         </div>
       </div>
+
+      {ultraOn && effectiveProfile && (
+        <UltraBanner state={probeState} profile={effectiveProfile} onDisable={disableUltra} />
+      )}
 
       <ApprovalExecutionFocus focus={approvalFocus} history={focusHistory} />
 
@@ -1111,6 +1236,29 @@ export default function ChatPage() {
       // Preserve the selected transcript and list on a transient poll failure.
     }
   }, []);
+  // OPSEC 是全局开关，与 Ultra 互斥。banner 会断言「已生效」，所以这里也得知道
+  // OPSEC 的状态——否则用户开了 OPSEC、库里 ultra 被清掉之前的那一瞬间，界面还会
+  // 报已生效。拉取失败按关闭处理：banner 只是提示，不是权限判断。
+  const [opsecOn, setOpsecOn] = React.useState(false);
+  const reloadOpsec = React.useCallback(() => {
+    api
+      .settings()
+      .then((s) => setOpsecOn(!!s.opsec_enabled))
+      .catch(() => {
+        /* keep the last known value */
+      });
+  }, []);
+
+  // 就地把 Ultra 关掉之后要重拉：banner 的显示条件就是 profiles[i].ultra，
+  // 不刷新的话开关已经落库、界面还挂着「已开启」。
+  const reloadProfiles = React.useCallback(() => {
+    api
+      .llmProfiles()
+      .then(setProfiles)
+      .catch(() => {
+        /* Keep the current list on a transient failure. */
+      });
+  }, []);
   React.useEffect(() => {
     api
       .agents()
@@ -1124,7 +1272,8 @@ export default function ChatPage() {
       .catch(() => {
         /* The conversation remains usable without profile labels. */
       });
-  }, []);
+    reloadOpsec();
+  }, [reloadOpsec]);
 
   // One list poll supplies runtime state for all sidebar rows, including the
   // unselected ones. Await completion so slow requests do not overlap.
@@ -1535,6 +1684,8 @@ export default function ChatPage() {
               initial={pendingByConv[selected.id]}
               onTitleMaybeChanged={reloadConvs}
               onConvUpdated={reloadConvs}
+              onProfilesChanged={reloadProfiles}
+              opsecOn={opsecOn}
             />
           ) : sourceRequested ? (
             <div role="status" className="p-6 text-sm text-muted-foreground">
