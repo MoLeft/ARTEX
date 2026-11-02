@@ -95,6 +95,20 @@ func TestGenerateAutoTitleProviderError(t *testing.T) {
 	}
 }
 
+// Some models answer with 《书名号》 or **粗体**; neither belongs in a title.
+func TestCleanAutoTitleStripsBookQuotesAndBold(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"《东方希望集团资产测绘》", "东方希望集团资产测绘"},
+		{"**标题：edu.cn GitLab 源码检索**", "edu.cn GitLab 源码检索"},
+		{"「119.gov.cn 资产测绘」", "119.gov.cn 资产测绘"},
+	}
+	for _, tc := range cases {
+		if got := cleanAutoTitle(tc.in); got != tc.want {
+			t.Errorf("cleanAutoTitle(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // The two shapes that actually showed up in production titles: the model
 // narrating the request ("嗯，用户提出的是…", "The user is asking me to…") and the
 // model refusing the material ("抱歉，我无法协助完成这项任务。").
@@ -157,18 +171,24 @@ func TestGenerateAutoTitleGivesUpAfterOneRetry(t *testing.T) {
 }
 
 // The material must be framed as data, otherwise a first-person request reads
-// as an instruction addressed to the model and gets narrated back.
+// as an instruction addressed to the model and gets narrated back. The framing
+// is deliberately a plain request: bracketed [起名素材开始] markers made the
+// reasoning backend treat the call as prompt injection and burn the budget on
+// meta-analysis (see autoTitleLeadIn).
 func TestGenerateAutoTitleFramesMaterialAsData(t *testing.T) {
 	p := &autoTitleProvider{reply: "项目设置整理"}
 	if _, err := GenerateAutoTitle(t.Context(), p, "  帮我整理一下项目设置  ", false); err != nil {
 		t.Fatal(err)
 	}
 	body := p.req.Messages[0].Content[0].Text
-	if !strings.HasPrefix(body, "[起名素材开始]") || !strings.HasSuffix(body, "[起名素材结束]") {
-		t.Fatalf("material not delimited: %q", body)
+	if !strings.HasPrefix(body, "为下面这段内容起一个标题") {
+		t.Fatalf("material not framed: %q", body)
 	}
-	if !strings.Contains(body, "帮我整理一下项目设置") {
+	if !strings.HasSuffix(body, "帮我整理一下项目设置") {
 		t.Fatalf("material content missing: %q", body)
+	}
+	if strings.Contains(body, "[起名素材") {
+		t.Fatalf("bracketed markers are back — they trigger injection heuristics: %q", body)
 	}
 }
 

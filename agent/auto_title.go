@@ -14,6 +14,15 @@ const autoTitleMaxRunes = 40
 const autoTitleMaxInputRunes = 1000
 const autoTitleMaxTokens = 96
 
+// autoTitleLeadIn 是用户轮的开头，素材原样跟在后面。
+//
+// 这里刻意不用 [起名素材开始] / [起名素材结束] 这类包裹标记。实测（glm-5.3-flash
+// 的推理侧后端，96/256 token 两档）：带标记时三次素材全部失败——模型把整条请求
+// 当成提示注入，先花完 token 分析「这个 wrapper 是什么意思」，再交回半截思考过程，
+// 或者干脆拒答；换成一句普通的「为下面这段内容起标题」，同样三次素材六次调用
+// 全部一次成功。降级素材身份的活儿交给 system 里的规则，用户轮只留一个自然请求。
+const autoTitleLeadIn = "为下面这段内容起一个标题，只输出标题本身。\n\n"
+
 // autoTitleSystemPrompt 是起名调用的系统提示。
 //
 // 这条链路有两个反复出现的坏输出，跟模型强弱无关，跟提示词结构有关：
@@ -70,7 +79,7 @@ func GenerateAutoTitle(ctx context.Context, prov llm.Provider, content string, u
 	if n := utf8.RuneCountInString(content); n > autoTitleMaxInputRunes {
 		content = string([]rune(content)[:autoTitleMaxInputRunes])
 	}
-	material := "[起名素材开始]\n" + content + "\n[起名素材结束]"
+	material := autoTitleLeadIn + content
 
 	title, reason, err := autoTitleAttempt(ctx, prov, material, ultra, "")
 	if err != nil {
@@ -188,9 +197,14 @@ func cleanAutoTitle(raw string) string {
 		if len(title) >= 2 {
 			first, firstSize := utf8.DecodeRuneInString(title)
 			last, lastSize := utf8.DecodeLastRuneInString(title)
-			if (first == '"' && last == '"') || (first == '\'' && last == '\'') || (first == '“' && last == '”') || (first == '「' && last == '」') {
+			if (first == '"' && last == '"') || (first == '\'' && last == '\'') || (first == '“' && last == '”') ||
+				(first == '「' && last == '」') || (first == '『' && last == '』') || (first == '《' && last == '》') {
 				title = title[firstSize : len(title)-lastSize]
 			}
+		}
+		// 有的模型会把标题写成 **粗体**，Markdown 星号不该进标题。
+		if strings.HasPrefix(title, "**") && strings.HasSuffix(title, "**") && len(title) > 4 {
+			title = title[2 : len(title)-2]
 		}
 		for _, prefix := range []string{"标题：", "标题:"} {
 			if strings.HasPrefix(title, prefix) {
