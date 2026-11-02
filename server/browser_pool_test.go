@@ -157,6 +157,61 @@ func TestBrowserPoolReportsConversationWaitingUntilSlotReleased(t *testing.T) {
 	}
 }
 
+func TestBrowserPoolPromoteChromeConversation(t *testing.T) {
+	p := newBrowserPool(nil)
+	p.setLimit(browserMCPKindChrome, 1)
+	active, err := p.acquire(context.Background(), browserMCPKindChrome, "active", agent.RunInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer active.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	type admitted struct {
+		name  string
+		lease *browserLease
+	}
+	result := make(chan admitted, 3)
+	for i, name := range []string{"oldest", "target", "later"} {
+		go func() {
+			lease, _ := p.acquire(ctx, browserMCPKindChrome, name, agent.RunInfo{SessionID: "conv-" + name})
+			result <- admitted{name, lease}
+		}()
+		deadline := time.Now().Add(time.Second)
+		for p.status()[0].Waiting != i+1 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if got := p.status()[0].Waiting; got != i+1 {
+			t.Fatalf("queued %d waiters, want %d", got, i+1)
+		}
+	}
+	if kind, ahead, activeCount := p.waitingState("conv-target"); kind != browserMCPKindChrome || ahead != 1 || activeCount != 1 {
+		t.Fatalf("target waiting state = %q, %d ahead, %d active", kind, ahead, activeCount)
+	}
+	if p.promoteChrome("") || p.promoteChrome("conv-missing") || !p.promoteChrome("conv-target") {
+		t.Fatal("promote accepted a missing conversation or rejected the target")
+	}
+	for name, wantAhead := range map[string]int{"target": 0, "oldest": 1, "later": 2} {
+		_, ahead, _ := p.waitingState("conv-" + name)
+		if ahead != wantAhead {
+			t.Fatalf("%s has %d waiters ahead, want %d", name, ahead, wantAhead)
+		}
+	}
+	active.Close()
+	for _, want := range []string{"target", "oldest", "later"} {
+		select {
+		case got := <-result:
+			if got.lease == nil || got.name != want {
+				t.Fatalf("admitted %s before %s", got.name, want)
+			}
+			got.lease.Close()
+		case <-ctx.Done():
+			t.Fatalf("%s did not acquire the released slot", want)
+		}
+	}
+}
+
 func TestBrowserPoolWaiterCannotBeBypassed(t *testing.T) {
 	p := newBrowserPool(nil)
 	p.setLimit(browserMCPKindChrome, 1)

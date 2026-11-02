@@ -1229,18 +1229,19 @@ export const api = {
     post<{ items: { id: number; ok: boolean; error?: string }[] }>("/conversations/delete/batch", { ids }),
   // Incremental tail: steps after `since` (id ASC) — live poll + post-send fetch.
   conversationMessages: (id: number, since = 0) =>
-    get<{ items: Activity[]; cursor: number; running: boolean; waiting_browser: string }>(`/conversations/${id}/messages?since=${since}`).then(
-      (r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running, waitingBrowser: r.waiting_browser ?? "" }),
+    get<{ items: Activity[]; cursor: number; running: boolean; waiting_browser: string; waiting_ahead: number; browser_active: number }>(`/conversations/${id}/messages?since=${since}`).then(
+      (r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running, waitingBrowser: r.waiting_browser ?? "", waitingAhead: r.waiting_ahead ?? 0, browserActive: r.browser_active ?? 0 }),
     ),
   // Reverse pagination: the latest `limit` steps (before=0) or the page of older
   // steps ending before id `before`. hasMore = still-older steps exist.
   conversationHistory: (id: number, before = 0, limit = 200) => {
     const q = new URLSearchParams({ limit: String(limit) });
     if (before > 0) q.set("before", String(before));
-    return get<{ items: Activity[]; cursor: number; running: boolean; waiting_browser: string; hasMore: boolean }>(
+    return get<{ items: Activity[]; cursor: number; running: boolean; waiting_browser: string; waiting_ahead: number; browser_active: number; hasMore: boolean }>(
       `/conversations/${id}/messages?${q.toString()}`,
-    ).then((r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running, waitingBrowser: r.waiting_browser ?? "", hasMore: !!r.hasMore }));
+    ).then((r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running, waitingBrowser: r.waiting_browser ?? "", waitingAhead: r.waiting_ahead ?? 0, browserActive: r.browser_active ?? 0, hasMore: !!r.hasMore }));
   },
+  promoteConversationChrome: (id: number) => post<{ ok: boolean }>(`/conversations/${id}/chrome-priority`, {}),
   conversationMsgDetail: (id: number, seq: number) =>
     get<{ detail: string }>(`/conversations/${id}/messages/${seq}`).then((r) => r.detail ?? ""),
   sendConversationMessage: (id: number, message: string, attachments?: ChatAttachment[]) =>

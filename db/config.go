@@ -889,15 +889,16 @@ func (d *DB) MCPToolNames(serverID int64) ([]string, error) {
 	return out, rows.Err()
 }
 
-// MCPTool is one cached tool of an MCP server (name + description).
+// MCPTool is one cached tool of an MCP server.
 type MCPTool struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Schema      json.RawMessage `json:"schema,omitempty"`
 }
 
-// MCPToolsDetailed returns the cached tools (name + description) for a server.
+// MCPToolsDetailed returns the cached tool metadata for a server.
 func (d *DB) MCPToolsDetailed(serverID int64) ([]MCPTool, error) {
-	rows, err := d.Query(`SELECT tool_name, COALESCE(description,'') FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)
+	rows, err := d.Query(`SELECT tool_name, COALESCE(description,''), schema FROM mcp_tools_cache WHERE server_id=$1 ORDER BY tool_name`, serverID)
 	if err != nil {
 		return nil, err
 	}
@@ -905,9 +906,11 @@ func (d *DB) MCPToolsDetailed(serverID int64) ([]MCPTool, error) {
 	var out []MCPTool
 	for rows.Next() {
 		var t MCPTool
-		if err := rows.Scan(&t.Name, &t.Description); err != nil {
+		var schema []byte
+		if err := rows.Scan(&t.Name, &t.Description, &schema); err != nil {
 			return nil, err
 		}
+		t.Schema = json.RawMessage(schema)
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -924,8 +927,12 @@ func (d *DB) SaveMCPTools(serverID int64, tools []MCPTool) error {
 		return err
 	}
 	for _, t := range tools {
-		if _, err := tx.Exec(`INSERT INTO mcp_tools_cache(server_id, tool_name, description) VALUES ($1,$2,$3)
-ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.description`, serverID, t.Name, t.Description); err != nil {
+		var schema any
+		if len(t.Schema) > 0 {
+			schema = string(t.Schema)
+		}
+		if _, err := tx.Exec(`INSERT INTO mcp_tools_cache(server_id, tool_name, description, schema) VALUES ($1,$2,$3,$4::jsonb)
+ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.description,schema=EXCLUDED.schema`, serverID, t.Name, t.Description, schema); err != nil {
 			return err
 		}
 	}

@@ -314,9 +314,9 @@ func (s *Server) pgConversationMessages(w http.ResponseWriter, r *http.Request) 
 	s.chatMu.Lock()
 	running := s.chatBusy[s.convBusyKey(c.ID)]
 	s.chatMu.Unlock()
-	waitingBrowser := ""
+	waitingBrowser, waitingAhead, browserActive := "", 0, 0
 	if running {
-		waitingBrowser = s.browserPool.waitingKind(s.convBusyKey(c.ID))
+		waitingBrowser, waitingAhead, browserActive = s.browserPool.waitingState(s.convBusyKey(c.ID))
 	}
 
 	// Incremental tail: ?since=N returns steps after id N (ASC) — used by the live
@@ -328,7 +328,7 @@ func (s *Server) pgConversationMessages(w http.ResponseWriter, r *http.Request) 
 			writeErr(w, 500, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "waiting_browser": waitingBrowser, "hasMore": false})
+		writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "waiting_browser": waitingBrowser, "waiting_ahead": waitingAhead, "browser_active": browserActive, "hasMore": false})
 		return
 	}
 
@@ -345,7 +345,19 @@ func (s *Server) pgConversationMessages(w http.ResponseWriter, r *http.Request) 
 	if n := len(items); n > 0 {
 		cursor = items[n-1].ID
 	}
-	writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "waiting_browser": waitingBrowser, "hasMore": hasMore})
+	writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor, "running": running, "waiting_browser": waitingBrowser, "waiting_ahead": waitingAhead, "browser_active": browserActive, "hasMore": hasMore})
+}
+
+func (s *Server) pgPromoteConversationChrome(w http.ResponseWriter, r *http.Request) {
+	_, c, ok := s.convByID(w, r)
+	if !ok {
+		return
+	}
+	if !s.browserPool.promoteChrome(s.convBusyKey(c.ID)) {
+		writeErr(w, http.StatusConflict, "当前对话没有等待 Chrome 会话")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // pgConversationMsgDetail lazily returns one step's full detail blob.

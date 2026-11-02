@@ -730,6 +730,10 @@ export function Transcript({
   activity,
   live,
   waitingBrowser,
+  waitingAhead = 0,
+  browserActive = 0,
+  conversationId,
+  onPriorityChanged,
   taskId,
   chat,
   fetchDetail,
@@ -738,6 +742,10 @@ export function Transcript({
   activity: Activity[];
   live?: boolean;
   waitingBrowser?: string;
+  waitingAhead?: number;
+  browserActive?: number;
+  conversationId?: number;
+  onPriorityChanged?: () => void;
   taskId?: string;
   chat?: boolean;
   fetchDetail?: (seq: number) => Promise<string>;
@@ -745,9 +753,24 @@ export function Transcript({
 }) {
   const transcriptRef = React.useRef<HTMLDivElement>(null);
   const [focusPadding, setFocusPadding] = React.useState(0);
+  const [promoting, setPromoting] = React.useState(false);
   let liveStatus = "实时流式中…";
-  if (waitingBrowser === "chrome") liveStatus = "等待 Chrome 浏览器会话空位；其他会话结束后自动继续…";
-  if (waitingBrowser === "lightpanda") liveStatus = "等待 Lightpanda 浏览器会话空位；其他会话结束后自动继续…";
+  if (waitingBrowser === "chrome" || waitingBrowser === "lightpanda") {
+    liveStatus = `等待 ${waitingBrowser === "chrome" ? "Chrome" : "Lightpanda"} 浏览器会话空位；前方排队 ${waitingAhead} 个，使用中 ${browserActive} 个。`;
+  }
+  async function promoteChrome() {
+    if (!conversationId || promoting) return;
+    setPromoting(true);
+    try {
+      await api.promoteConversationChrome(conversationId);
+      onPriorityChanged?.();
+      toast.success("已排到下一位，Chrome 空出名额后自动继续");
+    } catch (error) {
+      toast.error(`调整队列失败：${(error as Error).message}`);
+    } finally {
+      setPromoting(false);
+    }
+  }
   React.useLayoutEffect(() => {
     if (focusedSeq == null) { setFocusPadding(0); return; }
     const viewport = transcriptRef.current?.closest('[data-slot="scroll-area-viewport"]');
@@ -762,13 +785,24 @@ export function Transcript({
     <div ref={transcriptRef} className="flex w-full min-w-0 max-w-full flex-col gap-1" style={focusPadding ? { paddingBlock: focusPadding } : undefined}>
       <ExecView activity={activity} taskId={taskId} chat={chat} fetchDetail={fetchDetail} focusedSeq={focusedSeq} />
       {live && (
-        <div role="status" className="flex items-center gap-2 pl-2 pt-1 text-xs text-muted-foreground">
+        <div role="status" className="flex flex-wrap items-center gap-2 pl-2 pt-1 text-xs text-muted-foreground">
           <span className="flex gap-1">
             <span className="size-1.5 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.3s]" />
             <span className="size-1.5 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.15s]" />
             <span className="size-1.5 animate-bounce rounded-full bg-blue-500" />
           </span>
-          {liveStatus}
+          <span>{liveStatus}</span>
+          {waitingBrowser === "chrome" && conversationId && (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={promoting || waitingAhead === 0}
+              onClick={() => void promoteChrome()}
+              title="排到 Chrome 等待队列最前；当前会话结束后接入"
+            >
+              {waitingAhead === 0 ? "已排下一位" : promoting ? "调整中…" : "立即开始"}
+            </Button>
+          )}
         </div>
       )}
     </div>

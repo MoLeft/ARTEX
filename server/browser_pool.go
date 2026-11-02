@@ -42,13 +42,16 @@ func browserKind(name string) string {
 }
 
 type browserPool struct {
-	mu              sync.Mutex
-	limits          map[string]int
-	nextID          int64
-	active          map[int64]*browserLease
-	waiting         map[string][]chan struct{}
-	waitingSessions map[string]string
-	wake            chan struct{}
+	mu      sync.Mutex
+	limits  map[string]int
+	nextID  int64
+	active  map[int64]*browserLease
+	waiting map[string][]*browserWaiter
+	wake    chan struct{}
+}
+
+type browserWaiter struct {
+	sessionID string
 }
 
 type browserLease struct {
@@ -68,7 +71,7 @@ type browserLease struct {
 }
 
 func newBrowserPool(pg *db.DB) *browserPool {
-	p := &browserPool{limits: make(map[string]int), active: make(map[int64]*browserLease), waiting: make(map[string][]chan struct{}), waitingSessions: make(map[string]string), wake: make(chan struct{})}
+	p := &browserPool{limits: make(map[string]int), active: make(map[int64]*browserLease), waiting: make(map[string][]*browserWaiter), wake: make(chan struct{})}
 	if pg != nil {
 		for _, kind := range []string{browserMCPKindChrome, browserMCPKindLightpanda} {
 			if raw, ok, err := pg.GetSetting(browserLimitKey(kind)); err == nil && ok {
@@ -88,12 +91,51 @@ func (p *browserPool) limit(kind string) int {
 }
 
 func (p *browserPool) waitingKind(sessionID string) string {
+	kind, _, _ := p.waitingState(sessionID)
+	return kind
+}
+
+func (p *browserPool) waitingState(sessionID string) (string, int, int) {
 	if p == nil {
-		return ""
+		return "", 0, 0
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.waitingSessions[sessionID]
+	if sessionID != "" {
+		for _, kind := range []string{browserMCPKindChrome, browserMCPKindLightpanda} {
+			for ahead, waiter := range p.waiting[kind] {
+				if waiter.sessionID == sessionID {
+					active := 0
+					for _, lease := range p.active {
+						if lease.kind == kind {
+							active++
+						}
+					}
+					return kind, ahead, active
+				}
+			}
+		}
+	}
+	return "", 0, 0
+}
+
+func (p *browserPool) promoteChrome(sessionID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, waiter := range p.waiting[browserMCPKindChrome] {
+		if sessionID == "" || waiter.sessionID != sessionID {
+			continue
+		}
+		if i > 0 {
+			queue := p.waiting[browserMCPKindChrome]
+			copy(queue[1:i+1], queue[:i])
+			queue[0] = waiter
+			close(p.wake)
+			p.wake = make(chan struct{})
+		}
+		return true
+	}
+	return false
 }
 
 func (p *browserPool) setLimit(kind string, limit int) {
@@ -105,11 +147,10 @@ func (p *browserPool) setLimit(kind string, limit int) {
 }
 
 func (p *browserPool) acquire(ctx context.Context, kind, owner string, run agent.RunInfo) (*browserLease, error) {
-	var queued chan struct{}
+	var queued *browserWaiter
 	defer func() {
 		if queued != nil {
 			p.mu.Lock()
-			delete(p.waitingSessions, run.SessionID)
 			for i, waiter := range p.waiting[kind] {
 				if waiter == queued {
 					waiters := p.waiting[kind]
@@ -144,7 +185,6 @@ func (p *browserPool) acquire(ctx context.Context, kind, owner string, run agent
 		front := len(p.waiting[kind]) == 0 || (queued != nil && p.waiting[kind][0] == queued)
 		if (limit == 0 || count < limit) && front {
 			if queued != nil {
-				delete(p.waitingSessions, run.SessionID)
 				p.waiting[kind][0] = nil
 				p.waiting[kind] = p.waiting[kind][1:]
 				if len(p.waiting[kind]) == 0 {
@@ -162,11 +202,8 @@ func (p *browserPool) acquire(ctx context.Context, kind, owner string, run agent
 			return lease, nil
 		}
 		if queued == nil {
-			queued = make(chan struct{})
+			queued = &browserWaiter{sessionID: run.SessionID}
 			p.waiting[kind] = append(p.waiting[kind], queued)
-			if run.SessionID != "" {
-				p.waitingSessions[run.SessionID] = kind
-			}
 		}
 		wake := p.wake
 		p.mu.Unlock()
