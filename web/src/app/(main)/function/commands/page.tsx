@@ -3,10 +3,22 @@
 import * as React from "react";
 
 import { BarChart3Icon, ChevronLeftIcon, ChevronRightIcon, Loader2Icon, SearchIcon, TerminalIcon } from "lucide-react";
+import { toast } from "sonner";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -60,6 +72,10 @@ export default function CommandsPage() {
   const [commands, setCommands] = React.useState<CommandRecord[]>([]);
   const [total, setTotal] = React.useState(0);
   const [loading, setLoading] = React.useState(false);
+  const [reloadTick, setReloadTick] = React.useState(0);
+  const [deleteMode, setDeleteMode] = React.useState<"all" | "filter" | "selected" | null>(null);
+  const [deleting, setDeleting] = React.useState(false);
+  const [selectedIds, setSelectedIds] = React.useState<Set<number>>(() => new Set());
 
   // 各工具调用次数。弹窗打开时才拉取（多一次聚合查询，不必每次翻页都付）。
   const [statsOpen, setStatsOpen] = React.useState(false);
@@ -86,6 +102,7 @@ export default function CommandsPage() {
   }, [filterKey]);
 
   // Load data.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick explicitly refreshes after deletion.
   React.useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -105,9 +122,10 @@ export default function CommandsPage() {
     return () => {
       alive = false;
     };
-  }, [page, size, queryQ, taskFilter]);
+  }, [page, size, queryQ, taskFilter, reloadTick]);
 
   // 统计跟随筛选条件走，和表格描述的是同一批记录（但不分页）。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick explicitly refreshes statistics after deletion.
   React.useEffect(() => {
     if (!statsOpen) return;
     let alive = true;
@@ -120,7 +138,30 @@ export default function CommandsPage() {
     return () => {
       alive = false;
     };
-  }, [statsOpen, queryQ, taskFilter]);
+  }, [statsOpen, queryQ, taskFilter, reloadTick]);
+
+  const confirmDelete = async () => {
+    if (!deleteMode) return;
+    setDeleting(true);
+    try {
+      const r = await api.commandsDelete({
+        mode: deleteMode,
+        ids: deleteMode === "selected" ? [...selectedIds] : undefined,
+        task: deleteMode === "filter" ? taskFilter : undefined,
+        q: deleteMode === "filter" ? queryQ : undefined,
+      });
+      setSelectedIds(new Set());
+      setSelected(null);
+      setDeleteMode(null);
+      setPage(0);
+      setReloadTick((n) => n + 1);
+      toast.success(`已删除 ${r.deleted} 次工具执行`);
+    } catch (e) {
+      toast.error(`删除失败：${(e as Error).message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const statsTotal = stats.reduce((n, s) => n + s.total, 0);
   const statsErrors = stats.reduce((n, s) => n + s.errors, 0);
@@ -152,7 +193,7 @@ export default function CommandsPage() {
           />
         </div>
         <Input
-          placeholder="任务 ID"
+          placeholder="探索 ID"
           className="h-8 w-28"
           value={taskFilter}
           onChange={(e) => setTaskFilter(e.target.value.replace(/\D/g, ""))}
@@ -173,6 +214,33 @@ export default function CommandsPage() {
         <Button variant="outline" size="sm" className="h-8" onClick={() => setStatsOpen(true)}>
           <BarChart3Icon className="size-4" />
           统计
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8"
+          disabled={total === 0 || deleting || (!taskFilter && !queryQ)}
+          onClick={() => setDeleteMode("filter")}
+        >
+          删除筛选
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          className="h-8"
+          disabled={selectedIds.size === 0 || selectedIds.size > 500 || deleting}
+          onClick={() => setDeleteMode("selected")}
+        >
+          删除所选（{selectedIds.size}）
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 text-destructive"
+          disabled={deleting}
+          onClick={() => setDeleteMode("all")}
+        >
+          清空全部
         </Button>
 
         <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
@@ -210,6 +278,22 @@ export default function CommandsPage() {
             <Table>
               <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      aria-label="选择本页工具执行"
+                      checked={commands.length > 0 && commands.every((c) => selectedIds.has(c.id))}
+                      onCheckedChange={(checked) =>
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          for (const c of commands) {
+                            if (checked === true) next.add(c.id);
+                            else next.delete(c.id);
+                          }
+                          return next;
+                        })
+                      }
+                    />
+                  </TableHead>
                   <TableHead className="w-[130px]">时间</TableHead>
                   <TableHead className="w-[60px]">任务</TableHead>
                   <TableHead className="w-[90px]">Worker</TableHead>
@@ -221,13 +305,13 @@ export default function CommandsPage() {
               <TableBody>
                 {loading && commands.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="py-12 text-center">
+                    <TableCell colSpan={7} className="py-12 text-center">
                       <Loader2Icon className="mx-auto h-5 w-5 animate-spin text-muted-foreground" />
                     </TableCell>
                   </TableRow>
                 ) : commands.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={7} className="py-12 text-center text-sm text-muted-foreground">
                       暂无工具执行记录
                     </TableCell>
                   </TableRow>
@@ -238,6 +322,20 @@ export default function CommandsPage() {
                       className={cn("cursor-pointer", selected?.id === cmd.id && "bg-accent hover:bg-accent")}
                       onClick={() => setSelected(cmd)}
                     >
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          aria-label={`选择工具执行 ${cmd.id}`}
+                          checked={selectedIds.has(cmd.id)}
+                          onCheckedChange={(checked) =>
+                            setSelectedIds((prev) => {
+                              const next = new Set(prev);
+                              if (checked === true) next.add(cmd.id);
+                              else next.delete(cmd.id);
+                              return next;
+                            })
+                          }
+                        />
+                      </TableCell>
                       <TableCell className="text-xs text-muted-foreground tabular-nums">
                         {fmtTime(cmd.created_at)}
                       </TableCell>
@@ -392,6 +490,40 @@ export default function CommandsPage() {
           )}
         </SheetContent>
       </Sheet>
+      <AlertDialog
+        open={deleteMode !== null}
+        onOpenChange={(open) => {
+          if (!open && !deleting) setDeleteMode(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {deleteMode === "all"
+                ? "清空全部工具执行记录？"
+                : deleteMode === "filter"
+                  ? `删除筛选命中的 ${total} 次工具执行？`
+                  : `删除选中的 ${selectedIds.size} 次工具执行？`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              会从任务活动历史中永久删除对应工具调用及其结果；筛选删除包含所有分页，清空全部忽略筛选。其他活动记录保留。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmDelete();
+              }}
+            >
+              {deleting ? "删除中…" : "确认删除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

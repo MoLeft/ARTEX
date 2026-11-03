@@ -155,7 +155,7 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [hostCountSortDirection, setHostCountSortDirection] = React.useState<HostCountSortDirection>("desc");
 
-  const [deleteMode, setDeleteMode] = React.useState<"filter" | "selected" | "all" | null>(null); // null = dialog closed
+  const [deleteMode, setDeleteMode] = React.useState<"filter" | "selected" | "matching" | "flows" | "all" | null>(null);
   const [deleting, setDeleting] = React.useState(false);
   const [reloadTick, setReloadTick] = React.useState(0); // manual refetch trigger
 
@@ -186,6 +186,10 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
   }, [respMax, setRespMaxQ]);
 
   const hasAdvancedFilter = Boolean(bodyQ || pathQ || respMinQ || respMaxQ) || statusFilter !== "all";
+  const hasRecordFilter =
+    [taskId, hostQ, queryQ, bodyQ, pathQ, respMinQ, respMaxQ].some(Boolean) ||
+    method !== "all" ||
+    statusFilter !== "all";
   const resetAdvancedFilters = () => {
     setBody("");
     setBodyQ("");
@@ -200,7 +204,18 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
 
   // Only an actual filter/size/sort change resets to the first page.
   const filterKey = JSON.stringify([
-    hostQ, queryQ, method, size, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort.field, sort.direction, taskId,
+    hostQ,
+    queryQ,
+    method,
+    size,
+    bodyQ,
+    pathQ,
+    statusFilter,
+    respMinQ,
+    respMaxQ,
+    sort.field,
+    sort.direction,
+    taskId,
   ]);
   const previousFilter = React.useRef(filterKey);
   // biome-ignore lint/correctness/useExhaustiveDependencies: these values intentionally trigger a page reset.
@@ -255,7 +270,22 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
       alive = false;
       clearInterval(t);
     };
-  }, [page, size, hostQ, method, queryQ, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort, reloadTick, taskId, taskScoped]);
+  }, [
+    page,
+    size,
+    hostQ,
+    method,
+    queryQ,
+    bodyQ,
+    pathQ,
+    statusFilter,
+    respMinQ,
+    respMaxQ,
+    sort,
+    reloadTick,
+    taskId,
+    taskScoped,
+  ]);
 
   // Delete traffic for the current host filter (substring) or the checked
   // hosts (exact batch), then refetch.
@@ -277,14 +307,33 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
         all: "清空全部流量记录？",
         selected: `删除选中的 ${selectedHosts.length} 个目标的全部流量？`,
         filter: "删除该目标的全部流量？",
+        matching: `删除当前筛选的 ${traffic?.total ?? 0} 条流量？`,
+        flows: `删除选中的 ${selectedFlows.size} 条流量？`,
       }[deleteMode]
     : "";
 
   // `reclaimed` only comes back from the full purge; the host-scoped deletions
   // report the row count alone.
-  const requestDelete = (mode: "filter" | "selected" | "all"): Promise<{ deleted: number; reclaimed?: number }> => {
+  const requestDelete = (
+    mode: "filter" | "selected" | "matching" | "flows" | "all",
+  ): Promise<{ deleted: number; reclaimed?: number }> => {
     if (mode === "all") return api.trafficDeleteAll();
     if (mode === "selected") return api.trafficDeleteHosts(selectedHosts);
+    if (mode === "flows")
+      return api.trafficDeleteMatching({ mode: "selected", ids: [...selectedFlows.keys()], task_id: taskId });
+    if (mode === "matching")
+      return api.trafficDeleteMatching({
+        mode: "filter",
+        task_id: taskId,
+        host: hostQ,
+        method: method === "all" ? "" : method,
+        q: queryQ,
+        body: bodyQ,
+        path: pathQ,
+        status: statusFilter === "all" ? "" : statusFilter,
+        resp_min: respMinQ,
+        resp_max: respMaxQ,
+      });
     return api.trafficDeleteHost(hostQ);
   };
 
@@ -297,6 +346,7 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
         setDeleteMode(null);
         setSelected(null);
         setDetail(null);
+        setSelectedFlows(new Map());
         if (mode !== "filter") {
           setSelectedHosts([]);
           setPickerOpen(false);
@@ -306,13 +356,15 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
           const reclaimed = r.reclaimed ?? 0;
           const freed = reclaimed > 0 ? `，释放 ${fmtBytes(reclaimed)} 存储` : "";
           toast.success(`已清空 ${r.deleted} 条流量${freed}`);
+        } else {
+          toast.success(`已删除 ${r.deleted} 条流量`);
         }
         setPage(0);
         setReloadTick((t) => t + 1);
       })
       .catch((e) => {
         // Keep the confirmation open so the user can retry a failed deletion.
-        if (mode === "all") toast.error(`清空失败：${(e as Error).message}`);
+        toast.error(`删除失败：${(e as Error).message}`);
       })
       .finally(() => setDeleting(false));
   };
@@ -511,6 +563,15 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
             </PopoverContent>
           </Popover>
         )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8"
+          disabled={!hasRecordFilter || !traffic?.total || deleting || (bodyQ !== "" && [...bodyQ].length < 3)}
+          onClick={() => setDeleteMode("matching")}
+        >
+          删除筛选
+        </Button>
         <div className="relative w-48">
           <Input placeholder="host…" value={host} onChange={(e) => setHost(e.target.value)} className="h-8" />
         </div>
@@ -667,6 +728,15 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
 
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm text-muted-foreground">已选 {selectedFlows.size} 条流量</span>
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={selectedFlows.size === 0 || selectedFlows.size > 500 || deleting}
+          title={selectedFlows.size > 500 ? "每次最多删除 500 条，请分批选择" : undefined}
+          onClick={() => setDeleteMode("flows")}
+        >
+          删除所选
+        </Button>
         <Button variant="outline" size="sm" disabled={selectedFlows.size === 0} onClick={() => setLinking(true)}>
           关联到漏洞
         </Button>
@@ -878,6 +948,17 @@ export function TrafficHistory({ taskId }: { taskId?: string }) {
                 <>
                   将永久删除 host 包含 <span className="font-mono font-semibold">{hostQ}</span>{" "}
                   的所有流量记录（含请求/响应原文），此操作不可撤销。
+                </>
+              )}
+              {deleteMode === "matching" && (
+                <>
+                  将永久删除当前筛选命中的全部 {traffic?.total ?? 0}{" "}
+                  条流量（跨所有页，含原文），此操作不可撤销。已绑定漏洞的独立证据不受影响。
+                </>
+              )}
+              {deleteMode === "flows" && (
+                <>
+                  将永久删除勾选的 {selectedFlows.size} 条流量（含原文），此操作不可撤销。已绑定漏洞的独立证据不受影响。
                 </>
               )}
             </AlertDialogDescription>

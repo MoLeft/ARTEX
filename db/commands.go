@@ -57,7 +57,7 @@ func (d *DB) ToolStats(expID *int64, q string) ([]ToolStat, error) {
 SELECT COALESCE(NULLIF(u.tool,''),'-') AS tool, COUNT(*) AS total,
        COUNT(*) FILTER (WHERE COALESCE(r.is_error,false)) AS errors
 FROM activity u
-LEFT JOIN activity r ON r.tool_use_id = u.tool_use_id AND r.kind = 'tool_result'
+LEFT JOIN activity r ON r.exploration_id = u.exploration_id AND r.tool_use_id = u.tool_use_id AND r.kind = 'tool_result'
 `+where+`
 GROUP BY 1
 ORDER BY total DESC, tool ASC`, args...)
@@ -103,7 +103,7 @@ func (d *DB) ListCommands(expID *int64, q string, page, size int) ([]CommandReco
 SELECT u.id, u.exploration_id, COALESCE(u.worker,''), COALESCE(u.tool,''), COALESCE(u.detail,''),
        COALESCE(r.detail,''), COALESCE(r.is_error, false), u.created_at
 FROM activity u
-LEFT JOIN activity r ON r.tool_use_id = u.tool_use_id AND r.kind = 'tool_result'
+LEFT JOIN activity r ON r.exploration_id = u.exploration_id AND r.tool_use_id = u.tool_use_id AND r.kind = 'tool_result'
 ` + where + `
 ORDER BY u.id DESC
 LIMIT $` + fmt.Sprintf("%d", argN) + ` OFFSET $` + fmt.Sprintf("%d", argN+1)
@@ -124,6 +124,44 @@ LIMIT $` + fmt.Sprintf("%d", argN) + ` OFFSET $` + fmt.Sprintf("%d", argN+1)
 		out = append(out, c)
 	}
 	return out, total, rows.Err()
+}
+
+// DeleteCommands removes tool calls and their paired results. Other activity
+// kinds remain part of the task timeline. Exactly one mode must be requested.
+func (d *DB) DeleteCommands(expID *int64, q string, ids []int64, all bool) (int64, error) {
+	if !all && len(ids) == 0 && expID == nil && q == "" {
+		return 0, fmt.Errorf("missing delete scope")
+	}
+	if all {
+		var n int64
+		err := d.QueryRow(`WITH removed AS (DELETE FROM activity WHERE kind IN ('tool_use','tool_result') RETURNING kind)
+SELECT COUNT(*) FILTER (WHERE kind='tool_use') FROM removed`).Scan(&n)
+		return n, err
+	}
+	where, args, next := commandFilter(expID, q)
+	if len(ids) > 0 {
+		where += fmt.Sprintf(` AND u.id = ANY($%d)`, next)
+		args = append(args, ids)
+	}
+	var deleted int64
+	err := d.QueryRow(`WITH chosen AS (SELECT u.id, u.exploration_id, u.tool_use_id FROM activity u `+where+`),
+removed AS (DELETE FROM activity a WHERE a.id IN (SELECT id FROM chosen)
+ OR (a.kind='tool_result' AND a.tool_use_id IS NOT NULL AND a.tool_use_id<>''
+ AND EXISTS (SELECT 1 FROM chosen c WHERE c.exploration_id=a.exploration_id AND c.tool_use_id=a.tool_use_id)) RETURNING a.kind)
+SELECT COUNT(*) FILTER (WHERE kind='tool_use') FROM removed`, args...).Scan(&deleted)
+	return deleted, err
+}
+
+func (d *DB) DeleteCommandsBefore(cutoff time.Time) (int64, error) {
+	var n int64
+	err := d.QueryRow(`WITH chosen AS (SELECT a.id, a.exploration_id, a.tool_use_id FROM activity a
+JOIN tasks t ON t.exploration_id=a.exploration_id AND t.status IN ('done','failed','timeout')
+WHERE a.kind='tool_use' AND a.created_at<$1),
+removed AS (DELETE FROM activity a WHERE a.id IN (SELECT id FROM chosen)
+ OR (a.kind='tool_result' AND a.tool_use_id IS NOT NULL AND a.tool_use_id<>''
+ AND EXISTS (SELECT 1 FROM chosen c WHERE c.exploration_id=a.exploration_id AND c.tool_use_id=a.tool_use_id)) RETURNING a.kind)
+SELECT COUNT(*) FILTER (WHERE kind='tool_use') FROM removed`, cutoff).Scan(&n)
+	return n, err
 }
 
 // LLMRecord is one recorded LLM API call (request + response).
@@ -176,6 +214,7 @@ CREATE TABLE IF NOT EXISTS llm_records (
 );
 CREATE INDEX IF NOT EXISTS idx_llm_records_ts ON llm_records(ts);
 CREATE INDEX IF NOT EXISTS idx_llm_records_session ON llm_records(session_id);
+CREATE INDEX IF NOT EXISTS idx_llm_records_task ON llm_records(task_id);
 `
 
 // llmRecordsMigrate adds new columns to existing tables.
@@ -314,10 +353,57 @@ WHERE COALESCE(task_id,'') <> '' GROUP BY task_id ORDER BY MAX(id) DESC`)
 	return out, rows.Err()
 }
 
-// DeleteLLMRecords removes every LLM record for one exact task_id — the same
-// match the page's task picker/filter uses. Returns rows deleted.
-func (d *DB) DeleteLLMRecords(task string) (int64, error) {
-	res, err := d.Exec(`DELETE FROM llm_records WHERE COALESCE(task_id,'') = $1`, task)
+// DeleteLLMRecords removes the selected rows, the current list filter, or all
+// records. The unfiltered full purge uses TRUNCATE to avoid row-by-row WAL work.
+func (d *DB) DeleteLLMRecords(model, session, task string, ids []int64, all bool) (int64, error) {
+	if !all && len(ids) == 0 && model == "" && session == "" && task == "" {
+		return 0, fmt.Errorf("missing delete scope")
+	}
+	if all {
+		tx, err := d.Begin()
+		if err != nil {
+			return 0, err
+		}
+		defer tx.Rollback() //nolint:errcheck
+		if _, err := tx.Exec(`LOCK TABLE llm_records IN ACCESS EXCLUSIVE MODE`); err != nil {
+			return 0, err
+		}
+		var n int64
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM llm_records`).Scan(&n); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(`TRUNCATE llm_records`); err != nil {
+			return 0, err
+		}
+		return n, tx.Commit()
+	}
+	where := `WHERE true`
+	args := []any{}
+	if model != "" {
+		args = append(args, model)
+		where += fmt.Sprintf(` AND model=$%d`, len(args))
+	}
+	if session != "" {
+		args = append(args, "%"+session+"%")
+		where += fmt.Sprintf(` AND session_id ILIKE $%d`, len(args))
+	}
+	if task != "" {
+		args = append(args, task)
+		where += fmt.Sprintf(` AND task_id=$%d`, len(args))
+	}
+	if len(ids) > 0 {
+		args = append(args, ids)
+		where += fmt.Sprintf(` AND id=ANY($%d)`, len(args))
+	}
+	res, err := d.Exec(`DELETE FROM llm_records `+where, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (d *DB) DeleteLLMRecordsBefore(cutoff time.Time) (int64, error) {
+	res, err := d.Exec(`DELETE FROM llm_records WHERE ts<$1`, cutoff)
 	if err != nil {
 		return 0, err
 	}

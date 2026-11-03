@@ -1,12 +1,79 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/Autumn-27/artex/db"
 )
+
+type recordDeleteRequest struct {
+	Mode    string  `json:"mode"`
+	IDs     []int64 `json:"ids"`
+	Task    string  `json:"task"`
+	Query   string  `json:"q"`
+	Model   string  `json:"model"`
+	Session string  `json:"session"`
+}
+
+func readRecordDeleteRequest(w http.ResponseWriter, r *http.Request) (recordDeleteRequest, bool) {
+	var req recordDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "invalid body")
+		return req, false
+	}
+	if req.Mode != "all" && req.Mode != "filter" && req.Mode != "selected" {
+		writeErr(w, 400, "invalid delete mode")
+		return req, false
+	}
+	if (req.Mode == "selected" && (len(req.IDs) == 0 || len(req.IDs) > 500)) ||
+		(req.Mode != "selected" && len(req.IDs) != 0) {
+		writeErr(w, 400, "invalid selected ids")
+		return req, false
+	}
+	for _, id := range req.IDs {
+		if id <= 0 {
+			writeErr(w, 400, "invalid selected id")
+			return req, false
+		}
+	}
+	return req, true
+}
+
+func (s *Server) pgDeleteCommands(w http.ResponseWriter, r *http.Request) {
+	req, ok := readRecordDeleteRequest(w, r)
+	if !ok {
+		return
+	}
+	var expID *int64
+	if req.Mode != "all" {
+		req.Task = strings.TrimSpace(req.Task)
+		req.Query = strings.TrimSpace(req.Query)
+		if req.Task != "" {
+			id, err := strconv.ParseInt(req.Task, 10, 64)
+			if err != nil || id <= 0 {
+				writeErr(w, 400, "invalid task")
+				return
+			}
+			expID = &id
+		}
+		if req.Mode == "filter" && expID == nil && req.Query == "" {
+			writeErr(w, 400, "missing filter")
+			return
+		}
+	} else {
+		req.IDs = nil
+		req.Query = ""
+	}
+	n, err := s.m.PG().DeleteCommands(expID, req.Query, req.IDs, req.Mode == "all")
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"deleted": n})
+}
 
 // pgListCommands returns tool executions (any tool) from the activity table.
 func (s *Server) pgListCommands(w http.ResponseWriter, r *http.Request) {
@@ -129,15 +196,26 @@ func (s *Server) pgLLMTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"tasks": tasks})
 }
 
-// pgDeleteLLMRecords removes all LLM records for one exact task_id (the same
-// match the task picker uses). Empty task → 400. Returns rows deleted.
+// pgDeleteLLMRecords supports the existing task delete plus explicit list modes.
 func (s *Server) pgDeleteLLMRecords(w http.ResponseWriter, r *http.Request) {
-	task := strings.TrimSpace(r.URL.Query().Get("task"))
-	if task == "" {
-		writeErr(w, 400, "missing task")
+	var req recordDeleteRequest
+	if task := strings.TrimSpace(r.URL.Query().Get("task")); task != "" {
+		req = recordDeleteRequest{Mode: "filter", Task: task}
+	} else {
+		var ok bool
+		req, ok = readRecordDeleteRequest(w, r)
+		if !ok {
+			return
+		}
+	}
+	if req.Mode == "all" {
+		req = recordDeleteRequest{Mode: "all"}
+	}
+	if req.Mode == "filter" && req.Model == "" && req.Session == "" && req.Task == "" {
+		writeErr(w, 400, "missing filter")
 		return
 	}
-	n, err := s.m.PG().DeleteLLMRecords(task)
+	n, err := s.m.PG().DeleteLLMRecords(req.Model, req.Session, req.Task, req.IDs, req.Mode == "all")
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
