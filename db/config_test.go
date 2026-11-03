@@ -58,6 +58,41 @@ func TestPoolProfilesOrder(t *testing.T) {
 	}
 }
 
+func TestProfileMaxConcurrencyRoundTrip(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer d.Close()
+	p := &LLMProfile{Name: fmt.Sprintf("t-concurrency-%d", time.Now().UnixNano()), Format: "openai", Model: "m", MaxConcurrency: 3}
+	id, err := d.SaveProfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, id)
+	got, err := d.ProfileByID(id)
+	if err != nil || got == nil || got.MaxConcurrency != 3 {
+		t.Fatalf("saved concurrency=%v, err=%v", got, err)
+	}
+	got.MaxConcurrency = 1
+	if _, err := d.SaveProfile(got); err != nil {
+		t.Fatal(err)
+	}
+	list, err := d.ListProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range list {
+		if row.ID == id {
+			if row.MaxConcurrency != 1 {
+				t.Fatalf("listed concurrency=%d, want 1", row.MaxConcurrency)
+			}
+			return
+		}
+	}
+	t.Fatal("saved profile missing from list")
+}
+
 func TestDeleteProfileContextHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

@@ -1817,8 +1817,9 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	// would get wrong — legacy/partial clients that never send it stay streaming.
 	var body struct {
 		db.LLMProfile
-		APIKey    string `json:"api_key"`
-		Streaming *bool  `json:"streaming"`
+		APIKey         string `json:"api_key"`
+		Streaming      *bool  `json:"streaming"`
+		MaxConcurrency *int   `json:"max_concurrency"`
 		// Ultra 同样用 *bool 遮蔽嵌入字段：这个开关是安全相关的，老前端没带该字段时
 		// 不能把它静默关成 false，否则一次「保存」就会悄悄撤掉已经确认过的注入。
 		Ultra *bool `json:"ultra"`
@@ -1830,6 +1831,20 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	p := body.LLMProfile
 	p.APIKey = body.APIKey
 	p.Streaming = body.Streaming == nil || *body.Streaming
+	if body.MaxConcurrency != nil {
+		p.MaxConcurrency = *body.MaxConcurrency
+	} else if p.ID != 0 {
+		old, err := pg.ProfileByID(p.ID)
+		if err != nil || old == nil {
+			writeErr(w, 500, "load profile failed")
+			return
+		}
+		p.MaxConcurrency = old.MaxConcurrency
+	}
+	if p.MaxConcurrency < 0 {
+		writeErr(w, 400, "max_concurrency must be non-negative")
+		return
+	}
 	if body.Ultra != nil {
 		p.Ultra = *body.Ultra
 	} else if p.ID != 0 {

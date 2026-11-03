@@ -40,8 +40,9 @@ type Config struct {
 	Proxy string
 	// RatePerSecond / RatePerMinute cap the shared request rate across ALL agents
 	// using the provider (0 = that window unlimited).
-	RatePerSecond float64
-	RatePerMinute float64
+	RatePerSecond  float64
+	RatePerMinute  float64
+	MaxConcurrency int
 	// ContextWindowK is the model's context window in K tokens (user-configured),
 	// used to size compaction thresholds. 0 = default; see CompactionWindow.
 	ContextWindowK int
@@ -274,7 +275,7 @@ func (c Config) newProvider(client *http.Client, limiter *RequestLimiter) (llm.P
 	if limiter == nil {
 		limiter = &RequestLimiter{}
 	}
-	if err := limiter.configure(c.RatePerSecond, c.RatePerMinute); err != nil {
+	if err := limiter.configure(c.RatePerSecond, c.RatePerMinute, c.MaxConcurrency); err != nil {
 		return nil, err
 	}
 	client.Transport = rateLimitedTransport{base: client.Transport, limiter: limiter}

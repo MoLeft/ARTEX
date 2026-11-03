@@ -28,6 +28,11 @@ type requiredColumn struct {
 var requiredColumns = []requiredColumn{
 	{
 		Table:  "llm_profiles",
+		Column: "max_concurrency",
+		DDL:    `ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS max_concurrency INTEGER NOT NULL DEFAULT 0 CHECK (max_concurrency >= 0)`,
+	},
+	{
+		Table:  "llm_profiles",
 		Column: "ultra",
 		DDL:    `ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS ultra BOOLEAN NOT NULL DEFAULT false`,
 	},

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"sync"
@@ -13,10 +14,12 @@ import (
 // outside provider caches so rebuilding a provider does not reset its quota.
 // Its zero value is ready for use; limits are set by NewProviderWithLimiter.
 type RequestLimiter struct {
-	mu      sync.Mutex
-	windows [2]requestWindow
-	sent    []time.Time
-	changed chan struct{}
+	mu          sync.Mutex
+	windows     [2]requestWindow
+	sent        []time.Time
+	changed     chan struct{}
+	maxInFlight int
+	inFlight    int
 }
 
 type requestWindow struct {
@@ -24,7 +27,10 @@ type requestWindow struct {
 	limit  float64
 }
 
-func (l *RequestLimiter) configure(perSecond, perMinute float64) error {
+func (l *RequestLimiter) configure(perSecond, perMinute float64, maxInFlight int) error {
+	if maxInFlight < 0 {
+		return fmt.Errorf("LLM max concurrency must be non-negative")
+	}
 	var windows [2]requestWindow
 	for i, rate := range [2]float64{perSecond, perMinute} {
 		if math.IsNaN(rate) || math.IsInf(rate, 0) {
@@ -49,6 +55,7 @@ func (l *RequestLimiter) configure(perSecond, perMinute float64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.windows = windows
+	l.maxInFlight = maxInFlight
 	if l.changed != nil {
 		close(l.changed)
 	}
@@ -60,6 +67,10 @@ func (l *RequestLimiter) configure(perSecond, perMinute float64) error {
 // windows under the same lock, so concurrency and cancellation cannot overbook
 // capacity. Requests in (now-period, now] count toward each rolling window.
 func (l *RequestLimiter) wait(ctx context.Context) error {
+	return l.waitSlot(ctx, false)
+}
+
+func (l *RequestLimiter) waitSlot(ctx context.Context, slot bool) error {
 	if l == nil {
 		return ctx.Err()
 	}
@@ -104,23 +115,46 @@ func (l *RequestLimiter) wait(ctx context.Context) error {
 				}
 			}
 		}
-		if delay <= 0 {
+		full := slot && l.maxInFlight > 0 && l.inFlight >= l.maxInFlight
+		if delay <= 0 && !full {
 			l.sent = append(l.sent, now)
+			if slot {
+				l.inFlight++
+			}
 			l.mu.Unlock()
 			return nil
 		}
 		changed := l.changed
 		l.mu.Unlock()
-		timer := time.NewTimer(delay)
+		var timer *time.Timer
+		var timerC <-chan time.Time
+		if delay > 0 {
+			timer = time.NewTimer(delay)
+			timerC = timer.C
+		}
 		select {
 		case <-ctx.Done():
-			timer.Stop()
+			if timer != nil {
+				timer.Stop()
+			}
 			return ctx.Err()
 		case <-changed:
-			timer.Stop()
-		case <-timer.C:
+			if timer != nil {
+				timer.Stop()
+			}
+		case <-timerC:
 		}
 	}
+}
+
+func (l *RequestLimiter) release() {
+	l.mu.Lock()
+	l.inFlight--
+	if l.changed != nil {
+		close(l.changed)
+	}
+	l.changed = make(chan struct{})
+	l.mu.Unlock()
 }
 
 type rateLimitedTransport struct {
@@ -129,8 +163,47 @@ type rateLimitedTransport struct {
 }
 
 func (t rateLimitedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if err := t.limiter.wait(req.Context()); err != nil {
+	if err := t.limiter.waitSlot(req.Context(), true); err != nil {
 		return nil, err
 	}
-	return t.base.RoundTrip(req)
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil || resp.Body == http.NoBody {
+		t.limiter.release()
+		return resp, err
+	}
+	body := &limitedBody{ReadCloser: resp.Body, releaseSlot: t.limiter.release, done: make(chan struct{})}
+	resp.Body = body
+	go func() {
+		select {
+		case <-req.Context().Done():
+			body.release()
+		case <-body.done:
+		}
+	}()
+	return resp, nil
+}
+
+type limitedBody struct {
+	io.ReadCloser
+	releaseSlot func()
+	once        sync.Once
+	done        chan struct{}
+}
+
+func (b *limitedBody) release() {
+	b.once.Do(func() { b.releaseSlot(); close(b.done) })
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.release()
+	}
+	return n, err
+}
+
+func (b *limitedBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.release()
+	return err
 }

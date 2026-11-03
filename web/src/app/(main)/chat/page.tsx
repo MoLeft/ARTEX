@@ -620,6 +620,7 @@ function ChatView({
         proxy: p.proxy ?? "",
         rate_per_second: p.rate_per_second,
         rate_per_minute: p.rate_per_minute,
+        max_concurrency: p.max_concurrency,
         context_window_k: p.context_window_k,
         thinking_type: p.thinking_type ?? "",
         reasoning_effort: p.reasoning_effort ?? "",

@@ -1126,6 +1126,7 @@ export const api = {
       key_set: boolean;
       rate_per_second?: number;
       rate_per_minute?: number;
+      max_concurrency?: number;
       context_window_k?: number;
       thinking_type?: string;
       reasoning_effort?: string;
@@ -1176,6 +1177,7 @@ export const api = {
     api_key?: string; // blank on update keeps the existing key
     rate_per_second?: number;
     rate_per_minute?: number;
+    max_concurrency?: number;
     context_window_k?: number;
     thinking_type?: string; // ""(不发送)|"disabled"|"enabled"
     reasoning_effort?: string; // ""(不发送)|"low"|"medium"|"high"|"xhigh"|"max"
