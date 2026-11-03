@@ -289,8 +289,8 @@ func TestBasicAuthGate(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer "+adminJWT)
 	w = httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
-	if w.Code != 200 {
-		t.Fatalf("gate + JWT rejected: %s", w.Body.String())
+	if w.Code != 503 {
+		t.Fatalf("gate + JWT without session DB should fail closed: %s", w.Body.String())
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -83,10 +84,16 @@ func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
 	return buf, nil
 }
 
-// signJWT issues a 7-day HS256 token for user ARTEX.
+// signJWT issues a token with a unique session ID. Production login persists the ID.
 func signJWT(key []byte) (string, error) {
+	return signJWTWithID(key, uuid.NewString())
+}
+
+func signJWTWithID(key []byte, id string) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
 		Subject:   "ARTEX",
+		ID:        id,
+		Audience:  jwt.ClaimStrings{"artex-session"},
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(jwtTTL)),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	}).SignedString(key)
@@ -94,13 +101,8 @@ func signJWT(key []byte) (string, error) {
 
 // verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
 func verifyJWT(tokenStr string, key []byte) bool {
-	t, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method")
-		}
-		return key, nil
-	})
-	return err == nil && t.Valid
+	_, err := parseSessionJWT(tokenStr, key)
+	return err == nil
 }
 
 // extractToken reads the JWT from Authorization: Bearer header,
@@ -116,21 +118,31 @@ func extractToken(r *http.Request) string {
 }
 
 // requireAuth wraps h with JWT validation.
-// /api/auth/*, /api/health and the Basic Auth gate check are exempt.
+// Only first-factor routes, health and the Basic Auth gate check are exempt.
 func (s *Server) requireAuth(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
-		if strings.HasPrefix(p, "/api/auth/") || p == "/api/health" || p == "/api/basic-auth/check" {
+		if p == "/api/auth/status" || p == "/api/auth/init" || p == "/api/auth/login" || p == "/api/auth/totp" || p == "/api/auth/passkey/login/begin" || p == "/api/auth/passkey/login/finish" || p == "/api/health" || p == "/api/basic-auth/check" {
 			h.ServeHTTP(w, r)
 			return
 		}
-		tok := extractToken(r)
-		if tok == "" {
-			writeErr(w, 401, "未授权")
+		if !verifyJWT(extractToken(r), s.jwtKey) {
+			writeErr(w, 401, "token 无效或已过期")
 			return
 		}
-		if !verifyJWT(tok, s.jwtKey) {
+		if s.m == nil || s.m.pg == nil {
+			writeErr(w, 503, errDataSourceUnavailable)
+			return
+		}
+		if _, err := s.activeSession(r); err != nil {
 			writeErr(w, 401, "token 无效或已过期")
+			return
+		}
+		if allowed, err := s.ipAllowed(r); err != nil {
+			writeErr(w, 503, errDataSourceUnavailable)
+			return
+		} else if !allowed {
+			writeJSON(w, 403, map[string]any{"error": "当前 IP 不在白名单内", "code": "ip_blocked"})
 			return
 		}
 		h.ServeHTTP(w, r)
@@ -197,7 +209,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "密码已设置")
 		return
 	}
-	tok, err := signJWT(s.jwtKey)
+	tok, err := s.issueSession(r, "password")
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return
@@ -205,9 +217,8 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"token": tok})
 }
 
-// POST /api/auth/change-password — changes the admin password. Requires a valid
-// token (this route is under /api/auth/* which requireAuth exempts, so the token
-// is validated here) AND the current password.
+// POST /api/auth/change-password — changes the admin password after the
+// global session check and a current-password check.
 func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
 	if pg == nil {
@@ -243,6 +254,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.OldPassword)); err != nil {
+		s.recordLoginFailure(r, "修改密码时当前密码错误")
 		writeErr(w, 401, "当前密码错误")
 		return
 	}
@@ -258,22 +270,26 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
-// POST /api/auth/login — validates username/password and returns a JWT.
+// POST /api/auth/login — validates the first factor and starts TOTP when enabled.
 func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
 	if pg == nil {
 		return
 	}
+	if !s.loginAttempts.allow(clientIP(r).String()) {
+		writeErr(w, 429, "登录尝试过多，请一分钟后重试")
+		return
+	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
-		TOTP     string `json:"totp"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "请求格式错误")
 		return
 	}
 	if req.Username != "ARTEX" {
+		s.recordLoginFailure(r, "密码错误")
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
@@ -287,23 +303,27 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
+		s.recordLoginFailure(r, "密码错误")
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
-	required, valid, err := checkLoginTOTP(pg, s.jwtKey, req.TOTP, time.Now())
+	required, _, err := checkLoginTOTP(pg, s.jwtKey, "", time.Now())
 	if err != nil {
 		writeErr(w, 503, errDataSourceUnavailable)
 		return
 	}
-	if !valid {
-		if required && !s.totpAttempts.allow(time.Now()) {
-			writeErr(w, 429, "验证码尝试过多，请一分钟后重试")
-			return
-		}
-		writeErr(w, 401, "用户名、密码或验证码错误")
+	if required {
+		s.beginTOTP(w, r, "password")
 		return
 	}
-	tok, err := signJWT(s.jwtKey)
+	if allowed, err := s.ipAllowed(r); err != nil {
+		writeErr(w, 503, errDataSourceUnavailable)
+		return
+	} else if !allowed {
+		writeJSON(w, 403, map[string]any{"error": "当前 IP 不在白名单内", "code": "ip_blocked"})
+		return
+	}
+	tok, err := s.issueSession(r, "password")
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return

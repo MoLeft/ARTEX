@@ -51,10 +51,13 @@ type Server struct {
 	lastCPUUse    uint64
 	lastCPUAt     time.Time
 
-	skillDir     string // root directory for skill subdirectories
-	jwtKey       []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
-	basicAuth    basicAuthGate
-	totpAttempts totpAttempts
+	skillDir          string // root directory for skill subdirectories
+	jwtKey            []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
+	basicAuth         basicAuthGate
+	totpAttempts      totpAttempts
+	securityEventMu   sync.Mutex
+	securityEventLast map[string]time.Time
+	loginAttempts     loginAttemptLimiter
 
 	// concMu serializes concurrency-cap decisions (admission + reconcile) so a
 	// scheduler tick and an HTTP settings change / task creation can't both count
@@ -785,11 +788,25 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.registerSideRoutes(mux)
 
-	// Auth routes — exempt from JWT check (handled in requireAuth)
+	// Auth routes — requireAuth exempts only the first-factor endpoints.
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
+	mux.HandleFunc("POST /api/auth/totp", s.finishTOTP)
+	mux.HandleFunc("POST /api/auth/passkey/login/begin", s.passkeyLoginBegin)
+	mux.HandleFunc("POST /api/auth/passkey/login/finish", s.passkeyLoginFinish)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
+	mux.HandleFunc("GET /api/auth/sessions", s.getSessions)
+	mux.HandleFunc("POST /api/auth/sessions/revoke-others", s.revokeOtherSessions)
+	mux.HandleFunc("GET /api/settings/ip-whitelist", s.getIPWhitelist)
+	mux.HandleFunc("PUT /api/settings/ip-whitelist", s.saveIPWhitelist)
+	mux.HandleFunc("GET /api/settings/login-failure-notify", s.getLoginFailureNotify)
+	mux.HandleFunc("PUT /api/settings/login-failure-notify", s.saveLoginFailureNotify)
+	mux.HandleFunc("GET /api/settings/passkeys", s.listPasskeys)
+	mux.HandleFunc("POST /api/settings/passkeys/register/begin", s.passkeyRegisterBegin)
+	mux.HandleFunc("POST /api/settings/passkeys/register/finish", s.passkeyRegisterFinish)
+	mux.HandleFunc("PUT /api/settings/passkeys/{id}", s.updatePasskey)
+	mux.HandleFunc("DELETE /api/settings/passkeys/{id}", s.updatePasskey)
 	mux.HandleFunc("GET /api/settings/totp", s.getTOTPSettings)
 	mux.HandleFunc("POST /api/settings/totp/setup", s.setupTOTP)
 	mux.HandleFunc("PUT /api/settings/totp", s.enableTOTP)

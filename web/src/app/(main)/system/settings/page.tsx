@@ -7,7 +7,6 @@ import {
   CpuIcon,
   FlaskConicalIcon,
   GlobeIcon,
-  HardDriveIcon,
   KeyboardIcon,
   RadioTowerIcon,
   SearchIcon,
@@ -38,6 +37,7 @@ import type {
 
 import { useEgressIp } from "../../_components/egress-ip-banner";
 import { BasicAuthCard } from "./_components/basic-auth-card";
+import { IPWhitelistCard, LoginFailureNotifyCard, PasskeysCard, SessionsCard } from "./_components/account-security-card";
 import { RuntimeStorageCard } from "./_components/runtime-storage-card";
 import { TOTPCard } from "./_components/totp-card";
 import { UpdateCard } from "./_components/update-card";
@@ -457,8 +457,8 @@ export default function SystemSettingsPage() {
   };
 
   const settingCategories = [
-    { id: "system", label: "系统与账号", hint: "版本、登录与基础配置", icon: SettingsIcon },
-    { id: "storage", label: "运行和空间", hint: "系统资源、分类清理与保留期限", icon: HardDriveIcon },
+    { id: "system", label: "系统", hint: "系统更新、运行与储存空间", icon: SettingsIcon },
+    { id: "account", label: "账号与安全", hint: "登录、会话与访问控制", icon: ShieldAlertIcon },
     { id: "browser", label: "浏览器 MCP", hint: "Chrome / Lightpanda 与优先级", icon: GlobeIcon },
     { id: "traffic", label: "流量与安全", hint: "流量、代理、截图与 OPSEC", icon: RadioTowerIcon },
     { id: "agent", label: "Agent 行为", hint: "录制、约束与情报", icon: CpuIcon },
@@ -767,11 +767,15 @@ export default function SystemSettingsPage() {
 
           <div className="flex flex-col divide-y rounded-xl border bg-card/30 px-3 [&>[data-slot=card]]:mb-0 [&>[data-slot=card]]:rounded-none [&>[data-slot=card]]:bg-transparent [&>[data-slot=card]]:py-4 [&>[data-slot=card]]:ring-0">
             {isSettingVisible("system", "更新 版本 升级") ? <UpdateCard /> : null}
-            {isSettingVisible("system", "基础认证 登录 用户名 密码") ? <BasicAuthCard /> : null}
-            {isSettingVisible("system", "TOTP 两步验证 动态码 登录 安全") ? <TOTPCard /> : null}
-            {isSettingVisible("storage", "运行 空间 操作系统 内存 磁盘 分类 清理 保留期限 自动删除") ? (
+            {isSettingVisible("system", "运行 空间 操作系统 内存 磁盘 分类 清理 保留期限 自动删除") ? (
               <RuntimeStorageCard />
             ) : null}
+            {isSettingVisible("account", "基础认证 登录 用户名 密码") ? <BasicAuthCard /> : null}
+            {isSettingVisible("account", "TOTP 两步验证 动态码 登录 安全") ? <TOTPCard /> : null}
+            {isSettingVisible("account", "IP 白名单 IPv4 IPv6 网段") ? <IPWhitelistCard /> : null}
+            {isSettingVisible("account", "通行密钥 Passkey WebAuthn 登录") ? <PasskeysCard /> : null}
+            {isSettingVisible("account", "登录设备 会话 IP 强制退出") ? <SessionsCard /> : null}
+            {isSettingVisible("account", "登录失败 安全事件 通知") ? <LoginFailureNotifyCard /> : null}
 
             <Card
               className={`${isSettingVisible("traffic", "流量 捕获 traffic proxy HTTP 代理") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}

@@ -205,12 +205,19 @@ func TestTOTPSettingsAndLoginFlow(t *testing.T) {
 		t.Fatal("status must report enabled without exposing secret")
 	}
 	login := `{"username":"ARTEX","password":"admin-password"}`
-	if w := request(http.MethodPost, "/api/auth/login", login, false); w.Code != 401 {
-		t.Fatalf("login without TOTP = %d", w.Code)
+	first := request(http.MethodPost, "/api/auth/login", login, false)
+	var pending struct {
+		PendingToken string `json:"pending_token"`
 	}
-	withCode := fmt.Sprintf(`{"username":"ARTEX","password":"admin-password","totp":%q}`, code)
-	if w := request(http.MethodPost, "/api/auth/login", withCode, false); w.Code != 200 {
-		t.Fatalf("login with TOTP = %d %s", w.Code, w.Body.String())
+	if first.Code != 200 || json.Unmarshal(first.Body.Bytes(), &pending) != nil || pending.PendingToken == "" {
+		t.Fatalf("first factor must issue only a pending TOTP challenge: %d %s", first.Code, first.Body.String())
+	}
+	if w := request(http.MethodGet, "/api/settings/totp", "", false); w.Code != 401 {
+		t.Fatalf("pending TOTP must not grant API access: %d", w.Code)
+	}
+	second := request(http.MethodPost, "/api/auth/totp", fmt.Sprintf(`{"pending_token":%q,"code":%q}`, pending.PendingToken, code), false)
+	if second.Code != 200 || !strings.Contains(second.Body.String(), `"token"`) {
+		t.Fatalf("TOTP completion = %d %s", second.Code, second.Body.String())
 	}
 	badDisable := request(http.MethodDelete, "/api/settings/totp", `{"password":"admin-password","code":"abc"}`, true)
 	if badDisable.Code != 400 {

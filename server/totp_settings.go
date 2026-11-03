@@ -100,13 +100,37 @@ func (s *Server) enableTOTP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "TOTP 配置加密失败")
 		return
 	}
-	inserted, err := pg.SetSettingIfEmpty(totpSettingKey, stored)
+	current, err := s.activeSession(r)
+	if err != nil {
+		writeErr(w, 401, "未授权")
+		return
+	}
+	tx, err := pg.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeErr(w, 503, "TOTP 配置保存失败")
 		return
 	}
-	if !inserted {
+	defer tx.Rollback()
+	result, err := tx.ExecContext(r.Context(), `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=now() WHERE settings.value=''`, totpSettingKey, stored)
+	if err != nil {
+		writeErr(w, 503, "TOTP 配置保存失败")
+		return
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		writeErr(w, 503, "TOTP 配置保存失败")
+		return
+	}
+	if inserted == 0 {
 		writeErr(w, 409, "TOTP 已启用，请刷新页面")
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), `UPDATE auth_sessions SET revoked_at=now() WHERE id<>$1 AND revoked_at IS NULL`, current); err != nil {
+		writeErr(w, 503, "TOTP 配置保存失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeErr(w, 503, "TOTP 配置保存失败")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")

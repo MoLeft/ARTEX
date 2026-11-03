@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Autumn-27/artex/notify"
 )
 
 // 本文件是投递任务的领取与状态流转。
@@ -130,11 +132,30 @@ func (d *DB) ClaimRealtimeDeliveries(ctx context.Context, channelID int64, limit
 JOIN notification_channels c ON c.id = dd.channel_id
 WHERE dd.channel_id = $1 AND dd.state IN ($2,$3) AND dd.next_attempt_at <= now()
   AND c.enabled AND c.mode = $4 AND NOT dd.quiet_held
+  AND NOT EXISTS (SELECT 1 FROM notification_events e WHERE e.id=dd.event_id AND e.kind='auth_failed')
 ORDER BY dd.next_attempt_at, dd.id
 FOR UPDATE OF dd SKIP LOCKED
 LIMIT $5`,
 		args: []any{channelID, NotifyStatePending, NotifyStateSending, NotifyModeRealtime, limit},
 	}, nil)
+}
+
+func (d *DB) SecurityDeliveryDue(ctx context.Context, channelID int64) (bool, error) {
+	var due bool
+	err := d.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM notification_deliveries d JOIN notification_events e ON e.id=d.event_id WHERE d.channel_id=$1 AND e.kind=$2 AND d.state IN ('pending','sending') AND d.next_attempt_at<=now() AND NOT d.quiet_held)`, channelID, notify.EventAuthFailed).Scan(&due)
+	return due, err
+}
+
+func (d *DB) ClaimSecurityDeliveries(ctx context.Context, channelID int64, limit int, lease time.Duration) ([]*NotificationDelivery, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	return d.claimDeliveries(ctx, lease, claimQuery{sql: `SELECT dd.id FROM notification_deliveries dd
+JOIN notification_events e ON e.id=dd.event_id
+JOIN notification_channels c ON c.id=dd.channel_id
+WHERE dd.channel_id=$1 AND e.kind=$2 AND dd.state IN ('pending','sending') AND dd.next_attempt_at<=now() AND c.enabled AND NOT dd.quiet_held
+ORDER BY dd.next_attempt_at,dd.id FOR UPDATE OF dd SKIP LOCKED LIMIT $3`,
+		args: []any{channelID, notify.EventAuthFailed, limit}}, nil)
 }
 
 // DigestBatchDue 报告该渠道是否已攒够一个到期批次：存在待发投递，且**最老的那条**
@@ -152,6 +173,7 @@ func (d *DB) DigestBatchDue(ctx context.Context, channelID int64, minAge time.Du
   SELECT 1 FROM notification_deliveries d
   JOIN notification_channels c ON c.id = d.channel_id
   WHERE d.channel_id = $1 AND d.state IN ($2,$3) AND c.enabled AND NOT d.quiet_held
+    AND NOT EXISTS (SELECT 1 FROM notification_events e WHERE e.id=d.event_id AND e.kind='auth_failed')
   GROUP BY d.channel_id
   HAVING min(d.created_at) <= now() - make_interval(secs => $4)
 )`, channelID, NotifyStatePending, NotifyStateSending, int64(minAge.Seconds())).Scan(&due)
@@ -205,6 +227,7 @@ func (d *DB) claimDigestBatch(ctx context.Context, channelID int64, limit int, l
 		sql: `SELECT dd.id FROM notification_deliveries dd
 JOIN notification_channels c ON c.id = dd.channel_id
 WHERE dd.channel_id = $1 AND dd.state IN ($2,$3) AND dd.next_attempt_at <= now() AND c.enabled AND dd.quiet_held = $4
+  AND NOT EXISTS (SELECT 1 FROM notification_events e WHERE e.id=dd.event_id AND e.kind='auth_failed')
 ORDER BY dd.id
 FOR UPDATE OF dd SKIP LOCKED
 LIMIT $5`,

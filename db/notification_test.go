@@ -200,6 +200,32 @@ func TestFanOutRoutesEventsByFilter(t *testing.T) {
 	}
 }
 
+func TestSecurityEventBypassesFilterAndDigestQuietHours(t *testing.T) {
+	d := notifyTestDB(t)
+	ctx := context.Background()
+	ch := newTestChannel(t, d, notify.KindDingTalk, NotifyModeDigest, `{"min_severity":"critical","vulnclass_include":["SQL"]}`)
+	eventID := addTestEvent(t, d, notify.EventAuthFailed, 0, notify.Snapshot{Severity: "high", VulnClass: "账号安全事件"})
+	if _, _, err := d.FanOutPendingEvents(ctx, 100, notify.QuietHours{Start: 0, End: 1440, On: true, SendAfter: false}); err != nil {
+		t.Fatal(err)
+	}
+	var held bool
+	var state string
+	if err := d.QueryRowContext(ctx, `SELECT quiet_held,state FROM notification_deliveries WHERE event_id=$1 AND channel_id=$2`, eventID, ch.ID).Scan(&held, &state); err != nil {
+		t.Fatal(err)
+	}
+	if held || state != NotifyStatePending {
+		t.Fatalf("security event delayed: held=%v state=%s", held, state)
+	}
+	due, err := d.SecurityDeliveryDue(ctx, ch.ID)
+	if err != nil || !due {
+		t.Fatalf("security delivery not due: due=%v err=%v", due, err)
+	}
+	claimed, err := d.ClaimSecurityDeliveries(ctx, ch.ID, 1, time.Minute)
+	if err != nil || len(claimed) != 1 || claimed[0].EventKind != notify.EventAuthFailed {
+		t.Fatalf("security delivery not claimed: count=%d err=%v", len(claimed), err)
+	}
+}
+
 // TestFanOutMarksEventsWithNoMatchingChannel 覆盖「事件没命中任何渠道」的情况。
 // 这类事件必须照样被标记为已分派，否则它会永远留在待分派集合里、每个 tick 重扫。
 func TestFanOutMarksEventsWithNoMatchingChannel(t *testing.T) {

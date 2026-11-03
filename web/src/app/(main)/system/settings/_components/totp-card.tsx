@@ -73,7 +73,7 @@ export function TOTPCard() {
   const actionLabel = enabled ? "关闭 TOTP" : "验证并启用";
   let statusText = "正在读取 TOTP 状态…";
   if (enabled === true) statusText = "已启用。以后登录需输入验证器显示的六位动态码。";
-  if (enabled === false) statusText = "未启用。登录页仍显示验证码输入框，可留空登录。";
+  if (enabled === false) statusText = "未启用。开启后，密码或通行密钥验证通过时会进入独立的验证码页面。";
 
   return (
     <Card className="mb-4 break-inside-avoid md:mb-6">

@@ -327,9 +327,9 @@ WHERE NOT fanned_out ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
 	}
 	var toInsert []pending
 	for i, snap := range parsedSnaps {
-		inQuiet := len(quiet) > 0 && quiet[0].Contains(events[i].CreatedAt)
+		inQuiet := snap.Kind != notify.EventAuthFailed && len(quiet) > 0 && quiet[0].Contains(events[i].CreatedAt)
 		for _, ch := range channels {
-			if !notify.Match(notify.ParseFilter(ch.Filter), snap) {
+			if snap.Kind != notify.EventAuthFailed && !notify.Match(notify.ParseFilter(ch.Filter), snap) {
 				continue
 			}
 			toInsert = append(toInsert, pending{eventID: events[i].ID, channelID: ch.ID,

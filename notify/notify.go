@@ -26,6 +26,7 @@ const (
 const (
 	EventFindingCreated       = "finding_created"
 	EventFindingStatusChanged = "finding_status_changed"
+	EventAuthFailed           = "auth_failed"
 )
 
 // InitKind 是 config 里为空的 kind 的兜底值。

@@ -87,6 +87,36 @@ export function StorageCleanupDialog({ open, onOpenChange, onComplete }: { open:
   const chosenGroups = groups.filter((group) => selected.has(group.path));
   const chosenCategories = (Object.keys(labels) as Category[]).filter((category) => selected.has(category));
   const estimate = chosenGroups.reduce((sum, group) => sum + group.bytes, 0) + chosenCategories.reduce((sum, category) => sum + (parts.find((part) => part.key === category)?.bytes ?? 0), 0);
+  const chosenCount = chosenGroups.length + chosenCategories.length;
+  const riskOrder: Record<Group["risk"], number> = { safe: 0, review: 1, locked: 2 };
+  const workspaceTasks = () => {
+    const tasks = new Map<string, Group[]>();
+    for (const group of groups) {
+      const task = group.path.split("/").slice(0, 2).join("/") || "其他工作区";
+      tasks.set(task, [...(tasks.get(task) ?? []), group]);
+    }
+    return [...tasks.entries()]
+      .map(([task, items]) => [task, items.sort((a, b) => riskOrder[a.risk] - riskOrder[b.risk] || a.path.localeCompare(b.path, undefined, { numeric: true }))] as const)
+      .sort((a, b) => riskOrder[a[1][0].risk] - riskOrder[b[1][0].risk] || a[0].localeCompare(b[0], undefined, { numeric: true }));
+  };
+  const renderWorkspace = () => workspaceTasks().map(([task, items]) => (
+    <details key={task} className="rounded-md border">
+      <summary className="cursor-pointer p-3 font-medium">{task} <span className="text-xs font-normal text-muted-foreground">· {items.length} 项 · 可清理 {bytes(items.reduce((sum, item) => sum + item.bytes, 0))}</span></summary>
+      <div className="space-y-2 border-t p-3">
+        {items.map((group) => <div key={group.path} className="flex items-start gap-3 rounded-md border p-2">
+          <Checkbox aria-label={`选择 ${group.path}`} className="mt-0.5" checked={selected.has(group.path)} disabled={group.risk === "locked" || group.bytes === 0} onCheckedChange={() => toggle(group.path)} />
+          <details className="group min-w-0 flex-1">
+          <summary className="flex cursor-pointer items-start gap-2 [&::-webkit-details-marker]:hidden">
+            <ChevronRight className="mt-1 size-4 shrink-0 group-open:rotate-90" />
+            <span className="min-w-0 flex-1"><span className="block truncate font-medium" title={group.path}>{group.path.split("/").slice(2).join("/") || group.path}</span><span className="text-xs text-muted-foreground">{group.risk === "safe" ? "安全清理" : group.risk === "review" ? "需审查" : "不可清理"} · {group.reason}</span></span>
+            <span className="shrink-0 text-right tabular-nums">{bytes(group.bytes)}{group.protected_bytes > 0 && <span className="block text-xs text-muted-foreground">保留 {bytes(group.protected_bytes)}</span>}</span>
+          </summary>
+          {group.dir && <div className="mt-2 border-t pt-1 text-xs"><FileTree path={group.path} protectedPaths={group.protected_paths ?? []} /></div>}
+          </details>
+        </div>)}
+      </div>
+    </details>
+  ));
 
   const clean = async () => {
     setWorking(true);
@@ -113,26 +143,26 @@ export function StorageCleanupDialog({ open, onOpenChange, onComplete }: { open:
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
         {!scanning && !confirm && (
           <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
-            <h3 className="font-medium">录制与活动</h3>
+            <details open className="rounded-md border p-3">
+              <summary className="cursor-pointer font-medium">任务工作区 <span className="text-xs font-normal text-muted-foreground">· {groups.filter((group) => group.risk === "safe").length} 项自动勾选 · 任务内按安全、需审查、不可清理排序</span></summary>
+              <div className="mt-3 space-y-2">{renderWorkspace()}</div>
+            </details>
+            <details className="rounded-md border p-3">
+              <summary className="cursor-pointer font-medium">录制与活动 <span className="text-xs font-normal text-amber-600">· 可勾选 · 需审查</span></summary>
+              <div className="mt-3 space-y-2">
             {(Object.keys(labels) as Category[]).map((category) => {
               const size = parts.find((part) => part.key === category)?.bytes ?? 0;
-              return <label key={category} className="flex items-center gap-3 rounded-md border p-3">
-                <Checkbox checked={selected.has(category)} disabled={size === 0} onCheckedChange={() => toggle(category)} />
+              return <div key={category} className="flex items-center gap-3 rounded-md border p-3">
+                <Checkbox aria-label={`选择 ${labels[category]}`} checked={selected.has(category)} disabled={size === 0} onCheckedChange={() => toggle(category)} />
                 <span className="flex-1">{labels[category]} <span className="text-xs text-amber-600">需审查 · 清空历史</span></span>
                 <span className="tabular-nums">{bytes(size)}</span>
-              </label>;
+              </div>;
             })}
-            <h3 className="pt-2 font-medium">任务工作区</h3>
-            {groups.length === 0 && <p className="text-sm text-muted-foreground">没有任务工作区。</p>}
-            {groups.map((group) => <div key={group.path} className="rounded-md border p-3">
-              <label className="flex items-start gap-3">
-                <Checkbox className="mt-0.5" checked={selected.has(group.path)} disabled={group.risk === "locked" || group.bytes === 0} onCheckedChange={() => toggle(group.path)} />
-                <span className="min-w-0 flex-1"><span className="block truncate font-medium" title={group.path}>{group.path}</span><span className="text-xs text-muted-foreground">{group.risk === "safe" ? "安全清理" : group.risk === "review" ? "需审查" : "不可清理"} · {group.reason}</span></span>
-                <span className="shrink-0 text-right tabular-nums">{bytes(group.bytes)}{group.protected_bytes > 0 && <span className="block text-xs text-muted-foreground">保留 {bytes(group.protected_bytes)}</span>}</span>
-              </label>
-              {group.dir && <div className="mt-2 border-t pt-1 text-xs"><FileTree path={group.path} protectedPaths={group.protected_paths ?? []} /></div>}
-            </div>)}
-            <h3 className="pt-2 font-medium">保留内容</h3>
+                </div>
+            </details>
+            <details className="rounded-md border p-3">
+              <summary className="cursor-pointer font-medium">保留内容 <span className="text-xs font-normal text-muted-foreground">· 不可勾选 · 受保护</span></summary>
+              <div className="mt-3 space-y-2">
             {Object.entries(lockedLabels).map(([key, label]) => {
               const size = parts.find((part) => part.key === key)?.bytes ?? 0;
               return <div key={key} className="rounded-md border p-3">
@@ -140,12 +170,14 @@ export function StorageCleanupDialog({ open, onOpenChange, onComplete }: { open:
                 {(key === "archives" || key === "transcripts") && size > 0 && <div className="mt-2 border-t pt-1 text-xs"><FileTree path={key} protectedPaths={[key]} /></div>}
               </div>;
             })}
+                </div>
+            </details>
           </div>
         )}
         {!scanning && confirm && <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4">将清理 {chosenGroups.length} 个工作区项目和 {chosenCategories.length} 类历史记录，扫描估算涉及 {bytes(estimate)} 数据。受保护文件仍会保留。</div>}
         <DialogFooter>
           <Button variant="outline" disabled={working} onClick={() => confirm ? setConfirm(false) : onOpenChange(false)}>{confirm ? "返回选择" : "取消"}</Button>
-          <Button variant="destructive" disabled={working || scanning || selected.size === 0} onClick={() => confirm ? void clean() : setConfirm(true)}>{working ? "清理中…" : confirm ? "确认永久删除" : "清理选中项"}</Button>
+          <Button variant="destructive" disabled={working || scanning || chosenCount === 0} onClick={() => confirm ? void clean() : setConfirm(true)}>{working ? "清理中…" : confirm ? "确认永久删除" : `清理选中项（${chosenCount} 项，预计释放 ${bytes(estimate)}）`}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
