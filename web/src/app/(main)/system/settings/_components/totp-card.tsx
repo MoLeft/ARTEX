@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { ShieldCheckIcon } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
@@ -18,6 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 
@@ -164,19 +166,25 @@ export function TOTPCard() {
               </Field>
               <Field>
                 <FieldLabel htmlFor="totp-code">验证器动态码</FieldLabel>
-                <Input
-                  id="totp-code"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  pattern="[0-9]{6}"
-                  maxLength={6}
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
-                  disabled={busy}
-                  required
-                  placeholder="6 位数字"
-                />
+                <div className="flex justify-center">
+                  <InputOTP
+                    id="totp-code"
+                    aria-label="验证器动态码"
+                    autoComplete="one-time-code"
+                    pattern={REGEXP_ONLY_DIGITS}
+                    maxLength={6}
+                    value={code}
+                    onChange={setCode}
+                    disabled={busy}
+                    required
+                  >
+                    <InputOTPGroup>
+                      {Array.from({ length: 6 }, (_, i) => (
+                        <InputOTPSlot key={i} index={i} />
+                      ))}
+                    </InputOTPGroup>
+                  </InputOTP>
+                </div>
               </Field>
               <FieldDescription>如果验证器丢失，需要服务器管理员重置 TOTP。</FieldDescription>
               {error ? (

@@ -2,6 +2,8 @@
 
 import * as React from "react";
 
+import { REGEXP_ONLY_DIGITS } from "input-otp";
+
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,7 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 
 export function SecurityActionDialog({
   open,
@@ -76,19 +78,25 @@ export function SecurityActionDialog({
               <label htmlFor="security-action-code" className="text-sm font-medium">
                 TOTP 验证码
               </label>
-              <Input
-                id="security-action-code"
-                aria-label="TOTP 验证码"
-                autoComplete="one-time-code"
-                inputMode="numeric"
-                pattern="[0-9]{6}"
-                maxLength={6}
-                value={code}
-                onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))}
-                required
-                disabled={busy}
-                placeholder="输入 6 位验证码后继续"
-              />
+              <div className="flex justify-center">
+                <InputOTP
+                  id="security-action-code"
+                  aria-label="TOTP 验证码"
+                  autoComplete="one-time-code"
+                  pattern={REGEXP_ONLY_DIGITS}
+                  maxLength={6}
+                  value={code}
+                  onChange={setCode}
+                  disabled={busy}
+                  required
+                >
+                  <InputOTPGroup>
+                    {Array.from({ length: 6 }, (_, i) => (
+                      <InputOTPSlot key={i} index={i} />
+                    ))}
+                  </InputOTPGroup>
+                </InputOTP>
+              </div>
             </div>
           )}
           {error && (
@@ -97,7 +105,16 @@ export function SecurityActionDialog({
             </p>
           )}
           <DialogFooter>
-            <Button type="button" variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                onOpenChange(false);
+                setCode("");
+                setError("");
+              }}
+            >
               取消
             </Button>
             <Button type="submit" disabled={busy || (totpEnabled && code.length !== 6)}>
