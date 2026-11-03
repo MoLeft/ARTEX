@@ -133,18 +133,10 @@ func run() int {
 			log.Fatalf("listen: %v", err)
 		}
 		if os.Getenv("ARTEX_PROXY_PROTOCOL") == "1" {
-			// The host port must be loopback-only: a public listener would let clients forge PROXY headers.
-			ranges := []string{"127.0.0.0/8", "::1/128"}
-			for _, cidr := range strings.Split(os.Getenv("ARTEX_TRUSTED_PROXY_CIDRS"), ",") {
-				if cidr = strings.TrimSpace(cidr); cidr != "" {
-					ranges = append(ranges, cidr)
-				}
-			}
-			policy, err := proxyproto.PolicyFromRanges(ranges, proxyproto.SKIP, proxyproto.USE)
+			listener, err = trustedProxyListener(listener)
 			if err != nil {
 				log.Fatalf("proxy protocol policy: %v", err)
 			}
-			listener = &proxyproto.Listener{Listener: listener, ConnPolicy: policy, ReadHeaderTimeout: 5 * time.Second}
 		}
 		if err := httpSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
@@ -167,6 +159,21 @@ func run() int {
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
 	return code
+}
+
+func trustedProxyListener(listener net.Listener) (net.Listener, error) {
+	// The host port must be loopback-only: a public listener would let clients forge PROXY headers.
+	ranges := []string{"127.0.0.0/8", "::1/128"}
+	for _, cidr := range strings.Split(os.Getenv("ARTEX_TRUSTED_PROXY_CIDRS"), ",") {
+		if cidr = strings.TrimSpace(cidr); cidr != "" {
+			ranges = append(ranges, cidr)
+		}
+	}
+	policy, err := proxyproto.PolicyFromRanges(ranges, proxyproto.USE, proxyproto.SKIP)
+	if err != nil {
+		return nil, err
+	}
+	return &proxyproto.Listener{Listener: listener, ConnPolicy: policy, ReadHeaderTimeout: 5 * time.Second}, nil
 }
 
 // shutdownContext deliberately does not derive from signalCtx. If it did, the
