@@ -47,6 +47,9 @@ const mockInterceptDetails = structuredClone(D.interceptDetails);
 const mockTasks = structuredClone(D.tasks);
 const mockFindings = structuredClone(D.findings);
 const mockLLMRecords = structuredClone(D.llmRecords);
+const mockCommandRecords = structuredClone(D.commandRecords);
+const mockTraffic = { ...structuredClone(D.traffic), exchanges: structuredClone(D.traffic.exchanges ?? []) };
+let mockRetention = { traffic_days: 0, llm_days: 0, tool_days: 0 };
 const mockTaskTemplates = structuredClone(D.taskTemplates);
 const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
@@ -952,7 +955,8 @@ function controlMockTask(id: string, action: "pause" | "resume"): BatchControlIt
     task.status = "paused";
     task.engine_mode = "paused";
     if (task.run_segment_started_unix && task.run_segment_started_unix > 0) {
-      task.active_run_seconds = (task.active_run_seconds ?? 0) + Math.max(0, Math.floor(Date.now() / 1000) - task.run_segment_started_unix);
+      task.active_run_seconds =
+        (task.active_run_seconds ?? 0) + Math.max(0, Math.floor(Date.now() / 1000) - task.run_segment_started_unix);
       task.run_seconds = task.active_run_seconds;
     }
     task.run_segment_started_unix = 0;
@@ -1057,6 +1061,58 @@ export async function mockHandle<T>(method: string, rawPath: string, body?: Body
 
 function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Record<string, unknown>): unknown {
   const task = q.get("task") ?? undefined;
+
+  if (path === "/system/metrics")
+    return {
+      scope: "demo",
+      supported: true,
+      timestamp: new Date().toISOString(),
+      container_metrics: true,
+      cpu: { used_bytes: 0, total_bytes: 0, percent: 12 },
+      memory: { used_bytes: 2e9, total_bytes: 8e9, percent: 25 },
+      disk: { used_bytes: 18e9, total_bytes: 64e9, percent: 28 },
+      data_disk: { used_bytes: 18e9, total_bytes: 64e9, percent: 28 },
+    };
+  if (path === "/system/storage")
+    return {
+      os: "Linux (demo)",
+      arch: "arm64",
+      process_heap_bytes: 128e6,
+      parts: [
+        { key: "traffic", name: "流量录制", bytes: mockTraffic.exchanges.length * 20e6, cleanable: true },
+        { key: "tasks", name: "任务工作区", bytes: 400e6, cleanable: false },
+        { key: "archives", name: "任务归档", bytes: 150e6, cleanable: false },
+        { key: "transcripts", name: "对话转录", bytes: 50e6, cleanable: false },
+        { key: "other", name: "其他 ARTEX 文件", bytes: 30e6, cleanable: false },
+        { key: "llm", name: "LLM 录制", bytes: mockLLMRecords.length * 5e6, cleanable: true },
+        { key: "tool", name: "任务活动（含工具执行）", bytes: mockCommandRecords.length * 1e6, cleanable: true },
+        { key: "database_other", name: "数据库其他数据", bytes: 200e6, cleanable: false },
+      ],
+    };
+  if (path === "/system/storage/retention" && m === "GET") return mockRetention;
+  if (path === "/system/storage/retention" && m === "PUT") {
+    mockRetention = {
+      traffic_days: Number(b.traffic_days),
+      llm_days: Number(b.llm_days),
+      tool_days: Number(b.tool_days),
+    };
+    return mockRetention;
+  }
+  if (path === "/system/storage/cleanup" && m === "POST") {
+    const category = String(b.category);
+    const deleted =
+      category === "traffic"
+        ? mockTraffic.exchanges.length
+        : category === "llm"
+          ? mockLLMRecords.length
+          : category === "tool"
+            ? mockCommandRecords.length
+            : 0;
+    if (category === "traffic") mockTraffic.exchanges.splice(0);
+    if (category === "llm") mockLLMRecords.splice(0);
+    if (category === "tool") mockCommandRecords.splice(0);
+    return { deleted };
+  }
 
   // The demo client still expects the complete repeater response shape. No
   // network request is made in mock mode, but returning the shape keeps the
@@ -1413,7 +1469,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       throw new Error("intercept_rules 必须是数组");
     }
     const name = nameValue === undefined || b.name === null ? template.name : normalizedTemplateName(nameValue);
-    const description = descriptionValue === undefined || b.description === null ? template.description : descriptionValue.trim();
+    const description =
+      descriptionValue === undefined || b.description === null ? template.description : descriptionValue.trim();
     const goal = goalValue === undefined || b.goal === null ? template.goal : goalValue.trim();
     if (!name || !description || !goal) throw new Error("请填写模板名称、描述和目标");
     if (
@@ -2431,10 +2488,64 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
 
   // ── traffic / audit / settings ──
   if (path === "/audit") return D.audit;
-  if (path === "/traffic" && m === "DELETE") return { deleted: 0 };
-  if (path === "/traffic/hosts" && m === "DELETE") return { deleted: (b.hosts as unknown[])?.length ?? 0 };
-  if (path === "/traffic/hosts") return { hosts: D.trafficHosts };
-  if (path === "/traffic") return D.traffic;
+  if (path === "/traffic/all" && m === "DELETE") {
+    const deleted = mockTraffic.exchanges.length;
+    mockTraffic.exchanges.splice(0);
+    return { deleted, reclaimed: deleted * 20e6 };
+  }
+  if (path === "/traffic" && m === "DELETE") {
+    const before = mockTraffic.exchanges.length;
+    const host = q.get("host") ?? "";
+    mockTraffic.exchanges = mockTraffic.exchanges.filter((e) => !e.host.includes(host));
+    return { deleted: before - mockTraffic.exchanges.length };
+  }
+  if (path === "/traffic/hosts" && m === "DELETE") {
+    const before = mockTraffic.exchanges.length;
+    const hosts = new Set((b.hosts as string[]) ?? []);
+    mockTraffic.exchanges = mockTraffic.exchanges.filter((e) => !hosts.has(e.host));
+    return { deleted: before - mockTraffic.exchanges.length };
+  }
+  if (path === "/traffic/matching" && m === "DELETE") {
+    const before = mockTraffic.exchanges.length;
+    const ids = new Set((b.ids as string[]) ?? []);
+    mockTraffic.exchanges = mockTraffic.exchanges.filter((e) =>
+      b.mode === "selected"
+        ? !ids.has(e.id)
+        : !(
+            (!b.host || e.host.includes(String(b.host))) &&
+            (!b.method || e.method === b.method) &&
+            (!b.q || e.url.includes(String(b.q))) &&
+            (!b.path || e.url.includes(String(b.path))) &&
+            (!b.status || String(e.status).startsWith(String(b.status)[0]))
+          ),
+    );
+    return { deleted: before - mockTraffic.exchanges.length };
+  }
+  if (path === "/traffic/hosts") {
+    const counts = new Map<string, number>();
+    for (const e of mockTraffic.exchanges) counts.set(e.host, (counts.get(e.host) ?? 0) + 1);
+    return { hosts: [...counts].map(([host, count]) => ({ host, count })) };
+  }
+  if (path === "/traffic") {
+    const matches = mockTraffic.exchanges.filter(
+      (e) =>
+        (!q.get("host") || e.host.includes(q.get("host")!)) &&
+        (!q.get("method") || e.method === q.get("method")) &&
+        (!q.get("q") || e.url.includes(q.get("q")!)) &&
+        (!q.get("path") || e.url.includes(q.get("path")!)) &&
+        (!q.get("status") || String(e.status).startsWith(q.get("status")![0])),
+    );
+    const page = Number(q.get("page") ?? 0),
+      size = Number(q.get("size") ?? 100);
+    return {
+      ...mockTraffic,
+      count: mockTraffic.exchanges.length,
+      total: matches.length,
+      page,
+      size,
+      exchanges: matches.slice(page * size, (page + 1) * size),
+    };
+  }
   if (path === "/traffic/exchange") return D.trafficDetail;
   if (path === "/settings" && m === "GET") return D.settings;
   if (path === "/settings" && m === "PUT") {
@@ -2447,14 +2558,18 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     return next;
   }
   if (path === "/settings/browser-instances" && m === "GET")
-    return { browsers: (["chrome", "lightpanda"] as const).map((kind) => ({
-      kind,
-      limit: Number(D.settings[kind === "chrome" ? "browser_chrome_max_instances" : "browser_lightpanda_max_instances"] ?? 0),
-      active: 0,
-      waiting: 0,
-      shared_memory_bytes: null,
-      instances: [],
-    })) };
+    return {
+      browsers: (["chrome", "lightpanda"] as const).map((kind) => ({
+        kind,
+        limit: Number(
+          D.settings[kind === "chrome" ? "browser_chrome_max_instances" : "browser_lightpanda_max_instances"] ?? 0,
+        ),
+        active: 0,
+        waiting: 0,
+        shared_memory_bytes: null,
+        instances: [],
+      })),
+    };
   if (path.startsWith("/settings/browser-instances/") && m === "DELETE")
     throw new Error("演示模式没有正在运行的浏览器实例");
   if (path === "/settings/basic-auth" && m === "GET") return { enabled: false, username: "", password_set: false };
@@ -2520,10 +2635,35 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/gc") return { removed: 0 };
 
   // ── 工具执行历史 ──
-  if (path === "/commands" && m === "GET") return { commands: D.commandRecords, total: D.commandRecords.length };
+  if (path === "/commands" && m === "DELETE") {
+    const before = mockCommandRecords.length;
+    const ids = new Set((b.ids as number[]) ?? []);
+    const matches = (c: (typeof mockCommandRecords)[number]) =>
+      b.mode === "all" ||
+      ((!b.task || String(c.exploration_id) === b.task) &&
+        (!b.q || c.tool.includes(String(b.q)) || c.command.includes(String(b.q))) &&
+        (b.mode !== "selected" || ids.has(c.id)));
+    for (let i = mockCommandRecords.length - 1; i >= 0; i--)
+      if (matches(mockCommandRecords[i])) mockCommandRecords.splice(i, 1);
+    return { deleted: before - mockCommandRecords.length };
+  }
+  if (path === "/commands" && m === "GET") {
+    const matches = mockCommandRecords.filter(
+      (c) =>
+        (!task || String(c.exploration_id) === task) &&
+        (!q.get("q") || c.tool.includes(q.get("q")!) || c.command.includes(q.get("q")!)),
+    );
+    const page = Number(q.get("page") ?? 0),
+      size = Number(q.get("size") ?? 50);
+    return { commands: matches.slice(page * size, (page + 1) * size), total: matches.length };
+  }
   if (path === "/commands/stats" && m === "GET") {
     const tally = new Map<string, { tool: string; total: number; errors: number }>();
-    for (const c of D.commandRecords) {
+    for (const c of mockCommandRecords.filter(
+      (c) =>
+        (!task || String(c.exploration_id) === task) &&
+        (!q.get("q") || c.tool.includes(q.get("q")!) || c.command.includes(q.get("q")!)),
+    )) {
       const tool = c.tool || "-";
       const s = tally.get(tool) ?? { tool, total: 0, errors: 0 };
       s.total++;
@@ -2534,8 +2674,33 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
 
   // ── LLM ──
-  if (path === "/llm/records" && m === "GET") return { records: mockLLMRecords, total: mockLLMRecords.length };
-  if (path === "/llm/records" && m === "DELETE") return { deleted: 0 };
+  if (path === "/llm/records" && m === "GET") {
+    const matches = mockLLMRecords.filter(
+      (r) =>
+        (!task || r.task_id === task) &&
+        (!q.get("model") || r.model === q.get("model")) &&
+        (!q.get("session") || r.session_id.includes(q.get("session")!)),
+    );
+    const page = Number(q.get("page") ?? 0),
+      size = Number(q.get("size") ?? 50);
+    return { records: matches.slice(page * size, (page + 1) * size), total: matches.length };
+  }
+  if (path === "/llm/records" && m === "DELETE") {
+    const before = mockLLMRecords.length;
+    const ids = new Set((b.ids as number[]) ?? []);
+    for (let i = mockLLMRecords.length - 1; i >= 0; i--) {
+      const r = mockLLMRecords[i];
+      if (
+        b.mode === "all" ||
+        (((!task && !b.task) || r.task_id === (task ?? b.task)) &&
+          (!b.model || r.model === b.model) &&
+          (!b.session || r.session_id.includes(String(b.session))) &&
+          (b.mode !== "selected" || ids.has(r.id)))
+      )
+        mockLLMRecords.splice(i, 1);
+    }
+    return { deleted: before - mockLLMRecords.length };
+  }
   if (path === "/llm/records/tasks") {
     const counts = new Map<string, number>();
     for (const record of mockLLMRecords) {

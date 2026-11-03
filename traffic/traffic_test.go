@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
 )
@@ -89,6 +90,96 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 	c = 0
 	if err := tr.DB().QueryRow(`SELECT COUNT(*) FROM exchanges`).Scan(&c); err == nil && c != 0 {
 		t.Fatalf("rows=%d, want 0 after full sweep", c)
+	}
+}
+
+func TestDeleteMatchingKeepsOtherLegacyExchange(t *testing.T) {
+	tr, dir := openTraffic(t)
+	for i, method := range []string{"GET", "POST"} {
+		id := fmt.Sprintf("1-%04d", i+1)
+		rel := filepath.Join("same.example.com", method, id)
+		if err := os.MkdirAll(filepath.Join(dir, rel), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel, "request.http"), []byte(method), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, i+1, "same.example.com", method, "/", "http://same.example.com/", 200, "text/plain", 0, 0, rel); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := PageQuery{RespMin: -1, RespMax: -1}
+	if n, err := tr.DeleteMatching(f, []string{"1-0001"}); err != nil || n != 1 {
+		t.Fatalf("selected delete=(%d,%v)", n, err)
+	}
+	tr.reaping.Wait()
+	if _, err := os.Stat(filepath.Join(dir, "same.example.com", "POST", "1-0002", "request.http")); err != nil {
+		t.Fatalf("surviving legacy body: %v", err)
+	}
+	if n, err := tr.DeleteMatching(PageQuery{Host: "same.example.com", Method: "POST", RespMin: -1, RespMax: -1}, nil); err != nil || n != 1 {
+		t.Fatalf("filtered delete=(%d,%v)", n, err)
+	}
+	if n, err := tr.Count(); err != nil || n != 0 {
+		t.Fatalf("remaining=(%d,%v)", n, err)
+	}
+}
+
+func TestDeleteMatchingBodyFilter(t *testing.T) {
+	tr, _ := openTraffic(t)
+	if !tr.fts {
+		t.Skip("FTS unavailable")
+	}
+	tr.record(newFlow("same.example.com", "GET", "/secret", nil, []byte("secret vulnerability evidence")))
+	tr.record(newFlow("same.example.com", "GET", "/normal", nil, []byte("ordinary response")))
+	if n, err := tr.DeleteMatching(PageQuery{Body: "secret", RespMin: -1, RespMax: -1}, nil); err != nil || n != 1 {
+		t.Fatalf("body-filter delete=(%d,%v)", n, err)
+	}
+	if n, err := tr.Count(); err != nil || n != 1 {
+		t.Fatalf("remaining=(%d,%v)", n, err)
+	}
+}
+
+func TestDeleteMatchingBeforeKeepsRecentTraffic(t *testing.T) {
+	tr, _ := openTraffic(t)
+	tr.record(newFlow("old.example.com", "GET", "/old", nil, []byte("old")))
+	tr.record(newFlow("new.example.com", "GET", "/new", nil, []byte("new")))
+	if _, err := tr.DB().Exec(`UPDATE exchanges SET ts=1 WHERE host='old.example.com'`); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := tr.DeleteMatching(PageQuery{Before: time.Now().Add(-time.Hour).Unix(), RespMin: -1, RespMax: -1}, nil); err != nil || n != 1 {
+		t.Fatalf("expired delete=(%d,%v)", n, err)
+	}
+	rows, total, err := tr.Page(PageQuery{RespMin: -1, RespMax: -1}, 0, 10)
+	if err != nil || total != 1 || len(rows) != 1 || rows[0].Host != "new.example.com" {
+		t.Fatalf("remaining traffic=(%v,%d,%v)", rows, total, err)
+	}
+}
+
+func TestDeleteMatchingKeepsSharedBlobUntilLastReference(t *testing.T) {
+	tr, _ := openTraffic(t)
+	body := []byte(strings.Repeat("shared-data-", maxInlineBody/12+1))
+	tr.record(newFlow("a.example.com", "GET", "/one", nil, body, withRespType("application/octet-stream")))
+	tr.record(newFlow("b.example.com", "GET", "/two", nil, body, withRespType("application/octet-stream")))
+	var hash string
+	if err := tr.DB().QueryRow(`SELECT hash FROM blob_refs LIMIT 1`).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	path, err := tr.blobPath(hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := tr.DeleteMatching(PageQuery{Host: "a.example.com", RespMin: -1, RespMax: -1}, nil); err != nil || n != 1 {
+		t.Fatalf("first delete=(%d,%v)", n, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("shared blob removed early: %v", err)
+	}
+	if n, err := tr.DeleteMatching(PageQuery{Host: "b.example.com", RespMin: -1, RespMax: -1}, nil); err != nil || n != 1 {
+		t.Fatalf("second delete=(%d,%v)", n, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("unreferenced blob survived: %v", err)
 	}
 }
 

@@ -54,8 +54,6 @@ import type {
   FindingsPage,
   FindingTraffic,
   FindingTrafficDetail,
-  RepeaterSendRequest,
-  RepeaterSendResponse,
   IntelligencePage,
   IntentAsset,
   InterceptApprovalFilter,
@@ -82,6 +80,8 @@ import type {
   NotificationMeta,
   PromptVar,
   PromptVersion,
+  RepeaterSendRequest,
+  RepeaterSendResponse,
   SessionTokenUsage,
   Settings,
   Severity,
@@ -90,6 +90,7 @@ import type {
   SSProject,
   SSTask,
   Stats,
+  SystemMetrics,
   Task,
   TaskArchive,
   TaskArchivePage,
@@ -118,7 +119,6 @@ import type {
   UsageStats,
   WorkspaceFile,
   WorkspaceListing,
-  SystemMetrics,
 } from "@/lib/types";
 
 /**
@@ -314,6 +314,19 @@ export const api = {
   // 后端应用版本号（release 时由 ldflags 注入，默认 "dev"）。
   health: () => get<{ ok: boolean; service: string; version: string }>("/health"),
   systemMetrics: () => get<SystemMetrics>("/system/metrics"),
+  storageStatus: () =>
+    get<{
+      os: string;
+      arch: string;
+      process_heap_bytes: number;
+      parts: { key: string; name: string; bytes: number; cleanable: boolean }[];
+    }>("/system/storage"),
+  storageCleanup: (category: "memory" | "traffic" | "llm" | "tool") =>
+    post<{ deleted: number }>("/system/storage/cleanup", { category }),
+  recordRetention: () =>
+    get<{ traffic_days: number; llm_days: number; tool_days: number }>("/system/storage/retention"),
+  saveRecordRetention: (days: { traffic_days: number; llm_days: number; tool_days: number }) =>
+    put<{ traffic_days: number; llm_days: number; tool_days: number }>("/system/storage/retention", days),
 
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
@@ -390,11 +403,19 @@ export const api = {
     }),
   taskTemplates: () => get<{ templates: TaskTemplate[] }>("/task-templates").then((r) => arr(r.templates)),
   createTaskTemplate: (
-    input: Pick<TaskTemplate, "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count">,
+    input: Pick<
+      TaskTemplate,
+      "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count"
+    >,
   ) => post<TaskTemplate>("/task-templates", input),
   updateTaskTemplate: (
     id: number,
-    input: Partial<Pick<TaskTemplate, "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count">>,
+    input: Partial<
+      Pick<
+        TaskTemplate,
+        "name" | "description" | "goal" | "remark" | "category_id" | "intercept_rules" | "worker_count"
+      >
+    >,
   ) => patch<TaskTemplate>(`/task-templates/${id}`, input),
   deleteTaskTemplate: (id: number) => del<{ deleted: number }>(`/task-templates/${id}`),
   updateTaskLLMProfiles: (id: string, llmProfileIds: number[], activeLLMProfileId?: number) =>
@@ -990,6 +1011,19 @@ export const api = {
   // Purges every exchange and compacts the index; `reclaimed` is the bytes of
   // index handed back to the filesystem. Evidence bound to findings is kept.
   trafficDeleteAll: () => del<{ deleted: number; reclaimed: number }>(`/traffic/all`),
+  trafficDeleteMatching: (params: {
+    mode: "filter" | "selected";
+    ids?: string[];
+    task_id?: string;
+    host?: string;
+    method?: string;
+    q?: string;
+    body?: string;
+    path?: string;
+    status?: string;
+    resp_min?: string;
+    resp_max?: string;
+  }) => del<{ deleted: number }>(`/traffic/matching`, params),
 
   // ---- app settings (runtime toggles) ----
   intelligence: (scope: "tasks" | "assets", id: string, query: URLSearchParams) =>
@@ -1231,17 +1265,43 @@ export const api = {
     post<{ items: { id: number; ok: boolean; error?: string }[] }>("/conversations/delete/batch", { ids }),
   // Incremental tail: steps after `since` (id ASC) — live poll + post-send fetch.
   conversationMessages: (id: number, since = 0) =>
-    get<{ items: Activity[]; cursor: number; running: boolean; waiting_browser: string; waiting_ahead: number; browser_active: number }>(`/conversations/${id}/messages?since=${since}`).then(
-      (r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running, waitingBrowser: r.waiting_browser ?? "", waitingAhead: r.waiting_ahead ?? 0, browserActive: r.browser_active ?? 0 }),
-    ),
+    get<{
+      items: Activity[];
+      cursor: number;
+      running: boolean;
+      waiting_browser: string;
+      waiting_ahead: number;
+      browser_active: number;
+    }>(`/conversations/${id}/messages?since=${since}`).then((r) => ({
+      items: arr(r.items),
+      cursor: r.cursor ?? 0,
+      running: !!r.running,
+      waitingBrowser: r.waiting_browser ?? "",
+      waitingAhead: r.waiting_ahead ?? 0,
+      browserActive: r.browser_active ?? 0,
+    })),
   // Reverse pagination: the latest `limit` steps (before=0) or the page of older
   // steps ending before id `before`. hasMore = still-older steps exist.
   conversationHistory: (id: number, before = 0, limit = 200) => {
     const q = new URLSearchParams({ limit: String(limit) });
     if (before > 0) q.set("before", String(before));
-    return get<{ items: Activity[]; cursor: number; running: boolean; waiting_browser: string; waiting_ahead: number; browser_active: number; hasMore: boolean }>(
-      `/conversations/${id}/messages?${q.toString()}`,
-    ).then((r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running, waitingBrowser: r.waiting_browser ?? "", waitingAhead: r.waiting_ahead ?? 0, browserActive: r.browser_active ?? 0, hasMore: !!r.hasMore }));
+    return get<{
+      items: Activity[];
+      cursor: number;
+      running: boolean;
+      waiting_browser: string;
+      waiting_ahead: number;
+      browser_active: number;
+      hasMore: boolean;
+    }>(`/conversations/${id}/messages?${q.toString()}`).then((r) => ({
+      items: arr(r.items),
+      cursor: r.cursor ?? 0,
+      running: !!r.running,
+      waitingBrowser: r.waiting_browser ?? "",
+      waitingAhead: r.waiting_ahead ?? 0,
+      browserActive: r.browser_active ?? 0,
+      hasMore: !!r.hasMore,
+    }));
   },
   promoteConversationChrome: (id: number) => post<{ ok: boolean }>(`/conversations/${id}/chrome-priority`, {}),
   conversationMsgDetail: (id: number, seq: number) =>
@@ -1500,6 +1560,8 @@ export const api = {
     if (params?.q) sp.set("q", params.q);
     return get<{ stats: ToolStat[] }>(`/commands/stats?${sp}`);
   },
+  commandsDelete: (params: { mode: "all" | "filter" | "selected"; ids?: number[]; task?: string; q?: string }) =>
+    del<{ deleted: number }>(`/commands`, params),
 
   // ---- LLM records ----
   llmRecords: (params?: { model?: string; session?: string; task?: string; page?: number; size?: number }) => {
@@ -1514,6 +1576,13 @@ export const api = {
   llmRecordDetail: (id: number) => get<LLMRecordDetail>(`/llm/records/${id}`),
   llmTasks: () => get<{ tasks: LLMTask[] }>(`/llm/records/tasks`),
   llmRecordsDeleteTask: (task: string) => del<{ deleted: number }>(`/llm/records?task=${encodeURIComponent(task)}`),
+  llmRecordsDelete: (params: {
+    mode: "all" | "filter" | "selected";
+    ids?: number[];
+    model?: string;
+    session?: string;
+    task?: string;
+  }) => del<{ deleted: number }>(`/llm/records`, params),
   // 按模型聚合本任务的 token 用量（来自常开的 llm_usage 计量账本，逐次调用精确，
   // per-agent 绑定 / 轮询 / 中断消耗都覆盖）。
   tokensByModel: (task: string) =>

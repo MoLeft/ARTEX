@@ -1,18 +1,21 @@
 "use client";
 
 import * as React from "react";
+
 import {
-  RadioIcon,
-  SearchIcon,
+  CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  Loader2Icon,
-  XIcon,
-  Trash2Icon,
   CopyIcon,
-  CheckIcon,
+  Loader2Icon,
+  RadioIcon,
+  SearchIcon,
+  Trash2Icon,
+  XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
+import { HttpPacketSyntax } from "@/components/http-code-block";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,19 +26,18 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { HttpPacketSyntax } from "@/components/http-code-block";
-import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { useListState } from "@/lib/list-state";
-import type { LLMRecordItem, LLMRecordDetail, LLMTask } from "@/lib/types";
+import type { LLMRecordDetail, LLMRecordItem, LLMTask } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 function fmtTime(ts: string) {
   return new Date(ts).toLocaleString("zh-CN", {
@@ -154,7 +156,8 @@ export default function LLMRecordsPage() {
   // Per-task delete (task picker + confirm dialog)
   const [tasks, setTasks] = React.useState<LLMTask[]>([]);
   const [pickedTask, setPickedTask] = useListState("llm-records:task", "");
-  const [deleteOpen, setDeleteOpen] = React.useState(false);
+  const [deleteMode, setDeleteMode] = React.useState<"task" | "all" | "filter" | "selected" | null>(null);
+  const [selectedIds, setSelectedIds] = React.useState<Set<number>>(() => new Set());
   const [deleting, setDeleting] = React.useState(false);
   const [reloadTick, setReloadTick] = React.useState(0); // manual refetch trigger
 
@@ -166,7 +169,9 @@ export default function LLMRecordsPage() {
       .then((s) => {
         if (alive) setRecEnabled(!!s.llm_record);
       })
-      .catch(() => {});
+      .catch(() => {
+        /* Keep the recording toggle at its default. */
+      });
     return () => {
       alive = false;
     };
@@ -201,6 +206,7 @@ export default function LLMRecordsPage() {
   }, [filterKey, setPage]);
 
   // Load list.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick refreshes the list after deletion.
   React.useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -217,33 +223,50 @@ export default function LLMRecordsPage() {
         setRecords(r.records ?? []);
         setTotal(r.total ?? 0);
       })
-      .catch(() => {})
+      .catch(() => {
+        /* Keep the last successful list. */
+      })
       .finally(() => alive && setLoading(false));
     api
       .llmTasks()
       .then((r) => {
         if (alive) setTasks(r.tasks ?? []);
       })
-      .catch(() => {});
+      .catch(() => {
+        /* Keep the last successful task picker. */
+      });
     return () => {
       alive = false;
     };
-  }, [page, size, sessionQ, model, pickedTask]);
+  }, [page, size, sessionQ, model, pickedTask, reloadTick]);
 
-  // Delete every LLM record for the picked task, then refetch.
+  // The server applies the same filters as the list, across all pages.
   const confirmDelete = () => {
+    if (!deleteMode) return;
     setDeleting(true);
-    api
-      .llmRecordsDeleteTask(pickedTask)
-      .then(() => {
-        setDeleteOpen(false);
+    const mode = deleteMode;
+    const request =
+      mode === "task"
+        ? api.llmRecordsDeleteTask(pickedTask)
+        : api.llmRecordsDelete({
+            mode,
+            ids: mode === "selected" ? [...selectedIds] : undefined,
+            model: mode === "filter" ? model : undefined,
+            session: mode === "filter" ? sessionQ : undefined,
+            task: mode === "filter" ? pickedTask : undefined,
+          });
+    request
+      .then((r) => {
+        setDeleteMode(null);
         setSelected(null);
         setDetail(null);
-        setPickedTask("");
+        setSelectedIds(new Set());
+        if (mode === "task") setPickedTask("");
         setPage(0);
         setReloadTick((t) => t + 1);
+        toast.success(`已删除 ${r.deleted} 条 LLM 录制`);
       })
-      .catch(() => {})
+      .catch((e) => toast.error(`删除失败：${(e as Error).message}`))
       .finally(() => setDeleting(false));
   };
 
@@ -261,7 +284,9 @@ export default function LLMRecordsPage() {
       .then((d) => {
         if (alive) setDetail(d);
       })
-      .catch(() => {})
+      .catch(() => {
+        /* Leave the detail empty if loading fails. */
+      })
       .finally(() => {
         if (alive) setDetailLoading(false);
       });
@@ -322,10 +347,37 @@ export default function LLMRecordsPage() {
           className="h-8"
           disabled={!pickedTask || deleting}
           title={pickedTask ? undefined : "先在上方选择任务"}
-          onClick={() => setDeleteOpen(true)}
+          onClick={() => setDeleteMode("task")}
         >
           <Trash2Icon className="size-3.5" />
           删除任务对话
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8"
+          disabled={total === 0 || deleting || (!model && !sessionQ && !pickedTask)}
+          onClick={() => setDeleteMode("filter")}
+        >
+          删除筛选
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          className="h-8"
+          disabled={selectedIds.size === 0 || selectedIds.size > 500 || deleting}
+          onClick={() => setDeleteMode("selected")}
+        >
+          删除所选（{selectedIds.size}）
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 text-destructive"
+          disabled={deleting}
+          onClick={() => setDeleteMode("all")}
+        >
+          清空全部
         </Button>
         <Select value={String(size)} onValueChange={(v) => setSize(Number(v))}>
           <SelectTrigger size="sm" className="w-28">
@@ -395,6 +447,22 @@ export default function LLMRecordsPage() {
             <Table>
               <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      aria-label="选择本页 LLM 录制"
+                      checked={records.length > 0 && records.every((r) => selectedIds.has(r.id))}
+                      onCheckedChange={(checked) =>
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          for (const r of records) {
+                            if (checked === true) next.add(r.id);
+                            else next.delete(r.id);
+                          }
+                          return next;
+                        })
+                      }
+                    />
+                  </TableHead>
                   <TableHead className="w-[130px]">时间</TableHead>
                   <TableHead className="w-[60px]">任务</TableHead>
                   <TableHead className="w-[90px]">Worker</TableHead>
@@ -408,13 +476,13 @@ export default function LLMRecordsPage() {
               <TableBody>
                 {loading && records.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-12 text-center">
+                    <TableCell colSpan={9} className="py-12 text-center">
                       <Loader2Icon className="mx-auto h-5 w-5 animate-spin text-muted-foreground" />
                     </TableCell>
                   </TableRow>
                 ) : records.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-12 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={9} className="py-12 text-center text-sm text-muted-foreground">
                       暂无 LLM 调用记录
                     </TableCell>
                   </TableRow>
@@ -425,6 +493,20 @@ export default function LLMRecordsPage() {
                       className={cn("cursor-pointer", selected?.id === rec.id && "bg-accent hover:bg-accent")}
                       onClick={() => setSelected(rec)}
                     >
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          aria-label={`选择 LLM 录制 ${rec.id}`}
+                          checked={selectedIds.has(rec.id)}
+                          onCheckedChange={(checked) =>
+                            setSelectedIds((prev) => {
+                              const next = new Set(prev);
+                              if (checked === true) next.add(rec.id);
+                              else next.delete(rec.id);
+                              return next;
+                            })
+                          }
+                        />
+                      </TableCell>
                       <TableCell className="text-xs text-muted-foreground tabular-nums">{fmtTime(rec.ts)}</TableCell>
                       <TableCell className="text-xs font-mono text-muted-foreground">
                         {rec.task_id ? `#${rec.task_id}` : "-"}
@@ -565,12 +647,26 @@ export default function LLMRecordsPage() {
         )}
       </div>
 
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+      <AlertDialog
+        open={deleteMode !== null}
+        onOpenChange={(open) => {
+          if (!open && !deleting) setDeleteMode(null);
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除任务「{pickedTask}」的全部 LLM 对话？</AlertDialogTitle>
+            <AlertDialogTitle>
+              {deleteMode === "task"
+                ? `删除任务「${pickedTask}」的全部 LLM 对话？`
+                : deleteMode === "all"
+                  ? "清空全部 LLM 录制？"
+                  : deleteMode === "filter"
+                    ? `删除筛选命中的 ${total} 条 LLM 录制？`
+                    : `删除选中的 ${selectedIds.size} 条 LLM 录制？`}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              将永久删除该任务的所有 LLM 调用记录（含请求/响应原文），此操作不可撤销。
+              将永久删除所选范围的 LLM 请求与响应原文，此操作不可撤销。筛选删除包含所有分页；清空全部忽略当前筛选。Token
+              计量账本不受影响。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

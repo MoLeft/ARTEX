@@ -40,15 +40,16 @@ var BuildVersion = "dev"
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
-	scheduleMu  sync.Mutex
-	m           *Manager
-	engine      *Engine
-	ctx         context.Context
-	dataDir     string
-	browserPool *browserPool
-	metricsMu   sync.Mutex
-	lastCPUUse  uint64
-	lastCPUAt   time.Time
+	scheduleMu    sync.Mutex
+	m             *Manager
+	engine        *Engine
+	ctx           context.Context
+	dataDir       string
+	retentionWake chan struct{}
+	browserPool   *browserPool
+	metricsMu     sync.Mutex
+	lastCPUUse    uint64
+	lastCPUAt     time.Time
 
 	skillDir     string // root directory for skill subdirectories
 	jwtKey       []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
@@ -171,7 +172,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
-		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), credentialWake: make(chan struct{}, 1)}
+		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), credentialWake: make(chan struct{}, 1), retentionWake: make(chan struct{}, 1)}
 	m.SetTaskControlMutex(&s.concMu)
 	s.initSideQuestions()
 	if m.pg != nil {
@@ -279,6 +280,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		// Fill the tool cache for any enabled MCP that has none yet (notably the
 		// seeded browser MCP on first run). Async so it never blocks startup.
 		go s.discoverEmptyMCPsOnStartup()
+		go s.runRecordRetentionLoop()
 		logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
 	}
 	// precedence: persisted DB config > env.
@@ -802,6 +804,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /api/system/metrics", s.systemMetrics)
+	mux.HandleFunc("GET /api/system/storage", s.storageStatus)
+	mux.HandleFunc("POST /api/system/storage/cleanup", s.storageCleanup)
+	mux.HandleFunc("GET /api/system/storage/retention", s.recordRetentionAPI)
+	mux.HandleFunc("PUT /api/system/storage/retention", s.recordRetentionAPI)
 	mux.HandleFunc("GET /api/logs", s.getLogs)
 	mux.HandleFunc("GET /api/logs/history", s.getLogsHistory)
 	mux.HandleFunc("GET /api/logs/stream", s.streamLogs)
@@ -962,10 +968,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/traffic/hosts", s.getTrafficHosts)
 	mux.HandleFunc("DELETE /api/traffic", s.deleteTraffic)
 	mux.HandleFunc("DELETE /api/traffic/hosts", s.deleteTrafficHosts)
+	mux.HandleFunc("DELETE /api/traffic/matching", s.deleteMatchingTraffic)
 	mux.HandleFunc("DELETE /api/traffic/all", s.deleteAllTraffic)
 	mux.HandleFunc("GET /api/traffic/exchange", s.getTrafficExchange)
 	mux.HandleFunc("GET /api/traffic/blob", s.getTrafficBlob)
 	mux.HandleFunc("GET /api/commands", s.pgListCommands)
+	mux.HandleFunc("DELETE /api/commands", s.pgDeleteCommands)
 	mux.HandleFunc("GET /api/commands/stats", s.pgToolStats) // 按工具聚合调用次数
 	mux.HandleFunc("GET /api/llm/records", s.pgListLLMRecords)
 	mux.HandleFunc("DELETE /api/llm/records", s.pgDeleteLLMRecords)
@@ -3559,6 +3567,105 @@ func (s *Server) deleteTrafficHosts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n, err := tr.DeleteHostsExact(hosts)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"deleted": n})
+}
+
+func (s *Server) deleteMatchingTraffic(w http.ResponseWriter, r *http.Request) {
+	tr := s.m.Traffic()
+	if tr == nil {
+		writeErr(w, 404, "traffic disabled")
+		return
+	}
+	var req struct {
+		Mode    string   `json:"mode"`
+		IDs     []string `json:"ids"`
+		TaskID  string   `json:"task_id"`
+		Host    string   `json:"host"`
+		Method  string   `json:"method"`
+		Query   string   `json:"q"`
+		Body    string   `json:"body"`
+		Path    string   `json:"path"`
+		Status  string   `json:"status"`
+		RespMin string   `json:"resp_min"`
+		RespMax string   `json:"resp_max"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "invalid body")
+		return
+	}
+	if req.Mode != "filter" && req.Mode != "selected" {
+		writeErr(w, 400, "invalid delete mode")
+		return
+	}
+	if (req.Mode == "selected" && (len(req.IDs) == 0 || len(req.IDs) > 500)) || (req.Mode == "filter" && len(req.IDs) > 0) {
+		writeErr(w, 400, "invalid selected ids")
+		return
+	}
+	for _, id := range req.IDs {
+		if strings.TrimSpace(id) == "" {
+			writeErr(w, 400, "invalid selected id")
+			return
+		}
+	}
+	if req.Body != "" && len([]rune(strings.TrimSpace(req.Body))) < 3 {
+		writeErr(w, 400, "body filter needs at least 3 characters")
+		return
+	}
+	if status := strings.ToLower(strings.TrimSpace(req.Status)); status != "" {
+		_, err := strconv.Atoi(status)
+		class := len(status) == 3 && status[0] >= '1' && status[0] <= '5' && status[1:] == "xx"
+		if !class && err != nil {
+			writeErr(w, 400, "invalid status filter")
+			return
+		}
+	}
+	parseSize := func(raw string) (int64, error) {
+		if raw == "" {
+			return -1, nil
+		}
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("invalid response size filter")
+		}
+		return n, nil
+	}
+	respMin, err := parseSize(req.RespMin)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	respMax, err := parseSize(req.RespMax)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	f := traffic.PageQuery{Host: req.Host, Method: req.Method, Query: req.Query, Body: req.Body, Path: req.Path,
+		Status: req.Status, RespMin: respMin, RespMax: respMax}
+	if req.TaskID != "" {
+		id, err := strconv.ParseInt(req.TaskID, 10, 64)
+		if err != nil || id <= 0 || s.m.ResolveTask(req.TaskID) == nil {
+			writeErr(w, 404, "task not found")
+			return
+		}
+		f.Hosts, err = s.m.Assets().HostsByTaskWithSources(id)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if len(f.Hosts) == 0 {
+			writeJSON(w, 200, map[string]any{"deleted": 0})
+			return
+		}
+	}
+	if req.Mode == "filter" && req.TaskID == "" && strings.TrimSpace(req.Host) == "" && strings.TrimSpace(req.Method) == "" && strings.TrimSpace(req.Query) == "" && strings.TrimSpace(req.Body) == "" && strings.TrimSpace(req.Path) == "" && strings.TrimSpace(req.Status) == "" && req.RespMin == "" && req.RespMax == "" {
+		writeErr(w, 400, "missing filter")
+		return
+	}
+	n, err := tr.DeleteMatching(f, req.IDs)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return

@@ -7,6 +7,7 @@ import {
   CpuIcon,
   FlaskConicalIcon,
   GlobeIcon,
+  HardDriveIcon,
   KeyboardIcon,
   RadioTowerIcon,
   SearchIcon,
@@ -25,10 +26,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { BrowserMCPState, BrowserPoolStatus, EgressReport, LLMProfile, MCPServer, Settings, WorkerPool } from "@/lib/types";
+import type {
+  BrowserMCPState,
+  BrowserPoolStatus,
+  EgressReport,
+  LLMProfile,
+  MCPServer,
+  Settings,
+  WorkerPool,
+} from "@/lib/types";
 
 import { useEgressIp } from "../../_components/egress-ip-banner";
 import { BasicAuthCard } from "./_components/basic-auth-card";
+import { RuntimeStorageCard } from "./_components/runtime-storage-card";
 import { TOTPCard } from "./_components/totp-card";
 import { UpdateCard } from "./_components/update-card";
 
@@ -253,7 +263,10 @@ export default function SystemSettingsPage() {
   }, [loadBrowserMCPs]);
 
   const loadBrowserStats = React.useCallback(() => {
-    api.browserInstances().then(setBrowserStats).catch(() => setBrowserStats(null));
+    api
+      .browserInstances()
+      .then(setBrowserStats)
+      .catch(() => setBrowserStats(null));
   }, []);
 
   React.useEffect(() => {
@@ -269,8 +282,12 @@ export default function SystemSettingsPage() {
       return;
     }
     setSavingBrowserLimit(kind);
-    api.setSettings({ [kind === "chrome" ? "browser_chrome_max_instances" : "browser_lightpanda_max_instances"]: value })
-      .then(() => { toast.success("浏览器实例上限已保存"); loadBrowserStats(); })
+    api
+      .setSettings({ [kind === "chrome" ? "browser_chrome_max_instances" : "browser_lightpanda_max_instances"]: value })
+      .then(() => {
+        toast.success("浏览器实例上限已保存");
+        loadBrowserStats();
+      })
       .catch((e) => toast.error(String(e)))
       .finally(() => setSavingBrowserLimit(null));
   };
@@ -278,13 +295,18 @@ export default function SystemSettingsPage() {
   const closeBrowserInstance = (id: number) => {
     if (!window.confirm("强制关闭此浏览器会话？正在使用它的 Agent 工具调用可能失败。")) return;
     setClosingBrowser(id);
-    api.closeBrowserInstance(id)
-      .then((result) => { if (result.warning) toast.warning(result.warning); else toast.success("浏览器会话已关闭"); loadBrowserStats(); })
+    api
+      .closeBrowserInstance(id)
+      .then((result) => {
+        if (result.warning) toast.warning(result.warning);
+        else toast.success("浏览器会话已关闭");
+        loadBrowserStats();
+      })
       .catch((e) => toast.error(String(e)))
       .finally(() => setClosingBrowser(null));
   };
 
-  const browserMemory = (bytes: number | null) => bytes === null ? "无法读取" : `${(bytes / 1048576).toFixed(1)} MB`;
+  const browserMemory = (bytes: number | null) => (bytes === null ? "无法读取" : `${(bytes / 1048576).toFixed(1)} MB`);
 
   const applyBrowserMCPState = (states: BrowserMCPState[]) => {
     setMcpServers((current) => {
@@ -436,6 +458,7 @@ export default function SystemSettingsPage() {
 
   const settingCategories = [
     { id: "system", label: "系统与账号", hint: "版本、登录与基础配置", icon: SettingsIcon },
+    { id: "storage", label: "运行和空间", hint: "系统资源、分类清理与保留期限", icon: HardDriveIcon },
     { id: "browser", label: "浏览器 MCP", hint: "Chrome / Lightpanda 与优先级", icon: GlobeIcon },
     { id: "traffic", label: "流量与安全", hint: "流量、代理、截图与 OPSEC", icon: RadioTowerIcon },
     { id: "agent", label: "Agent 行为", hint: "录制、约束与情报", icon: CpuIcon },
@@ -746,6 +769,9 @@ export default function SystemSettingsPage() {
             {isSettingVisible("system", "更新 版本 升级") ? <UpdateCard /> : null}
             {isSettingVisible("system", "基础认证 登录 用户名 密码") ? <BasicAuthCard /> : null}
             {isSettingVisible("system", "TOTP 两步验证 动态码 登录 安全") ? <TOTPCard /> : null}
+            {isSettingVisible("storage", "运行 空间 操作系统 内存 磁盘 分类 清理 保留期限 自动删除") ? (
+              <RuntimeStorageCard />
+            ) : null}
 
             <Card
               className={`${isSettingVisible("traffic", "流量 捕获 traffic proxy HTTP 代理") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
@@ -924,7 +950,9 @@ export default function SystemSettingsPage() {
                         />
                       </div>
                       <div className="mt-3 flex flex-wrap items-center gap-2">
-                        <Label htmlFor={`browser-max-${item.kind}`} className="text-xs">最大会话数</Label>
+                        <Label htmlFor={`browser-max-${item.kind}`} className="text-xs">
+                          最大会话数
+                        </Label>
                         <Input
                           id={`browser-max-${item.kind}`}
                           type="number"
@@ -935,20 +963,61 @@ export default function SystemSettingsPage() {
                           value={browserLimits[item.kind]}
                           onChange={(e) => setBrowserLimits((current) => ({ ...current, [item.kind]: e.target.value }))}
                         />
-                        <Button size="sm" variant="outline" disabled={!loaded || savingBrowserLimit !== null} onClick={() => saveBrowserLimit(item.kind)}>保存上限</Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!loaded || savingBrowserLimit !== null}
+                          onClick={() => saveBrowserLimit(item.kind)}
+                        >
+                          保存上限
+                        </Button>
                         <Badge variant="outline">实验性</Badge>
-                        <span className="text-muted-foreground text-xs">0 为不限；已开启 {stats?.active ?? "—"}，等待 {stats?.waiting ?? "—"}</span>
-                        {item.kind === "lightpanda" && <Badge variant="secondary">共享进程内存 {browserMemory(stats?.shared_memory_bytes ?? null)}</Badge>}
+                        <span className="text-muted-foreground text-xs">
+                          0 为不限；已开启 {stats?.active ?? "—"}，等待 {stats?.waiting ?? "—"}
+                        </span>
+                        {item.kind === "lightpanda" && (
+                          <Badge variant="secondary">
+                            共享进程内存 {browserMemory(stats?.shared_memory_bytes ?? null)}
+                          </Badge>
+                        )}
                       </div>
-                      {item.kind === "lightpanda" && <p className="text-muted-foreground mt-2 text-xs">单个 HTTP 会话没有独立进程内存。设置上限后不可额外创建会话。</p>}
-                      {stats?.instances.map((instance) => <div key={instance.id} className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-xs">
-                        <span>#{instance.id} · {instance.owner}{instance.task_id ? ` · 任务 ${instance.task_id}` : ""}{instance.intent_id ? ` · 意图 ${instance.intent_id}` : ""}{instance.session_id ? ` · 对话 ${instance.session_id}` : ""} · {item.kind === "chrome" ? `进程树 RSS ${browserMemory(instance.memory_bytes)}` : "使用共享服务"}</span>
-                        <Button size="sm" variant="destructive" aria-label={`强制关闭 ${item.title} 会话 #${instance.id}`} disabled={closingBrowser !== null} onClick={() => closeBrowserInstance(instance.id)}>强制关闭</Button>
-                      </div>)}
+                      {item.kind === "lightpanda" && (
+                        <p className="text-muted-foreground mt-2 text-xs">
+                          单个 HTTP 会话没有独立进程内存。设置上限后不可额外创建会话。
+                        </p>
+                      )}
+                      {stats?.instances.map((instance) => (
+                        <div
+                          key={instance.id}
+                          className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-xs"
+                        >
+                          <span>
+                            #{instance.id} · {instance.owner}
+                            {instance.task_id ? ` · 任务 ${instance.task_id}` : ""}
+                            {instance.intent_id ? ` · 意图 ${instance.intent_id}` : ""}
+                            {instance.session_id ? ` · 对话 ${instance.session_id}` : ""} ·{" "}
+                            {item.kind === "chrome"
+                              ? `进程树 RSS ${browserMemory(instance.memory_bytes)}`
+                              : "使用共享服务"}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            aria-label={`强制关闭 ${item.title} 会话 #${instance.id}`}
+                            disabled={closingBrowser !== null}
+                            onClick={() => closeBrowserInstance(instance.id)}
+                          >
+                            强制关闭
+                          </Button>
+                        </div>
+                      ))}
                     </div>
                   );
                 })}
-                <p className="text-muted-foreground py-3 text-xs">上限约束 ARTEX 管理的 Agent 浏览器会话，空位释放后等待的运行会继续；状态每 5 秒更新。工具发现也计入上限。Chrome 内存为进程树 RSS 估算。</p>
+                <p className="text-muted-foreground py-3 text-xs">
+                  上限约束 ARTEX 管理的 Agent 浏览器会话，空位释放后等待的运行会继续；状态每 5
+                  秒更新。工具发现也计入上限。Chrome 内存为进程树 RSS 估算。
+                </p>
                 <div className="flex flex-col gap-2 py-3 last:pb-0">
                   <div className="flex items-center gap-2">
                     <Label htmlFor="browser-mcp-priority" className="text-sm font-medium">
@@ -989,8 +1058,8 @@ export default function SystemSettingsPage() {
                   所有 Agent 的<b>目标流量</b>经此代理出网。支持 <b>http / https / socks5</b>
                   ，可带 <code>user:pass</code> 认证。留空=直连。
                   <br />
-                  开启<b>流量捕获</b>时，它作为记录代理的<b>上游</b>；关闭捕获时，Agent 的 Bash、WebFetch、
-                  自定义 HTTP 工具和内置浏览器经本地出口代理转发。与网络搜索代理、LLM 代理相互独立。
+                  开启<b>流量捕获</b>时，它作为记录代理的<b>上游</b>；关闭捕获时，Agent 的 Bash、WebFetch、 自定义 HTTP
+                  工具和内置浏览器经本地出口代理转发。与网络搜索代理、LLM 代理相互独立。
                   <br />
                   更改代理路由或流量捕获模式时，内置 Lightpanda 会重启，当前 Lightpanda 会话会中断。
                 </CardDescription>
@@ -1156,8 +1225,8 @@ export default function SystemSettingsPage() {
               <CardHeader>
                 <CardTitle className="text-base">LLM 录制</CardTitle>
                 <CardDescription>
-                  保存 Agent 调用模型时的完整请求、响应及错误，供「LLM 录制」页面排查问题。默认关闭；仅记录开启后的调用，
-                  Token 用量统计不受影响。记录可能包含敏感内容。
+                  保存 Agent 调用模型时的完整请求、响应及错误，供「LLM
+                  录制」页面排查问题。默认关闭；仅记录开启后的调用， Token 用量统计不受影响。记录可能包含敏感内容。
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex items-center justify-between gap-4">

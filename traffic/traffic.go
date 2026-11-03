@@ -56,6 +56,7 @@ CREATE INDEX IF NOT EXISTS idx_ex_tmpl ON exchanges(host, url_template);
 CREATE INDEX IF NOT EXISTS idx_ex_ts   ON exchanges(ts);
 CREATE INDEX IF NOT EXISTS idx_ex_status ON exchanges(status);
 CREATE INDEX IF NOT EXISTS idx_ex_resp   ON exchanges(resp_len);
+CREATE INDEX IF NOT EXISTS idx_ex_legacy ON exchanges(path) WHERE path<>'';
 
 CREATE TABLE IF NOT EXISTS exchange_bodies (
   id        TEXT PRIMARY KEY,
@@ -828,6 +829,7 @@ type PageQuery struct {
 	RespMax int64    // maximum resp_len, or -1 when unset
 	Sort    string   // ts | status | resp_len (default ts)
 	Order   string   // asc | desc (default desc)
+	Before  int64    // Unix seconds; only used for retention deletion
 }
 
 // hostScopeClause limits traffic to the hosts attached to a task. Captures
@@ -900,6 +902,39 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	if page < 0 {
 		page = 0
 	}
+	where, args := t.pageWhere(f)
+	if err = t.db.QueryRow(`SELECT COUNT(*) FROM exchanges`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	col := sortColumns[strings.ToLower(strings.TrimSpace(f.Sort))]
+	if col == "" {
+		col = "ts"
+	}
+	dir := "DESC"
+	if strings.EqualFold(strings.TrimSpace(f.Order), "asc") {
+		dir = "ASC"
+	}
+	// id embeds capture timestamp + sequence, so a trailing id DESC makes the order
+	// total and pagination stable even when the sort column has many ties.
+	sel := `SELECT id,ts,host,method,url_template,url,status,content_type,resp_len,path FROM exchanges` +
+		where + ` ORDER BY ` + col + ` ` + dir + `, id DESC LIMIT ? OFFSET ?`
+	qargs := append(append([]any{}, args...), size, page*size)
+	rs, err := t.db.Query(sel, qargs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rs.Close()
+	for rs.Next() {
+		var m ExchangeMeta
+		if err := rs.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType, &m.RespLen, &m.Path); err != nil {
+			return nil, 0, err
+		}
+		rows = append(rows, m)
+	}
+	return rows, total, rs.Err()
+}
+
+func (t *Traffic) pageWhere(f PageQuery) (string, []any) {
 	where := ""
 	var args []any
 	add := func(cond string, vs ...any) {
@@ -932,6 +967,9 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	if f.RespMax >= 0 {
 		add("resp_len<=?", f.RespMax)
 	}
+	if f.Before > 0 {
+		add("ts<?", f.Before)
+	}
 	if s := strings.TrimSpace(f.Query); s != "" {
 		like := "%" + s + "%"
 		const meta = "host LIKE ? OR url LIKE ? OR url_template LIKE ? OR method LIKE ? OR content_type LIKE ? OR CAST(status AS TEXT) LIKE ?"
@@ -952,35 +990,7 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 			add(cond, arg)
 		}
 	}
-	if err = t.db.QueryRow(`SELECT COUNT(*) FROM exchanges`+where, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	col := sortColumns[strings.ToLower(strings.TrimSpace(f.Sort))]
-	if col == "" {
-		col = "ts"
-	}
-	dir := "DESC"
-	if strings.EqualFold(strings.TrimSpace(f.Order), "asc") {
-		dir = "ASC"
-	}
-	// id embeds capture timestamp + sequence, so a trailing id DESC makes the order
-	// total and pagination stable even when the sort column has many ties.
-	sel := `SELECT id,ts,host,method,url_template,url,status,content_type,resp_len,path FROM exchanges` +
-		where + ` ORDER BY ` + col + ` ` + dir + `, id DESC LIMIT ? OFFSET ?`
-	qargs := append(append([]any{}, args...), size, page*size)
-	rs, err := t.db.Query(sel, qargs...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rs.Close()
-	for rs.Next() {
-		var m ExchangeMeta
-		if err := rs.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType, &m.RespLen, &m.Path); err != nil {
-			return nil, 0, err
-		}
-		rows = append(rows, m)
-	}
-	return rows, total, rs.Err()
+	return where, args
 }
 
 // Get returns the full request/response text of one exchange. Bodies come from
@@ -1157,8 +1167,22 @@ func (t *Traffic) DeleteAll() (deleted int64, reclaimed int64, err error) {
 		return 0, 0, err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once committed
-	if deleted, err = t.deleteWhere(tx, `1=1`); err != nil {
+	if err = tx.QueryRow(`SELECT COUNT(*) FROM exchanges`).Scan(&deleted); err != nil {
 		return 0, 0, err
+	}
+	// Dropping emptied tables avoids per-row deletes across bodies, refs and FTS.
+	for _, table := range []string{"ex_fts", "blob_refs", "exchange_bodies", "exchanges"} {
+		if _, err = tx.Exec(`DROP TABLE IF EXISTS ` + table); err != nil {
+			return 0, 0, err
+		}
+	}
+	if _, err = tx.Exec(indexSchema); err != nil {
+		return 0, 0, err
+	}
+	if t.fts {
+		if _, err = tx.Exec(ftsSchema); err != nil {
+			return 0, 0, err
+		}
 	}
 	// Staged before the commit so a filesystem failure can still abort the whole
 	// deletion, exactly as in DeleteHost.
@@ -1180,6 +1204,150 @@ func (t *Traffic) DeleteAll() (deleted int64, reclaimed int64, err error) {
 		return deleted, 0, nil
 	}
 	return deleted, before - t.indexBytes(), nil
+}
+
+// DeleteMatching uses the same filter as Page. ids narrows it to explicitly
+// checked exchanges; nil ids means the entire filtered result, across pages.
+func (t *Traffic) DeleteMatching(f PageQuery, ids []string) (int64, error) {
+	if len(ids) == 0 && len(f.Hosts) == 0 && f.Host == "" && f.Method == "" && f.Query == "" && f.Body == "" && f.Path == "" && f.Status == "" && f.RespMin < 0 && f.RespMax < 0 && f.Before == 0 {
+		return 0, fmt.Errorf("missing delete filter")
+	}
+	t.wmu.Lock()
+	defer t.wmu.Unlock()
+	where, args := t.pageWhere(f)
+	if len(ids) > 0 {
+		placeholders := make([]string, len(ids))
+		for i, id := range ids {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		if where == "" {
+			where = " WHERE "
+		} else {
+			where += " AND "
+		}
+		where += "id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	if where == "" {
+		return 0, fmt.Errorf("missing delete filter")
+	}
+	// Legacy bodies live in one directory per exchange. Stage only matched
+	// directories, never an entire host that still has surviving exchanges.
+	rows, err := t.db.Query(`SELECT path FROM exchanges`+where+` AND path<>''`, args...)
+	if err != nil {
+		return 0, err
+	}
+	var dirs []string
+	for rows.Next() {
+		var rel string
+		if err := rows.Scan(&rel); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		clean := filepath.Clean(rel)
+		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			rows.Close()
+			return 0, fmt.Errorf("invalid legacy path")
+		}
+		dirs = append(dirs, filepath.Join(t.dir, clean))
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, err
+	}
+	tx, err := t.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	// Materialize the match once: otherwise four DELETE statements repeat the
+	// full-text search, and deleting FTS while querying it may lock the table.
+	if _, err := tx.Exec(`CREATE TEMP TABLE _artex_delete_ids(id TEXT PRIMARY KEY) WITHOUT ROWID`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`INSERT INTO _artex_delete_ids SELECT id FROM exchanges`+where, args...); err != nil {
+		return 0, err
+	}
+	refs, err := tx.Query(`SELECT DISTINCT hash FROM blob_refs WHERE exchange_id IN (SELECT id FROM _artex_delete_ids)`)
+	if err != nil {
+		return 0, err
+	}
+	var deletedBlobs []string
+	for refs.Next() {
+		var hash string
+		if err := refs.Scan(&hash); err != nil {
+			refs.Close()
+			return 0, err
+		}
+		deletedBlobs = append(deletedBlobs, hash)
+	}
+	err = refs.Err()
+	refs.Close()
+	if err != nil {
+		return 0, err
+	}
+	n, err := t.deleteWhere(tx, `id IN (SELECT id FROM _artex_delete_ids)`)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`DROP TABLE _artex_delete_ids`); err != nil {
+		return 0, err
+	}
+	stageDir, moves, err := t.stageTrees(dirs)
+	if err != nil {
+		return 0, errors.Join(err, restoreTrees(stageDir, moves))
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, errors.Join(err, restoreTrees(stageDir, moves))
+	}
+	t.reapStage(stageDir)
+	if n > 0 {
+		t.reclaim()
+		if len(dirs) > 0 {
+			err = t.gcBlobs()
+		} else {
+			err = t.gcDeletedBlobs(deletedBlobs)
+		}
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+// gcDeletedBlobs checks only hashes touched by a scoped deletion. The full
+// collector remains necessary when legacy file trees were removed.
+func (t *Traffic) gcDeletedBlobs(hashes []string) error {
+	if len(hashes) == 0 {
+		return nil
+	}
+	var legacy bool
+	if err := t.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exchanges WHERE path<>'' LIMIT 1)`).Scan(&legacy); err != nil {
+		return err
+	}
+	if legacy {
+		return t.gcBlobs()
+	}
+	for _, hash := range hashes {
+		var live bool
+		if err := t.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM blob_refs WHERE hash=? LIMIT 1)`, hash).Scan(&live); err != nil {
+			return err
+		}
+		if live {
+			continue
+		}
+		path, err := t.blobPath(hash)
+		if err != nil {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		_ = os.Remove(filepath.Dir(path))
+		_ = os.Remove(filepath.Dir(filepath.Dir(path)))
+	}
+	return nil
 }
 
 // allHostTrees lists every host directory left by the pre-SQLite layout. Unlike
