@@ -50,6 +50,7 @@ const mockLLMRecords = structuredClone(D.llmRecords);
 const mockCommandRecords = structuredClone(D.commandRecords);
 const mockTraffic = { ...structuredClone(D.traffic), exchanges: structuredClone(D.traffic.exchanges ?? []) };
 let mockRetention = { traffic_days: 0, llm_days: 0, tool_days: 0 };
+let mockOrphanWorkspacePresent = true;
 const mockTaskTemplates = structuredClone(D.taskTemplates);
 const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
@@ -1072,15 +1073,17 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       memory: { used_bytes: 2e9, total_bytes: 8e9, percent: 25 },
       disk: { used_bytes: 18e9, total_bytes: 64e9, percent: 28 },
       data_disk: { used_bytes: 18e9, total_bytes: 64e9, percent: 28 },
+      data_disk_source: "host",
     };
   if (path === "/system/storage")
     return {
-      os: "Linux (demo)",
+      os: "macOS (demo)",
       arch: "arm64",
+      os_scope: "host",
       process_heap_bytes: 128e6,
       parts: [
         { key: "traffic", name: "流量录制", bytes: mockTraffic.exchanges.length * 20e6, cleanable: true },
-        { key: "tasks", name: "任务工作区", bytes: 400e6, cleanable: false },
+        { key: "tasks", name: "任务工作区", bytes: mockOrphanWorkspacePresent ? 400e6 : 320e6, cleanable: false },
         { key: "archives", name: "任务归档", bytes: 150e6, cleanable: false },
         { key: "transcripts", name: "对话转录", bytes: 50e6, cleanable: false },
         { key: "other", name: "其他 ARTEX 文件", bytes: 30e6, cleanable: false },
@@ -1090,6 +1093,16 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       ],
     };
   if (path === "/system/storage/retention" && m === "GET") return mockRetention;
+  if (path === "/system/storage/task-cleanup" && m === "GET")
+    return { groups: mockOrphanWorkspacePresent ? [
+      { path: "tasks/3/scripts", task_id: "3", dir: true, bytes: 80e6, protected_bytes: 0, risk: "safe", reason: "已删除任务，无已知引用" },
+      { path: "tasks/3/findings", task_id: "3", dir: true, bytes: 4e6, protected_bytes: 4e6, risk: "locked", reason: "漏洞证据或直接引用", protected_paths: ["tasks/3/findings"] },
+    ] : [] };
+  if (path === "/system/storage/task-cleanup" && m === "POST") {
+    const paths = b.paths as string[];
+    if (paths.includes("tasks/3/scripts")) mockOrphanWorkspacePresent = false;
+    return { deleted: paths.length, reclaimed_bytes: paths.includes("tasks/3/scripts") ? 80e6 : 0 };
+  }
   if (path === "/system/storage/retention" && m === "PUT") {
     mockRetention = {
       traffic_days: Number(b.traffic_days),
@@ -1813,7 +1826,23 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     };
 
   // ── 工作空间文件管理器（demo：静态示例树；写/建/删走下方写兜底 {ok:true}）──
-  if (path === "/workspace/list") return D.workspaceList(q.get("path") ?? "");
+  if (path === "/workspace/list") {
+    const workspacePath = q.get("path") ?? "";
+    if (workspacePath === "tasks/3/scripts") return { path: workspacePath, entries: [
+      { name: "check.py", path: `${workspacePath}/check.py`, dir: false, size: 12000, mtime: Date.now() },
+      { name: "downloads", path: `${workspacePath}/downloads`, dir: true, size: 0, mtime: Date.now() },
+    ] };
+    if (workspacePath === "tasks/3/scripts/downloads") return { path: workspacePath, entries: [
+      { name: "sample.tgz", path: `${workspacePath}/sample.tgz`, dir: false, size: 80e6, mtime: Date.now() },
+    ] };
+    if (workspacePath === "tasks/3/findings") return { path: workspacePath, entries: [
+      { name: "screenshots", path: `${workspacePath}/screenshots`, dir: true, size: 0, mtime: Date.now() },
+    ] };
+    if (workspacePath === "tasks/3/findings/screenshots") return { path: workspacePath, entries: [
+      { name: "proof.png", path: `${workspacePath}/proof.png`, dir: false, size: 4e6, mtime: Date.now() },
+    ] };
+    return D.workspaceList(workspacePath);
+  }
   if (path === "/workspace/read") return D.workspaceRead(q.get("path") ?? "");
 
   // ── stats ──

@@ -806,6 +806,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/system/metrics", s.systemMetrics)
 	mux.HandleFunc("GET /api/system/storage", s.storageStatus)
 	mux.HandleFunc("POST /api/system/storage/cleanup", s.storageCleanup)
+	mux.HandleFunc("GET /api/system/storage/task-cleanup", s.taskWorkspaceCleanupPreview)
+	mux.HandleFunc("POST /api/system/storage/task-cleanup", s.taskWorkspaceCleanup)
 	mux.HandleFunc("GET /api/system/storage/retention", s.recordRetentionAPI)
 	mux.HandleFunc("PUT /api/system/storage/retention", s.recordRetentionAPI)
 	mux.HandleFunc("GET /api/logs", s.getLogs)

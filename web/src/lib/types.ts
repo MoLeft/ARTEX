@@ -1402,6 +1402,7 @@ export interface SystemMetrics {
   memory: SystemMetricValue;
   disk: SystemMetricValue;
   data_disk: SystemMetricValue;
+  data_disk_source?: "host" | "container_mount";
 }
 
 // ---- Intercept Rules ----

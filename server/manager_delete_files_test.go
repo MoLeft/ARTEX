@@ -119,6 +119,23 @@ func TestDeleteTaskFilesMissingTargetsIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestStageTaskFilesWithoutExplorationKeepsTranscripts(t *testing.T) {
+	dataDir := t.TempDir()
+	workspace := filepath.Join(dataDir, "tasks", "77")
+	transcript := filepath.Join(dataDir, "transcripts", "exp0-main.jsonl")
+	createDeleteFixture(t, dataDir, filepath.Join("tasks", "77"), true)
+	createDeleteFixture(t, dataDir, filepath.Join("transcripts", "exp0-main.jsonl"), false)
+	stage, err := stageTaskFiles(dataDir, "77", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stage.commit(); err != nil {
+		t.Fatal(err)
+	}
+	assertPathMissing(t, workspace)
+	assertPathExists(t, transcript)
+}
+
 func TestStageTaskFilesRollbackRestoresWorkspaceAndTranscripts(t *testing.T) {
 	dataDir := t.TempDir()
 	paths := []string{

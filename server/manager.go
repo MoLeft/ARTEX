@@ -2188,7 +2188,6 @@ type taskFileDeleteStage struct {
 // a same-filesystem staging directory. The trailing dash in the transcript
 // prefix is significant: exploration 12 must not match exploration 123.
 func stageTaskFiles(dataDir, taskID string, explorationID int64) (*taskFileDeleteStage, error) {
-	stage := &taskFileDeleteStage{}
 	var targets []string
 	taskDir := filepath.Join(dataDir, "tasks", taskID)
 	if _, err := os.Lstat(taskDir); err == nil {
@@ -2197,22 +2196,29 @@ func stageTaskFiles(dataDir, taskID string, explorationID int64) (*taskFileDelet
 		return nil, err
 	}
 
-	transcriptDir := filepath.Join(dataDir, "transcripts")
-	entries, err := os.ReadDir(transcriptDir)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return nil, err
+	if explorationID > 0 {
+		transcriptDir := filepath.Join(dataDir, "transcripts")
+		entries, err := os.ReadDir(transcriptDir)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return nil, err
+			}
+			entries = nil
 		}
-		entries = nil
-	}
-	prefix := fmt.Sprintf("exp%d-", explorationID)
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasPrefix(name, prefix) || (!entry.IsDir() && !strings.HasSuffix(name, ".jsonl")) {
-			continue
+		prefix := fmt.Sprintf("exp%d-", explorationID)
+		for _, entry := range entries {
+			name := entry.Name()
+			if !strings.HasPrefix(name, prefix) || (!entry.IsDir() && !strings.HasSuffix(name, ".jsonl")) {
+				continue
+			}
+			targets = append(targets, filepath.Join(transcriptDir, name))
 		}
-		targets = append(targets, filepath.Join(transcriptDir, name))
 	}
+	return stageTaskPaths(dataDir, taskID, targets)
+}
+
+func stageTaskPaths(dataDir, taskID string, targets []string) (*taskFileDeleteStage, error) {
+	stage := &taskFileDeleteStage{}
 	if len(targets) == 0 {
 		stage.done = true
 		return stage, nil
@@ -2222,10 +2228,11 @@ func stageTaskFiles(dataDir, taskID string, explorationID int64) (*taskFileDelet
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return nil, err
 	}
-	stage.stageDir, err = os.MkdirTemp(parent, "task-"+taskID+"-")
+	stageDir, err := os.MkdirTemp(parent, "task-"+taskID+"-")
 	if err != nil {
 		return nil, err
 	}
+	stage.stageDir = stageDir
 	for _, source := range targets {
 		staged := filepath.Join(stage.stageDir, fmt.Sprintf("%d-%s", len(stage.moves), filepath.Base(source)))
 		if err := os.Rename(source, staged); err != nil {
