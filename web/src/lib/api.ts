@@ -155,7 +155,14 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers as Record<string, string> | undefined),
     },
   });
-  if (r.status === 401 && path !== "/auth/login") {
+  if (r.status === 403 && typeof window !== "undefined") {
+    const payload = await r.clone().json().catch(() => ({})) as { code?: string };
+    if (payload.code === "ip_blocked") {
+      window.location.href = "/blocked";
+      throw new Error("当前 IP 不在白名单内");
+    }
+  }
+  if (r.status === 401 && !["/auth/login", "/auth/totp", "/auth/sessions/revoke-others", "/settings/passkeys/register/begin"].includes(path) && !path.startsWith("/auth/passkey/login/finish?") && !path.startsWith("/settings/passkeys/register/finish?")) {
     if (typeof window !== "undefined") {
       localStorage.removeItem("artex_token");
       document.cookie = "artex_token=; path=/; max-age=0";
@@ -335,8 +342,14 @@ export const api = {
 
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
-  login: (username: string, password: string, totp: string) =>
-    post<{ token: string }>("/auth/login", { username, password, totp }),
+  login: (username: string, password: string) =>
+    post<{ token?: string; totp_required?: boolean; pending_token?: string }>("/auth/login", { username, password }),
+  finishTOTP: (pendingToken: string, code: string) => post<{ token: string }>("/auth/totp", { pending_token: pendingToken, code }),
+  passkeyLoginBegin: () => post<{ challenge_id: string; options: { publicKey: Record<string, unknown> } }>("/auth/passkey/login/begin", {}),
+  passkeyLoginFinish: (challengeId: string, credential: Record<string, unknown>) =>
+    post<{ token?: string; totp_required?: boolean; pending_token?: string }>(`/auth/passkey/login/finish?challenge_id=${encodeURIComponent(challengeId)}`, credential),
+  sessions: () => get<{ count: number; sessions: { id: string; user_agent: string; ip: string; factor: string; created_at: string; last_seen_at: string; current: boolean }[] }>("/auth/sessions"),
+  revokeOtherSessions: (code: string) => post<{ revoked: number }>("/auth/sessions/revoke-others", { code }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
@@ -1052,6 +1065,15 @@ export const api = {
   enableTOTP: (password: string, secret: string, code: string) =>
     put<{ enabled: boolean }>("/settings/totp", { password, secret, code }),
   disableTOTP: (password: string, code: string) => del<{ enabled: boolean }>("/settings/totp", { password, code }),
+  ipWhitelist: () => get<{ enabled: boolean; cidrs: string[]; current_ip: string }>("/settings/ip-whitelist"),
+  saveIPWhitelist: (enabled: boolean, cidrs: string[]) => put<{ enabled: boolean; cidrs: string[]; current_ip: string }>("/settings/ip-whitelist", { enabled, cidrs }),
+  loginFailureNotify: () => get<{ enabled: boolean }>("/settings/login-failure-notify"),
+  saveLoginFailureNotify: (enabled: boolean) => put<{ enabled: boolean }>("/settings/login-failure-notify", { enabled }),
+  passkeys: () => get<{ origin: string; passkeys: { id: string; remark: string; created_at: string; last_used_at: string | null }[] }>("/settings/passkeys"),
+  passkeyRegisterBegin: (remark: string, password: string, code: string) => post<{ challenge_id: string; options: { publicKey: Record<string, unknown> } }>("/settings/passkeys/register/begin", { remark, password, code }),
+  passkeyRegisterFinish: (challengeId: string, credential: Record<string, unknown>) => post<{ ok: boolean }>(`/settings/passkeys/register/finish?challenge_id=${encodeURIComponent(challengeId)}`, credential),
+  updatePasskey: (id: string, remark: string) => put<{ ok: boolean }>(`/settings/passkeys/${encodeURIComponent(id)}`, { remark }),
+  deletePasskey: (id: string) => del<{ ok: boolean }>(`/settings/passkeys/${encodeURIComponent(id)}`),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
   // 浏览器 MCP（Chrome / Lightpanda）：按普通 MCP 行创建/启停，状态以 MCP 列表为准。
   setBrowserMCP: (kind: "chrome" | "lightpanda", enabled: boolean) =>

@@ -8,11 +8,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/Autumn-27/artex/config"
 	"github.com/Autumn-27/artex/selfupdate"
 	"github.com/Autumn-27/artex/server"
+	"github.com/pires/go-proxyproto"
 )
 
 // version is the build version, injected at release time via
@@ -125,7 +128,25 @@ func run() int {
 
 	go func() {
 		log.Printf("ARTEX %s backend listening on %s (data=%s, workers=%d)", version, *addr, *dataDir, mgr.Workers())
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		listener, err := net.Listen("tcp", *addr)
+		if err != nil {
+			log.Fatalf("listen: %v", err)
+		}
+		if os.Getenv("ARTEX_PROXY_PROTOCOL") == "1" {
+			// The host port must be loopback-only: a public listener would let clients forge PROXY headers.
+			ranges := []string{"127.0.0.0/8", "::1/128"}
+			for _, cidr := range strings.Split(os.Getenv("ARTEX_TRUSTED_PROXY_CIDRS"), ",") {
+				if cidr = strings.TrimSpace(cidr); cidr != "" {
+					ranges = append(ranges, cidr)
+				}
+			}
+			policy, err := proxyproto.PolicyFromRanges(ranges, proxyproto.SKIP, proxyproto.USE)
+			if err != nil {
+				log.Fatalf("proxy protocol policy: %v", err)
+			}
+			listener = &proxyproto.Listener{Listener: listener, ConnPolicy: policy, ReadHeaderTimeout: 5 * time.Second}
+		}
+		if err := httpSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
 		}
 	}()

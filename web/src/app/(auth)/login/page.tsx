@@ -4,22 +4,20 @@ import { useEffect, useRef, useState } from "react";
 
 import { useRouter } from "next/navigation";
 
-import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { AlertTriangle, ShieldCheck } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
 import { auth } from "@/lib/auth";
+import { getPasskey } from "@/lib/passkey";
 
 export default function LoginPage() {
   const router = useRouter();
   const [password, setPassword] = useState("");
-  const [totp, setTotp] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
@@ -71,14 +69,37 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const { token } = await api.login("ARTEX", password, totp);
-      auth.setToken(token);
-      window.location.replace("/function/tasks");
+      finishFirstFactor(await api.login("ARTEX", password));
     } catch (e) {
       setError((e as Error).message || "登录失败");
     } finally {
       setLoading(false);
     }
+  }
+
+  function finishFirstFactor(result: { token?: string; totp_required?: boolean; pending_token?: string }) {
+    if (result.totp_required && result.pending_token) {
+      sessionStorage.setItem("artex_pending_totp", result.pending_token);
+      window.location.replace("/totp");
+    } else if (result.token) {
+      auth.setToken(result.token);
+      window.location.replace("/function/tasks");
+    } else {
+      throw new Error("登录响应不完整");
+    }
+  }
+
+  async function handlePasskey() {
+    if (!agreed) { setError("请先阅读并同意《使用须知》"); return; }
+    setLoading(true);
+    setError("");
+    try {
+      const { challenge_id, options } = await api.passkeyLoginBegin();
+      const credential = await getPasskey(options);
+      finishFirstFactor(await api.passkeyLoginFinish(challenge_id, credential));
+    } catch (e) {
+      setError((e as Error).message || "通行密钥登录失败");
+    } finally { setLoading(false); }
   }
 
   if (checking) {
@@ -126,24 +147,6 @@ export default function LoginPage() {
                 autoComplete="current-password"
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="totp">TOTP 验证码</Label>
-              <InputOTP
-                id="totp"
-                maxLength={6}
-                pattern={REGEXP_ONLY_DIGITS}
-                value={totp}
-                onChange={setTotp}
-                autoComplete="one-time-code"
-              >
-                <InputOTPGroup>
-                  {Array.from({ length: 6 }, (_, index) => (
-                    <InputOTPSlot key={index} index={index} />
-                  ))}
-                </InputOTPGroup>
-              </InputOTP>
-              <p className="text-xs text-muted-foreground">未启用 TOTP 时可留空</p>
-            </div>
             <div className="flex items-start gap-2">
               <Checkbox
                 id="agree-terms"
@@ -165,6 +168,9 @@ export default function LoginPage() {
             {error && <p className="text-sm text-destructive">{error}</p>}
             <Button type="submit" className="w-full" disabled={loading || !password || !agreed}>
               {loading ? "登录中..." : "登录"}
+            </Button>
+            <Button type="button" variant="outline" className="w-full" disabled={loading || !agreed} onClick={() => void handlePasskey()}>
+              使用通行密钥登录
             </Button>
           </form>
         </div>

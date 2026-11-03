@@ -130,19 +130,21 @@ func (n *Notifier) step(ctx context.Context) {
 		log.Printf("[notify] 分派事件失败: %v", err)
 		return
 	}
-	if quiet.Contains(time.Now()) {
-		return
-	}
 	channels, err := n.pg.ListNotificationChannels(ctx)
 	if err != nil {
 		log.Printf("[notify] 读取渠道失败: %v", err)
 		return
 	}
 	baseURL := n.publicBaseURL()
+	quietNow := quiet.Contains(time.Now())
 	for _, ch := range channels {
 		if !ch.IsEnabled() {
 			continue
 		}
+		if due, err := n.pg.SecurityDeliveryDue(ctx, ch.ID); err == nil && due {
+			if allow := n.takeTokens(ch.ID, ch.RatePerMin, notifyMaxSendsPerChannelPerTick, time.Now()); allow > 0 { n.stepSecurity(ctx, ch, allow, baseURL) }
+		} else if err != nil { log.Printf("[notify] 判断安全事件失败 channel=%d: %v", ch.ID, err) }
+		if quietNow { continue }
 		// 令牌桶的计量单位是**消息条数**（等价于 HTTP 请求数），不是漏洞条数。
 		// 实时模式下两者相同（一条漏洞一条消息）；汇总模式下一整批漏洞合成
 		// 一条消息，所以只消耗一个令牌。
@@ -208,6 +210,17 @@ func (n *Notifier) stepRealtime(ctx context.Context, ch *db.NotificationChannel,
 	if len(deliveries) == 0 {
 		return
 	}
+	n.sendRealtimeDeliveries(ctx, ch, deliveries, baseURL)
+}
+
+func (n *Notifier) stepSecurity(ctx context.Context, ch *db.NotificationChannel, allow int, baseURL string) {
+	deliveries, err := n.pg.ClaimSecurityDeliveries(ctx, ch.ID, allow, notifyLease)
+	if err != nil { log.Printf("[notify] 领取安全事件失败 channel=%d: %v", ch.ID, err); return }
+	n.sendRealtimeDeliveries(ctx, ch, deliveries, baseURL)
+}
+
+func (n *Notifier) sendRealtimeDeliveries(ctx context.Context, ch *db.NotificationChannel, deliveries []*db.NotificationDelivery, baseURL string) {
+	if len(deliveries) == 0 { return }
 	channel, cfg, ok := n.adapt(ch)
 	if !ok {
 		_ = n.pg.FailDeliveries(ctx, deliveryIDs(deliveries), fmt.Sprintf("渠道类型 %q 未注册", ch.Kind))
@@ -479,7 +492,7 @@ func (n *Notifier) itemFor(ctx context.Context, snap notify.Snapshot, baseURL st
 		FromStatus: snap.FromStatus,
 		ToStatus:   snap.ToStatus,
 	}
-	if baseURL != "" {
+	if baseURL != "" && snap.FindingID > 0 {
 		// 详情页路由见 web/src/app/(main)/function/findings/detail/page.tsx，
 		// 它从 query 参数 id 读取漏洞 id。
 		item.DetailURL = fmt.Sprintf("%s/function/findings/detail?id=%d", baseURL, snap.FindingID)

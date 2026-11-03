@@ -79,7 +79,7 @@ export function BasicAuthCard() {
                 disabled={!loaded || saving}
               />
             </Field>
-            <Field>
+            {enabled && <Field>
               <FieldLabel htmlFor="basic-auth-username">验证用户名</FieldLabel>
               <Input
                 id="basic-auth-username"
@@ -91,8 +91,8 @@ export function BasicAuthCard() {
                 placeholder="独立于 ARTEX 登录账号"
               />
               <FieldDescription>不能包含冒号，最长 128 字节。</FieldDescription>
-            </Field>
-            <Field>
+            </Field>}
+            {enabled && <Field>
               <FieldLabel htmlFor="basic-auth-password">验证密码</FieldLabel>
               <Input
                 id="basic-auth-password"
@@ -105,10 +105,10 @@ export function BasicAuthCard() {
                 placeholder={passwordSet ? "已设置，留空保持原密码" : "至少 8 位，最多 72 字节"}
               />
               <FieldDescription>与 ARTEX 登录密码独立。公网访问请使用 HTTPS。</FieldDescription>
-            </Field>
-            <FieldDescription>
+            </Field>}
+            {enabled && <FieldDescription>
               保存不会中断当前浏览器访问。可用无痕窗口检查验证弹窗；浏览器可能缓存凭据。关闭后保留账号密码，便于再次开启。
-            </FieldDescription>
+            </FieldDescription>}
             {error ? (
               <p role="alert" className="text-destructive text-sm">
                 {error}

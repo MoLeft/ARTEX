@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
-const AUTH_PAGES = ["/login", "/setup"];
+const AUTH_PAGES = ["/login", "/setup", "/totp", "/blocked"];
 
 export async function proxy(request: NextRequest) {
   // Mock demo：无真实登录，放行所有页面（客户端 auth 守卫也会放行）。
@@ -62,7 +62,7 @@ export async function proxy(request: NextRequest) {
   }
 
   // 已登录时访问登录/初始化页 → 跳转主界面
-  if (token && isAuthPage) {
+  if (token && ["/login", "/setup", "/totp"].includes(pathname)) {
     return finish(NextResponse.redirect(new URL("/function/tasks", request.url)));
   }
 
