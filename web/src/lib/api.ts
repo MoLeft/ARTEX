@@ -162,7 +162,7 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
       throw new Error("当前 IP 不在白名单内");
     }
   }
-  if (r.status === 401 && !["/auth/login", "/auth/totp", "/auth/sessions/revoke-others", "/settings/passkeys/register/begin"].includes(path) && !path.startsWith("/auth/passkey/login/finish?") && !path.startsWith("/settings/passkeys/register/finish?")) {
+  if (r.status === 401 && !["/auth/login", "/auth/totp", "/auth/sessions/revoke-others", "/settings/passkeys/register/begin"].includes(path) && !path.startsWith("/auth/passkey/login/finish?") && !path.startsWith("/settings/passkeys/register/finish?") && !(path.startsWith("/auth/sessions/") && path.endsWith("/revoke")) && !(["/settings/ip-whitelist", "/settings/basic-auth", "/settings/login-failure-notify"].includes(path) && init?.method === "PUT") && !(path.startsWith("/settings/passkeys/") && ["PUT", "DELETE"].includes(init?.method ?? ""))) {
     if (typeof window !== "undefined") {
       localStorage.removeItem("artex_token");
       document.cookie = "artex_token=; path=/; max-age=0";
@@ -349,7 +349,7 @@ export const api = {
   passkeyLoginFinish: (challengeId: string, credential: Record<string, unknown>) =>
     post<{ token?: string; totp_required?: boolean; pending_token?: string }>(`/auth/passkey/login/finish?challenge_id=${encodeURIComponent(challengeId)}`, credential),
   sessions: () => get<{ count: number; sessions: { id: string; user_agent: string; ip: string; factor: string; created_at: string; last_seen_at: string; current: boolean }[] }>("/auth/sessions"),
-  revokeOtherSessions: (code: string) => post<{ revoked: number }>("/auth/sessions/revoke-others", { code }),
+  revokeSession: (id: string, code: string) => post<{ revoked: number }>(`/auth/sessions/${encodeURIComponent(id)}/revoke`, { code }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
@@ -1058,7 +1058,7 @@ export const api = {
     ),
   settings: () => get<Settings>(`/settings`),
   basicAuthSettings: () => get<{ enabled: boolean; username: string; password_set: boolean }>("/settings/basic-auth"),
-  setBasicAuthSettings: (settings: { enabled: boolean; username: string; password: string }) =>
+  setBasicAuthSettings: (settings: { enabled: boolean; username: string; password: string; code?: string }) =>
     put<{ enabled: boolean; username: string; password_set: boolean }>("/settings/basic-auth", settings),
   totpSettings: () => get<{ enabled: boolean }>("/settings/totp"),
   setupTOTP: () => post<{ secret: string; uri: string }>("/settings/totp/setup"),
@@ -1066,14 +1066,14 @@ export const api = {
     put<{ enabled: boolean }>("/settings/totp", { password, secret, code }),
   disableTOTP: (password: string, code: string) => del<{ enabled: boolean }>("/settings/totp", { password, code }),
   ipWhitelist: () => get<{ enabled: boolean; cidrs: string[]; current_ip: string }>("/settings/ip-whitelist"),
-  saveIPWhitelist: (enabled: boolean, cidrs: string[]) => put<{ enabled: boolean; cidrs: string[]; current_ip: string }>("/settings/ip-whitelist", { enabled, cidrs }),
+  saveIPWhitelist: (enabled: boolean, cidrs: string[], code = "") => put<{ enabled: boolean; cidrs: string[]; current_ip: string }>("/settings/ip-whitelist", { enabled, cidrs, code }),
   loginFailureNotify: () => get<{ enabled: boolean }>("/settings/login-failure-notify"),
-  saveLoginFailureNotify: (enabled: boolean) => put<{ enabled: boolean }>("/settings/login-failure-notify", { enabled }),
+  saveLoginFailureNotify: (enabled: boolean, code = "") => put<{ enabled: boolean }>("/settings/login-failure-notify", { enabled, code }),
   passkeys: () => get<{ origin: string; passkeys: { id: string; remark: string; created_at: string; last_used_at: string | null }[] }>("/settings/passkeys"),
   passkeyRegisterBegin: (remark: string, password: string, code: string) => post<{ challenge_id: string; options: { publicKey: Record<string, unknown> } }>("/settings/passkeys/register/begin", { remark, password, code }),
   passkeyRegisterFinish: (challengeId: string, credential: Record<string, unknown>) => post<{ ok: boolean }>(`/settings/passkeys/register/finish?challenge_id=${encodeURIComponent(challengeId)}`, credential),
-  updatePasskey: (id: string, remark: string) => put<{ ok: boolean }>(`/settings/passkeys/${encodeURIComponent(id)}`, { remark }),
-  deletePasskey: (id: string) => del<{ ok: boolean }>(`/settings/passkeys/${encodeURIComponent(id)}`),
+  updatePasskey: (id: string, remark: string, code = "") => put<{ ok: boolean }>(`/settings/passkeys/${encodeURIComponent(id)}`, { remark, code }),
+  deletePasskey: (id: string, code = "") => del<{ ok: boolean }>(`/settings/passkeys/${encodeURIComponent(id)}`, { code }),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
   // 浏览器 MCP（Chrome / Lightpanda）：按普通 MCP 行创建/启停，状态以 MCP 列表为准。
   setBrowserMCP: (kind: "chrome" | "lightpanda", enabled: boolean) =>
@@ -1618,12 +1618,10 @@ export const api = {
   // ---- 一键更新 ----
   // 检查以后端为准：下载是后端做的，浏览器能连 GitHub 而服务器连不上的情况很常见
   // （服务器在内网、代理只配在浏览器上），那时点更新必然失败。
-  // 后端对 GitHub 的查询结果有 30 分钟缓存（未认证的 GitHub API 是 60 次/小时/IP，
-  // 顶栏每次整页加载都会查一次，不缓存会很快耗光配额）。force=true 强制回源，
-  // 留给用户显式点「检查更新」时用。
+  // 进入网页和手动检查都传 force=true 回源，避免刚发布的版本被后端缓存遮住。
   getUpdateSettings: () => get<UpdateSettings>("/update/settings"),
   saveUpdateSettings: (settings: UpdateSettings) => put<UpdateSettings>("/update/settings", settings),
-  checkUpdate: (force = false) => get<UpdateCheck>(`/update/check${force ? "?force=1" : ""}`),
+  checkUpdate: (force = false) => http<UpdateCheck>(`/update/check${force ? "?force=1" : ""}`, { cache: "no-store" }),
   // 202 即返回，实际下载在后台跑，进度走 /api/update/stream。
   applyUpdate: () => post<{ ok: boolean; target: string }>(`/update/apply`),
   rollbackUpdate: () => post<{ ok: boolean }>(`/update/rollback`),

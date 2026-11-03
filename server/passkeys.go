@@ -463,6 +463,17 @@ func (s *Server) updatePasskey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "通行密钥 ID 无效")
 		return
 	}
+	var req struct {
+		Remark string `json:"remark"`
+		Code   string `json:"code"`
+	}
+	if decode(r, &req) != nil {
+		writeErr(w, 400, "请求格式错误")
+		return
+	}
+	if !s.verifySettingsTOTP(w, r, req.Code) {
+		return
+	}
 	if r.Method == http.MethodDelete {
 		result, err := s.m.pg.ExecContext(r.Context(), `DELETE FROM auth_passkeys WHERE id=$1`, id)
 		if err != nil {
@@ -476,10 +487,7 @@ func (s *Server) updatePasskey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true})
 		return
 	}
-	var req struct {
-		Remark string `json:"remark"`
-	}
-	if decode(r, &req) != nil || strings.TrimSpace(req.Remark) == "" || len(req.Remark) > 100 {
+	if strings.TrimSpace(req.Remark) == "" || len(req.Remark) > 100 {
 		writeErr(w, 400, "备注不能为空且不能超过 100 字节")
 		return
 	}

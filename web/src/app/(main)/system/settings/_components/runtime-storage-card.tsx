@@ -127,20 +127,20 @@ export function RuntimeStorageCard() {
               读取失败：{error}
             </p>
           ) : null}
-          <div className="grid gap-3 text-sm sm:grid-cols-3">
+          <div className="grid gap-3 text-sm" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 20rem), 1fr))" }}>
             <div className="flex items-center justify-between gap-2 rounded-md border p-3">
-              <div><div>操作系统 / 处理器</div><strong>{status ? `${status.os} / ${status.arch}` : "读取中…"}</strong><p className="text-xs text-muted-foreground">{status?.os_scope === "host" ? "宿主机系统" : "容器系统"} · 容器处理器使用率</p></div>
+              <div className="min-w-0 flex-1"><div>操作系统 / 处理器</div><strong className="break-words">{status ? `${status.os} / ${status.arch}` : "读取中…"}</strong><p className="text-xs text-muted-foreground">{status?.os_scope === "host" ? "宿主机系统" : "容器系统"} · 容器处理器使用率</p></div>
               <UsageRing percent={metrics?.cpu.percent ?? 0} label="处理器使用率" color="#2563eb" />
             </div>
             <div className="flex items-center justify-between gap-2 rounded-md border p-3">
-              <div><div>运行内存</div><strong>{metrics?.memory.total_bytes ? `${bytes(metrics.memory.used_bytes)} / ${bytes(metrics.memory.total_bytes)}` : "不可用"}</strong>
+              <div className="min-w-0 flex-1"><div>运行内存</div><strong className="break-words">{metrics?.memory.total_bytes ? `${bytes(metrics.memory.used_bytes)} / ${bytes(metrics.memory.total_bytes)}` : "不可用"}</strong>
                 <p className="text-xs text-muted-foreground">ARTEX 进程堆：{bytes(status?.process_heap_bytes ?? 0)}</p>
                 <Button variant="outline" size="sm" className="mt-2" disabled={busy} onClick={() => void optimizeMemory()}>优化内存</Button>
               </div>
               <UsageRing percent={metrics?.memory.percent ?? 0} label="运行内存使用率" color="#14b8a6" />
             </div>
             <div className="flex items-center justify-between gap-2 rounded-md border p-3">
-              <div><div>储存空间</div><strong>{hostStorage && metrics?.data_disk.total_bytes ? `${storageBytes(metrics.data_disk.used_bytes)} / ${storageBytes(metrics.data_disk.total_bytes)}` : "宿主机容量待接入"}</strong>
+              <div className="min-w-0 flex-1"><div>储存空间</div><strong className="break-words">{hostStorage && metrics?.data_disk.total_bytes ? `${storageBytes(metrics.data_disk.used_bytes)} / ${storageBytes(metrics.data_disk.total_bytes)}` : "宿主机容量待接入"}</strong>
                 <p className="text-xs text-muted-foreground">{hostStorage && metrics ? `可用：${storageBytes(Math.max(0, metrics.data_disk.total_bytes - metrics.data_disk.used_bytes))} · 宿主机` : "容器挂载容量不代表物理硬盘"}</p>
                 <Button variant="outline" size="sm" className="mt-2" onClick={() => setCleanerOpen(true)}>清理空间</Button>
               </div>

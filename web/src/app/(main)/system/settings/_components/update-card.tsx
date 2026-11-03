@@ -74,12 +74,11 @@ export function UpdateCard() {
 
   React.useEffect(() => () => streamRef.current?.close(), []);
 
-  // quiet 同时决定要不要绕过后端缓存：进页面时的自动检查用缓存（顶栏刚查过），
-  // 用户手动点「检查更新」则强制回源，否则刚发布的版本要等缓存过期才看得到。
+  // 进入设置页和手动检查都回源，避免刚发布的版本被后端缓存遮住。
   const check = React.useCallback((quiet = false) => {
     setChecking(true);
     api
-      .checkUpdate(!quiet)
+      .checkUpdate(true)
       .then((r) => {
         setInfo(r);
         if (!quiet) {

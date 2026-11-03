@@ -6,53 +6,99 @@ import Link from "next/link";
 
 import { ArrowUpCircleIcon } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { api } from "@/lib/api";
+import type { UpdateCheck } from "@/lib/types";
 
-/**
- * 顶栏的"有新版本"提示：整页加载时查一次，有更新就在版本号旁边亮出来，
- * 点击直达系统配置页的「版本与更新」卡片。
- *
- * 后端对 GitHub 的查询结果有 30 分钟缓存，所以这里每次挂载都查一次是安全的
- * ——未认证的 GitHub API 只有 60 次/小时/IP，没有那层缓存的话，多开几个标签页
- * 就会把配额耗光，之后真想更新反而查不动。
- *
- * 查询失败一律静默：顶栏不是报错的地方，用户进设置页点「检查更新」会看到原因。
- */
-export function UpdateBadge() {
-  const [latest, setLatest] = React.useState("");
+const SKIPPED_VERSION = "artex_skipped_update_version";
+
+export function UpdateBadge({ hideBadge = false }: { hideBadge?: boolean }) {
+  const [info, setInfo] = React.useState<UpdateCheck | null>(null);
+  const [open, setOpen] = React.useState(false);
+  const lastCheck = React.useRef(0);
 
   React.useEffect(() => {
     let alive = true;
-    api
-      .checkUpdate()
-      .then((r) => {
-        // has_update 已经包含了"版本号可比较"的判断，开发构建不会亮这个提示。
-        if (alive && r.has_update && r.latest) setLatest(r.latest);
-      })
-      .catch(() => {
-        // 静默：没网 / GitHub 限流都不该在顶栏弹错误。
-      });
+    const check = () => {
+      lastCheck.current = Date.now();
+      // 每次进入网页回源。服务端的 30 分钟缓存只供其他非强制调用使用。
+      api
+        .checkUpdate(true)
+        .then((result) => {
+          if (!alive) return;
+          setInfo(result);
+          setOpen(
+            Boolean(result.has_update && result.latest && localStorage.getItem(SKIPPED_VERSION) !== result.latest),
+          );
+        })
+        .catch(() => {
+          if (alive) { setInfo(null); setOpen(false); }
+          // 网络暂不可用时不阻塞页面，设置页仍可手动查看错误。
+        });
+    };
+    check();
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && Date.now() - lastCheck.current > 60_000) check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       alive = false;
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 
-  if (!latest) return null;
+  const latest =
+    info?.has_update &&
+    info.latest &&
+    (typeof window === "undefined" || localStorage.getItem(SKIPPED_VERSION) !== info.latest)
+      ? info.latest
+      : "";
+
+  const skip = () => {
+    if (info?.latest) localStorage.setItem(SKIPPED_VERSION, info.latest);
+    setOpen(false);
+    setInfo(null);
+  };
 
   return (
-    <Link
-      href="/system/settings"
-      title={`发现新版本 ${latest}，点击前往更新`}
-      className="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 font-medium text-primary-foreground text-xs transition-opacity hover:opacity-90"
-    >
-      {/* 呼吸点：顶栏元素很多，纯文字容易被忽略，动效让它一眼可见。 */}
-      <span className="relative flex size-1.5">
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary-foreground opacity-75" />
-        <span className="relative inline-flex size-1.5 rounded-full bg-primary-foreground" />
-      </span>
-      <ArrowUpCircleIcon className="size-3.5" />
-      <span className="hidden sm:inline">新版本 {latest}</span>
-      <span className="sm:hidden">新版本</span>
-    </Link>
+    <>
+      {!hideBadge && latest ? (
+        <Link
+          href="/system/settings/?category=system"
+          onClick={() => window.dispatchEvent(new Event("artex-open-updates"))}
+          className="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 font-medium text-primary-foreground text-xs"
+        >
+          <ArrowUpCircleIcon className="size-3.5" />
+          新版本 {latest}
+        </Link>
+      ) : null}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="!h-dvh !max-h-dvh !w-screen !max-w-none grid-rows-[auto_minmax(0,1fr)_auto] !rounded-none p-6 sm:p-10">
+          <DialogHeader>
+            <DialogTitle className="text-2xl">发现新版本 {info?.latest}</DialogTitle>
+            <DialogDescription>当前版本 {info?.current}。更新会重启程序，正在运行的任务会被中断。</DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded-lg bg-muted p-5 text-sm">
+            {info?.notes || "此版本暂无更新说明。"}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={skip}>
+              跳过这个版本
+            </Button>
+            <Button asChild>
+              <Link href="/system/settings/?category=system" onClick={() => { setOpen(false); window.dispatchEvent(new Event("artex-open-updates")); }}>查看更新</Link>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

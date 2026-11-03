@@ -36,8 +36,13 @@ import type {
 } from "@/lib/types";
 
 import { useEgressIp } from "../../_components/egress-ip-banner";
+import {
+  IPWhitelistCard,
+  LoginFailureNotifyCard,
+  PasskeysCard,
+  SessionsCard,
+} from "./_components/account-security-card";
 import { BasicAuthCard } from "./_components/basic-auth-card";
-import { IPWhitelistCard, LoginFailureNotifyCard, PasskeysCard, SessionsCard } from "./_components/account-security-card";
 import { RuntimeStorageCard } from "./_components/runtime-storage-card";
 import { TOTPCard } from "./_components/totp-card";
 import { UpdateCard } from "./_components/update-card";
@@ -57,7 +62,14 @@ export default function SystemSettingsPage() {
   const [browserScreenshotTimestamp, setBrowserScreenshotTimestamp] = React.useState(false);
   const [opsecEnabled, setOpsecEnabled] = React.useState(false);
   const [settingQuery, setSettingQuery] = React.useState("");
-  const [activeCategory, setActiveCategory] = React.useState("system");
+  const [activeCategory, setActiveCategory] = React.useState("runtime");
+
+  React.useEffect(() => {
+    const openUpdates = () => { setActiveCategory("system"); setSettingQuery(""); };
+    if (new URLSearchParams(window.location.search).get("category") === "system") openUpdates();
+    window.addEventListener("artex-open-updates", openUpdates);
+    return () => window.removeEventListener("artex-open-updates", openUpdates);
+  }, []);
   const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
   const [webSearch, setWebSearch] = React.useState(false);
   const [backend, setBackend] = React.useState("ddgs");
@@ -457,13 +469,14 @@ export default function SystemSettingsPage() {
   };
 
   const settingCategories = [
-    { id: "system", label: "系统", hint: "系统更新、运行与储存空间", icon: SettingsIcon },
+    { id: "runtime", label: "运行和空间", hint: "运行状态、内存与储存空间", icon: CpuIcon },
     { id: "account", label: "账号与安全", hint: "登录、会话与访问控制", icon: ShieldAlertIcon },
     { id: "browser", label: "浏览器 MCP", hint: "Chrome / Lightpanda 与优先级", icon: GlobeIcon },
     { id: "traffic", label: "流量与安全", hint: "流量、代理、截图与 OPSEC", icon: RadioTowerIcon },
     { id: "agent", label: "Agent 行为", hint: "录制、约束与情报", icon: CpuIcon },
     { id: "network", label: "网络与工具", hint: "搜索、脚本与并发", icon: SearchIcon },
     { id: "chat", label: "对话与界面", hint: "输入与交互偏好", icon: KeyboardIcon },
+    { id: "system", label: "系统与更新", hint: "版本检查与更新设置", icon: SettingsIcon },
   ] as const;
 
   const toggleInjectPlanner = (v: boolean) => {
@@ -696,25 +709,28 @@ export default function SystemSettingsPage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">系统配置</h1>
         <p className="text-muted-foreground text-sm">全局运行时开关</p>
-        <div className="relative mt-4 max-w-xl">
-          <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
-          <Input
-            value={settingQuery}
-            onChange={(event) => setSettingQuery(event.target.value)}
-            placeholder="搜索设置，例如：截图、OPSEC、代理、流量"
-            className="pl-9"
-            aria-label="搜索系统设置"
-          />
-        </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row lg:items-start">
-        <aside className="shrink-0 lg:sticky lg:top-4 lg:w-64">
-          <div className="rounded-xl border bg-card/60 p-2 shadow-sm">
+        <aside className="shrink-0 lg:sticky lg:top-16 lg:max-h-[calc(100dvh-5rem)] lg:w-64 lg:self-start">
+          <div className="flex max-h-[calc(100dvh-5rem)] flex-col rounded-xl border bg-card/60 p-2 shadow-sm">
             <div className="px-3 pb-2 pt-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               配置目录
             </div>
-            <nav className="flex gap-1 overflow-x-auto lg:flex-col" aria-label="系统配置分类">
+            <div className="relative px-2 pb-2">
+              <SearchIcon className="pointer-events-none absolute top-2.5 left-5 size-4 text-muted-foreground" />
+              <Input
+                value={settingQuery}
+                onChange={(event) => setSettingQuery(event.target.value)}
+                placeholder="搜索配置…"
+                className="pl-9"
+                aria-label="搜索系统设置"
+              />
+            </div>
+            <nav
+              className="flex gap-1 overflow-x-auto lg:min-h-0 lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto"
+              aria-label="系统配置分类"
+            >
               {settingCategories.map((category) => {
                 const Icon = category.icon;
                 const active = !settingQuery.trim() && activeCategory === category.id;
@@ -767,7 +783,7 @@ export default function SystemSettingsPage() {
 
           <div className="flex flex-col divide-y rounded-xl border bg-card/30 px-3 [&>[data-slot=card]]:mb-0 [&>[data-slot=card]]:rounded-none [&>[data-slot=card]]:bg-transparent [&>[data-slot=card]]:py-4 [&>[data-slot=card]]:ring-0">
             {isSettingVisible("system", "更新 版本 升级") ? <UpdateCard /> : null}
-            {isSettingVisible("system", "运行 空间 操作系统 内存 磁盘 分类 清理 保留期限 自动删除") ? (
+            {isSettingVisible("runtime", "运行 空间 操作系统 内存 磁盘 分类 清理 保留期限 自动删除") ? (
               <RuntimeStorageCard />
             ) : null}
             {isSettingVisible("account", "基础认证 登录 用户名 密码") ? <BasicAuthCard /> : null}

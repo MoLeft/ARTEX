@@ -139,7 +139,7 @@ export function StorageCleanupDialog({ open, onOpenChange, onComplete }: { open:
           <DialogTitle>{confirm ? "确认清理空间" : "清理空间"}</DialogTitle>
           <DialogDescription>{confirm ? "删除后无法恢复。执行时会重新核对任务及证据引用；发生变化的项目会停止清理。" : "每次打开都会重新扫描。安全项已勾选，需审查项由你决定，被引用或仍在使用的内容不能勾选。数据库记录清理后的磁盘空闲页会由数据库复用。"}</DialogDescription>
         </DialogHeader>
-        {scanning ? <div className="flex items-center gap-2 py-12 text-muted-foreground"><Loader2 className="size-4 animate-spin" />正在扫描空间和文件引用…</div> : null}
+        {scanning ? <div className="flex flex-col items-center justify-center gap-3 py-12 text-center text-muted-foreground"><Loader2 className="size-6 animate-spin" />正在扫描空间和文件引用…</div> : null}
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
         {!scanning && !confirm && (
           <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">

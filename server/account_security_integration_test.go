@@ -69,9 +69,36 @@ func TestAccountSessionsWhitelistAndSecurityEvents(t *testing.T) {
 	}
 	first := login("192.0.2.1", "Test Mac")
 	second := login("198.51.100.2", "Test iOS")
+	third := login("192.0.2.3", "Test Windows")
 	w := request("GET", "/api/auth/sessions", "", first, "192.0.2.1", "Test Mac")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"count":2`) || !strings.Contains(w.Body.String(), "Test iOS") {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"count":3`) || !strings.Contains(w.Body.String(), "Test iOS") {
 		t.Fatalf("sessions: %d %s", w.Code, w.Body.String())
+	}
+	var sessionList struct {
+		Sessions []struct {
+			ID      string `json:"id"`
+			IP      string `json:"ip"`
+			Current bool   `json:"current"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &sessionList); err != nil {
+		t.Fatal(err)
+	}
+	var firstID, secondID string
+	for _, item := range sessionList.Sessions {
+		if item.Current {
+			firstID = item.ID
+		}
+		if item.IP == "198.51.100.2" {
+			secondID = item.ID
+		}
+	}
+	if firstID == "" || secondID == "" {
+		t.Fatalf("missing session IDs: %s", w.Body.String())
+	}
+	w = request("POST", "/api/auth/sessions/"+firstID+"/revoke", `{}`, first, "192.0.2.1", "Test Mac")
+	if w.Code != 400 {
+		t.Fatalf("current session could be revoked: %d %s", w.Code, w.Body.String())
 	}
 	w = request("PUT", "/api/settings/ip-whitelist", `{"enabled":true,"cidrs":["192.0.2.0/24","2001:db8::/32"]}`, first, "192.0.2.1", "Test Mac")
 	if w.Code != 200 {
@@ -80,6 +107,14 @@ func TestAccountSessionsWhitelistAndSecurityEvents(t *testing.T) {
 	w = request("GET", "/api/auth/sessions", "", second, "198.51.100.2", "Test iOS")
 	if w.Code != 403 || !strings.Contains(w.Body.String(), "ip_blocked") {
 		t.Fatalf("out-of-range session not blocked: %d %s", w.Code, w.Body.String())
+	}
+	w = request("POST", "/api/auth/sessions/"+secondID+"/revoke", `{}`, first, "192.0.2.1", "Test Mac")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"revoked":1`) {
+		t.Fatalf("revoke selected session: %d %s", w.Code, w.Body.String())
+	}
+	w = request("GET", "/api/auth/sessions", "", third, "192.0.2.3", "Test Windows")
+	if w.Code != 200 {
+		t.Fatalf("unselected session was revoked: %d %s", w.Code, w.Body.String())
 	}
 	w = request("POST", "/api/auth/sessions/revoke-others", `{}`, first, "192.0.2.1", "Test Mac")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"revoked":1`) {
@@ -234,6 +269,54 @@ func TestPasskeyRegistrationLoginStillRequiresTOTP(t *testing.T) {
 	if err = m.pg.SetSetting(totpSettingKey, encrypted); err != nil {
 		t.Fatal(err)
 	}
+	checkSettings := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "https://example.com"+path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+adminToken)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+	goodCode := totpCode(secret, time.Now())
+	badCode := "0" + goodCode[1:]
+	if goodCode[0] == '0' {
+		badCode = "1" + goodCode[1:]
+	}
+	badWhitelist := checkSettings("PUT", "/api/settings/ip-whitelist", `{"enabled":false,"cidrs":[],"code":"`+badCode+`"}`)
+	if badWhitelist.Code != 401 {
+		t.Fatalf("whitelist accepted wrong TOTP: %d %s", badWhitelist.Code, badWhitelist.Body.String())
+	}
+	goodWhitelist := checkSettings("PUT", "/api/settings/ip-whitelist", `{"enabled":false,"cidrs":[],"code":"`+goodCode+`"}`)
+	if goodWhitelist.Code != 200 {
+		t.Fatalf("whitelist rejected valid TOTP: %d %s", goodWhitelist.Code, goodWhitelist.Body.String())
+	}
+	if err := s.basicAuth.load(m.pg); err != nil {
+		t.Fatal(err)
+	}
+	badBasic := checkSettings("PUT", "/api/settings/basic-auth", `{"enabled":false,"code":"`+badCode+`"}`)
+	if badBasic.Code != 401 {
+		t.Fatalf("basic auth change accepted wrong TOTP: %d %s", badBasic.Code, badBasic.Body.String())
+	}
+	goodBasic := checkSettings("PUT", "/api/settings/basic-auth", `{"enabled":false,"code":"`+goodCode+`"}`)
+	if goodBasic.Code != 200 {
+		t.Fatalf("basic auth change rejected valid TOTP: %d %s", goodBasic.Code, goodBasic.Body.String())
+	}
+	badNotify := checkSettings("PUT", "/api/settings/login-failure-notify", `{"enabled":true,"code":"`+badCode+`"}`)
+	if badNotify.Code != 401 {
+		t.Fatalf("login notification change accepted wrong TOTP: %d %s", badNotify.Code, badNotify.Body.String())
+	}
+	goodNotify := checkSettings("PUT", "/api/settings/login-failure-notify", `{"enabled":true,"code":"`+goodCode+`"}`)
+	if goodNotify.Code != 200 {
+		t.Fatalf("login notification change rejected valid TOTP: %d %s", goodNotify.Code, goodNotify.Body.String())
+	}
+	keyPath := "/api/settings/passkeys/" + base64.RawURLEncoding.EncodeToString(credentialID)
+	badRename := checkSettings("PUT", keyPath, `{"remark":"renamed","code":"`+badCode+`"}`)
+	if badRename.Code != 401 {
+		t.Fatalf("passkey rename accepted wrong TOTP: %d %s", badRename.Code, badRename.Body.String())
+	}
+	goodRename := checkSettings("PUT", keyPath, `{"remark":"renamed","code":"`+goodCode+`"}`)
+	if goodRename.Code != 200 {
+		t.Fatalf("passkey rename rejected valid TOTP: %d %s", goodRename.Code, goodRename.Body.String())
+	}
 	loginBegin := request("/api/auth/passkey/login/begin", `{}`, "")
 	var challenge beginResult
 	if loginBegin.Code != 200 || json.Unmarshal(loginBegin.Body.Bytes(), &challenge) != nil {
@@ -261,5 +344,13 @@ func TestPasskeyRegistrationLoginStillRequiresTOTP(t *testing.T) {
 	complete := request("/api/auth/totp", string(totpBody), "")
 	if complete.Code != 200 || !strings.Contains(complete.Body.String(), `"token"`) {
 		t.Fatalf("passkey TOTP completion: %d %s", complete.Code, complete.Body.String())
+	}
+	badDelete := checkSettings("DELETE", keyPath, `{"code":"`+badCode+`"}`)
+	if badDelete.Code != 401 {
+		t.Fatalf("passkey deletion accepted wrong TOTP: %d %s", badDelete.Code, badDelete.Body.String())
+	}
+	goodDelete := checkSettings("DELETE", keyPath, `{"code":"`+goodCode+`"}`)
+	if goodDelete.Code != 200 {
+		t.Fatalf("passkey deletion rejected valid TOTP: %d %s", goodDelete.Code, goodDelete.Body.String())
 	}
 }
