@@ -1,34 +1,43 @@
 "use client";
 
 import * as React from "react";
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
 import { toast } from "sonner";
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { StorageCleanupDialog } from "./storage-cleanup-dialog";
 import { api } from "@/lib/api";
 import { MOCK } from "@/lib/mock/enabled";
 import type { SystemMetrics } from "@/lib/types";
 
 type StorageStatus = Awaited<ReturnType<typeof api.storageStatus>>;
 type Retention = Awaited<ReturnType<typeof api.recordRetention>>;
-type Cleanup = "memory" | "traffic" | "llm" | "tool";
 
 function bytes(n: number) {
   if (!n) return "0 B";
   const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), 4);
   return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${["B", "KB", "MB", "GB", "TB"][i]}`;
+}
+
+function storageBytes(n: number) { return `${(n / 1e9).toFixed(1)} GB`; }
+
+const storageColors = [
+  "#2563eb", "#14b8a6", "#f59e0b", "#8b5cf6",
+  "#ef4444", "#64748b", "#0ea5e9", "#84cc16",
+];
+
+function UsageRing({ percent, label, color, available = true }: { percent: number; label: string; color: string; available?: boolean }) {
+  const value = Math.max(0, Math.min(100, Number.isFinite(percent) ? percent : 0));
+  return <div className="relative size-20 shrink-0" role="img" aria-label={available ? `${label} ${value.toFixed(0)}%` : `${label}不可用`}>
+    <svg className="size-full -rotate-90" viewBox="0 0 80 80" aria-hidden="true">
+      <circle cx="40" cy="40" r="32" fill="none" stroke="var(--muted)" strokeWidth="8" />
+      {available && <circle cx="40" cy="40" r="32" fill="none" stroke={color} strokeWidth="8" strokeLinecap="round" strokeDasharray={`${value * 2.0106} 201.06`} />}
+    </svg>
+    <span className="absolute inset-0 flex items-center justify-center text-sm font-semibold tabular-nums">{available ? `${value.toFixed(0)}%` : "—"}</span>
+  </div>;
 }
 
 const retentionFields = [
@@ -43,7 +52,7 @@ export function RuntimeStorageCard() {
   const [retention, setRetention] = React.useState<Retention | null>(null);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const [cleanup, setCleanup] = React.useState<Cleanup | null>(null);
+  const [cleanerOpen, setCleanerOpen] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
     try {
@@ -64,6 +73,11 @@ export function RuntimeStorageCard() {
       .catch((e) => setError((e as Error).message));
   }, [refresh]);
 
+  React.useEffect(() => {
+    const timer = window.setInterval(() => { void api.systemMetrics().then(setMetrics).catch(() => {}); }, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const save = async () => {
     if (!retention) return;
     if (
@@ -83,13 +97,11 @@ export function RuntimeStorageCard() {
     }
   };
 
-  const runCleanup = async () => {
-    if (!cleanup) return;
+  const optimizeMemory = async () => {
     setBusy(true);
     try {
-      const result = await api.storageCleanup(cleanup);
-      toast.success(cleanup === "memory" ? "已请求回收 ARTEX 空闲堆内存" : `已删除 ${result.deleted} 条录制记录`);
-      setCleanup(null);
+      await api.storageCleanup("memory");
+      toast.success("已请求回收 ARTEX 空闲堆内存");
       await refresh();
     } catch (e) {
       toast.error(`清理失败：${(e as Error).message}`);
@@ -98,15 +110,15 @@ export function RuntimeStorageCard() {
     }
   };
 
-  const max = Math.max(1, ...(status?.parts.map((part) => part.bytes) ?? []));
-  const selected = status?.parts.find((part) => part.key === cleanup);
+  const chartParts = status?.parts.filter((part) => part.bytes > 0) ?? [];
+  const hostStorage = metrics?.data_disk_source === "host";
   return (
     <>
       <Card>
         <CardHeader>
           <CardTitle>运行和空间</CardTitle>
           <CardDescription>
-            系统指标显示 ARTEX 所在容器和数据卷；分类占用为 ARTEX 文件及 PostgreSQL 数据库估算，不等于整块硬盘已用空间。
+            分类占用显示 ARTEX 文件及 PostgreSQL 数据库估算；储存空间优先显示宿主机磁盘容量。饼图各部分之和不等于整块硬盘已用空间。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -116,33 +128,23 @@ export function RuntimeStorageCard() {
             </p>
           ) : null}
           <div className="grid gap-3 text-sm sm:grid-cols-3">
-            <div className="rounded-md border p-3">
-              操作系统
-              <br />
-              <strong>{status ? `${status.os} / ${status.arch}` : "读取中…"}</strong>
-              <p className="text-xs text-muted-foreground">容器视角</p>
+            <div className="flex items-center justify-between gap-2 rounded-md border p-3">
+              <div><div>操作系统 / 处理器</div><strong>{status ? `${status.os} / ${status.arch}` : "读取中…"}</strong><p className="text-xs text-muted-foreground">{status?.os_scope === "host" ? "宿主机系统" : "容器系统"} · 容器处理器使用率</p></div>
+              <UsageRing percent={metrics?.cpu.percent ?? 0} label="处理器使用率" color="#2563eb" />
             </div>
-            <div className="rounded-md border p-3">
-              运行内存
-              <br />
-              <strong>
-                {metrics?.memory.total_bytes
-                  ? `${bytes(metrics.memory.used_bytes)} / ${bytes(metrics.memory.total_bytes)}`
-                  : "不可用"}
-              </strong>
-              <p className="text-xs text-muted-foreground">ARTEX 进程堆：{bytes(status?.process_heap_bytes ?? 0)}</p>
+            <div className="flex items-center justify-between gap-2 rounded-md border p-3">
+              <div><div>运行内存</div><strong>{metrics?.memory.total_bytes ? `${bytes(metrics.memory.used_bytes)} / ${bytes(metrics.memory.total_bytes)}` : "不可用"}</strong>
+                <p className="text-xs text-muted-foreground">ARTEX 进程堆：{bytes(status?.process_heap_bytes ?? 0)}</p>
+                <Button variant="outline" size="sm" className="mt-2" disabled={busy} onClick={() => void optimizeMemory()}>优化内存</Button>
+              </div>
+              <UsageRing percent={metrics?.memory.percent ?? 0} label="运行内存使用率" color="#14b8a6" />
             </div>
-            <div className="rounded-md border p-3">
-              数据卷空间
-              <br />
-              <strong>
-                {metrics?.data_disk.total_bytes
-                  ? `${bytes(metrics.data_disk.used_bytes)} / ${bytes(metrics.data_disk.total_bytes)}`
-                  : "不可用"}
-              </strong>
-              <p className="text-xs text-muted-foreground">
-                可用：{bytes(Math.max(0, (metrics?.data_disk.total_bytes ?? 0) - (metrics?.data_disk.used_bytes ?? 0)))}
-              </p>
+            <div className="flex items-center justify-between gap-2 rounded-md border p-3">
+              <div><div>储存空间</div><strong>{hostStorage && metrics?.data_disk.total_bytes ? `${storageBytes(metrics.data_disk.used_bytes)} / ${storageBytes(metrics.data_disk.total_bytes)}` : "宿主机容量待接入"}</strong>
+                <p className="text-xs text-muted-foreground">{hostStorage && metrics ? `可用：${storageBytes(Math.max(0, metrics.data_disk.total_bytes - metrics.data_disk.used_bytes))} · 宿主机` : "容器挂载容量不代表物理硬盘"}</p>
+                <Button variant="outline" size="sm" className="mt-2" onClick={() => setCleanerOpen(true)}>清理空间</Button>
+              </div>
+              <UsageRing percent={metrics?.data_disk.percent ?? 0} label="储存空间占用率" color="#f59e0b" available={hostStorage} />
             </div>
           </div>
           <div>
@@ -152,46 +154,33 @@ export function RuntimeStorageCard() {
                 刷新统计
               </Button>
             </div>
-            <div className="space-y-3">
-              {status?.parts.map((part) => (
-                <div key={part.key}>
-                  <div className="mb-1 flex items-center justify-between gap-2 text-xs">
-                    <span>{part.name}</span>
-                    <span className="tabular-nums">
-                      {bytes(part.bytes)}{" "}
-                      {part.cleanable && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 text-destructive"
-                          disabled={busy || part.bytes === 0}
-                          onClick={() => setCleanup(part.key as Cleanup)}
-                        >
-                          清理
-                        </Button>
-                      )}
-                    </span>
-                  </div>
-                  <div className="h-3 overflow-hidden rounded bg-muted">
-                    <div
-                      className="h-full rounded bg-primary"
-                      style={{ width: `${part.bytes ? Math.max(1, (part.bytes / max) * 100) : 0}%` }}
-                    />
-                  </div>
+            {chartParts.length > 0 && (
+              <div className="h-64 w-full" role="img" aria-label="ARTEX 各类数据空间占比饼状图">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+                  <PieChart>
+                    <Pie data={chartParts} dataKey="bytes" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={105} paddingAngle={2}>
+                      {chartParts.map((part) => (
+                        <Cell key={part.key} fill={storageColors[(status?.parts.findIndex((item) => item.key === part.key) ?? 0) % storageColors.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(value) => bytes(Number(value))} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+            <div className="grid gap-2 sm:grid-cols-2">
+              {status?.parts.map((part, index) => (
+                <div key={part.key} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm">
+                    <span className="flex min-w-0 items-center gap-2"><span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: storageColors[index % storageColors.length] }} />{part.name}</span>
+                    <span className="tabular-nums">{bytes(part.bytes)}</span>
                 </div>
               ))}
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              “任务活动”包含其他活动，清理只删除工具调用及对应结果。PostgreSQL
+              清理空间会先扫描并标出安全、需审查和受保护的内容；对话转录及任务归档保持只读。PostgreSQL
               局部删除后的空闲页由数据库复用，磁盘文件未必立即缩小。
             </p>
           </div>
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => setCleanup("memory")}>
-            优化 ARTEX 内存
-          </Button>
-          <p className="text-xs text-muted-foreground">
-            内存优化只请求 Go 运行时归还空闲堆页；不会清理系统缓存或中断任务。
-          </p>
         </CardContent>
       </Card>
       <Card>
@@ -231,37 +220,7 @@ export function RuntimeStorageCard() {
           </Button>
         </CardContent>
       </Card>
-      <AlertDialog
-        open={cleanup !== null}
-        onOpenChange={(open) => {
-          if (!open && !busy) setCleanup(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {cleanup === "memory" ? "回收 ARTEX 空闲堆内存？" : `清空${selected?.name ?? "录制记录"}？`}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {cleanup === "memory"
-                ? "只触发 ARTEX 进程的 Go 垃圾回收；操作系统已使用内存可能不会明显变化。"
-                : "将永久删除该分类的全部录制历史，忽略列表筛选。流量原文随流量清理，工具执行及其结果会从任务活动历史移除；已绑定漏洞的独立证据保留。"}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={busy}
-              onClick={(e) => {
-                e.preventDefault();
-                void runCleanup();
-              }}
-            >
-              {busy ? "处理中…" : "确认执行"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <StorageCleanupDialog open={cleanerOpen} onOpenChange={setCleanerOpen} onComplete={() => void refresh()} />
     </>
   );
 }

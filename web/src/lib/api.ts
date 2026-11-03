@@ -318,11 +318,16 @@ export const api = {
     get<{
       os: string;
       arch: string;
+      os_scope: "host" | "container";
       process_heap_bytes: number;
-      parts: { key: string; name: string; bytes: number; cleanable: boolean }[];
+      parts: { key: string; name: string; bytes: number; cleanable: boolean; reclaimable_bytes?: number }[];
     }>("/system/storage"),
   storageCleanup: (category: "memory" | "traffic" | "llm" | "tool") =>
     post<{ deleted: number }>("/system/storage/cleanup", { category }),
+  taskCleanupPreview: () =>
+    get<{ groups: { path: string; task_id: string; dir: boolean; bytes: number; protected_bytes: number; risk: "safe" | "review" | "locked"; reason: string; protected_paths?: string[] }[] }>("/system/storage/task-cleanup"),
+  taskCleanup: (paths: string[]) =>
+    post<{ deleted: number; reclaimed_bytes: number }>("/system/storage/task-cleanup", { paths }),
   recordRetention: () =>
     get<{ traffic_days: number; llm_days: number; tool_days: number }>("/system/storage/retention"),
   saveRecordRetention: (days: { traffic_days: number; llm_days: number; tool_days: number }) =>

@@ -196,7 +196,11 @@ func (s *Server) storageStatus(w http.ResponseWriter, r *http.Request) {
 		storagePart{Key: "database_other", Name: "数据库其他数据", Bytes: otherDB})
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
-	writeJSON(w, 200, map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "process_heap_bytes": mem.HeapAlloc, "parts": parts})
+	osName, arch, scope := runtime.GOOS, runtime.GOARCH, "container"
+	if host, ok := readHostStorage(s.dataDir, time.Now()); ok && host.OS != "" && host.Arch != "" {
+		osName, arch, scope = host.OS, host.Arch, "host"
+	}
+	writeJSON(w, 200, map[string]any{"os": osName, "arch": arch, "os_scope": scope, "process_heap_bytes": mem.HeapAlloc, "parts": parts})
 }
 
 func (s *Server) storageCleanup(w http.ResponseWriter, r *http.Request) {
