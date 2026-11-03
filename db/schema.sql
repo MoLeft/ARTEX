@@ -370,6 +370,7 @@ CREATE TABLE IF NOT EXISTS llm_profiles (
     api_key_hint     TEXT,
     rate_per_second  DOUBLE PRECISION NOT NULL DEFAULT 0,
     rate_per_minute  DOUBLE PRECISION NOT NULL DEFAULT 0,
+    max_concurrency INTEGER NOT NULL DEFAULT 0 CHECK (max_concurrency >= 0),
     context_window_k INTEGER NOT NULL DEFAULT 0,
     -- 思考参数拆成两个独立字段：thinking_type=思考开关(''/disabled/enabled)，
     -- reasoning_effort=思考强度(''/low/medium/high/xhigh/max)，互不牵连。
@@ -439,6 +440,7 @@ ALTER TABLE llm_profiles ADD  CONSTRAINT llm_profiles_max_tokens_check
     CHECK (max_tokens >= 0);
 -- 自定义会话头名；补旧库。默认 '' = 不发送，旧配置行为不变。
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS session_header_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS max_concurrency INTEGER NOT NULL DEFAULT 0 CHECK (max_concurrency >= 0);
 
 -- 单配置的重试覆盖（见 docs/LLM重试设计.md）。三组各自一对「次数 + 固定间隔」，
 -- 语义统一：次数 0=沿用全局默认、-1=关闭该层重试、>0=用该值；间隔 0=沿用该层的

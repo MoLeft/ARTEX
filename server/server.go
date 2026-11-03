@@ -388,6 +388,7 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	}
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
+	cfg.MaxConcurrency = p.MaxConcurrency
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ThinkingType = p.ThinkingType
 	cfg.ReasoningEffort = p.ReasoningEffort
@@ -437,6 +438,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	newID, err := s.m.pg.SaveProfile(&db.LLMProfile{
 		ID: id, Name: "default", Format: format, Model: cfg.Model, BaseURL: cfg.BaseURL, Proxy: cfg.Proxy,
 		APIKey: cfg.APIKey, RatePerSecond: cfg.RatePerSecond, RatePerMinute: cfg.RatePerMinute,
+		MaxConcurrency: cfg.MaxConcurrency,
 		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
 		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
 		Ultra:     ultra,
@@ -560,6 +562,7 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	}
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
+	cfg.MaxConcurrency = p.MaxConcurrency
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ThinkingType = p.ThinkingType
 	cfg.ReasoningEffort = p.ReasoningEffort
@@ -1512,6 +1515,7 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 		"key_set":          s.llmCfg.APIKey != "",
 		"rate_per_second":  s.llmCfg.RatePerSecond,
 		"rate_per_minute":  s.llmCfg.RatePerMinute,
+		"max_concurrency":  s.llmCfg.MaxConcurrency,
 		"context_window_k": s.llmCfg.ContextWindowK,
 		"thinking_type":    s.llmCfg.ThinkingType,
 		"reasoning_effort": s.llmCfg.ReasoningEffort,
@@ -1528,6 +1532,7 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		APIKey          string  `json:"api_key"`
 		RatePerSecond   float64 `json:"rate_per_second"`
 		RatePerMinute   float64 `json:"rate_per_minute"`
+		MaxConcurrency  *int    `json:"max_concurrency"`
 		ContextWindowK  int     `json:"context_window_k"`
 		ThinkingType    string  `json:"thinking_type"`
 		ReasoningEffort string  `json:"reasoning_effort"`
@@ -1538,6 +1543,13 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = req.RatePerSecond, req.RatePerMinute
+	if req.MaxConcurrency != nil {
+		cfg.MaxConcurrency = *req.MaxConcurrency
+	} else {
+		s.cfgMu.Lock()
+		cfg.MaxConcurrency = s.llmCfg.MaxConcurrency
+		s.cfgMu.Unlock()
+	}
 	cfg.ThinkingType = req.ThinkingType
 	cfg.ReasoningEffort = req.ReasoningEffort
 	if k := req.ContextWindowK; k > 0 { // 0 = keep default (200K); cap at 1M

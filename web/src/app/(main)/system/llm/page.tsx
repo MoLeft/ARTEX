@@ -331,6 +331,7 @@ function ProfileSheet({
   const [keyHint, setKeyHint] = React.useState("");
   const [rps, setRps] = React.useState("0");
   const [rpm, setRpm] = React.useState("0");
+  const [maxConcurrency, setMaxConcurrency] = React.useState("0");
   const [cw, setCw] = React.useState("0"); // 上下文窗口(K tokens);0=默认200K
   const [thinkingType, setThinkingType] = React.useState(NONE);
   const [effort, setEffort] = React.useState(NONE);
@@ -362,6 +363,7 @@ function ProfileSheet({
     setProxy(profile?.proxy ?? "");
     setRps(String(profile?.rate_per_second ?? 0));
     setRpm(String(profile?.rate_per_minute ?? 0));
+    setMaxConcurrency(String(profile?.max_concurrency ?? 0));
     setCw(String(profile?.context_window_k ?? 0));
     setThinkingType(fromStore(profile?.thinking_type));
     setEffort(fromStore(profile?.reasoning_effort));
@@ -473,6 +475,7 @@ function ProfileSheet({
         api_key: apiKey,
         rate_per_second: Number(rps) || 0,
         rate_per_minute: Number(rpm) || 0,
+        max_concurrency: Math.max(0, Math.trunc(Number(maxConcurrency) || 0)),
         context_window_k: Number(cw) || 0,
         thinking_type: toStore(thinkingType),
         reasoning_effort: toStore(effort),
@@ -660,7 +663,7 @@ function ProfileSheet({
             />
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-4">
             <div className="grid gap-2">
               <Label htmlFor="p-rps">每秒限速</Label>
               <Input id="p-rps" type="number" min={0} value={rps} onChange={(e) => setRps(e.target.value)} />
@@ -668,6 +671,10 @@ function ProfileSheet({
             <div className="grid gap-2">
               <Label htmlFor="p-rpm">每分钟限速</Label>
               <Input id="p-rpm" type="number" min={0} value={rpm} onChange={(e) => setRpm(e.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="p-max-concurrency">在飞请求上限</Label>
+              <Input id="p-max-concurrency" type="number" min={0} step={1} value={maxConcurrency} onChange={(e) => setMaxConcurrency(e.target.value)} />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="p-cw">上下文窗口(K)</Label>
@@ -683,7 +690,7 @@ function ProfileSheet({
             </div>
           </div>
           <p className="-mt-2 text-muted-foreground text-xs">
-            限速 0 = 不限，全 Agent 共享。上下文窗口单位 K（千 token），0 = 默认 200K，上限 1000（即
+            限速及在飞请求上限 0 = 不限，同一模型配置的所有 Agent 共享。在飞请求直到响应结束才释放名额。上下文窗口单位 K（千 token），0 = 默认 200K，上限 1000（即
             1M）；设太高会导致压缩不触发。
           </p>
 
@@ -1108,7 +1115,7 @@ export default function LLMPage() {
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 pl-6 text-muted-foreground text-xs">
                       {p.api_key_hint && <span>{p.api_key_hint}</span>}
                       <span>
-                        {p.rate_per_second}/s · {p.rate_per_minute}/min
+                        {p.rate_per_second}/s · {p.rate_per_minute}/min · 在飞 {p.max_concurrency || "不限"}
                       </span>
                       {p.proxy && <span className="truncate">代理 {p.proxy}</span>}
                       {p.reasoning_effort && (

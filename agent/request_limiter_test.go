@@ -32,7 +32,7 @@ func TestRequestLimiterRollingWindows(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				l := &RequestLimiter{}
-				if err := l.configure(tc.rps, tc.rpm); err != nil {
+				if err := l.configure(tc.rps, tc.rpm, 0); err != nil {
 					t.Fatal(err)
 				}
 				start := time.Now()
@@ -60,7 +60,7 @@ func TestRequestLimiterRollingWindows(t *testing.T) {
 func TestRequestLimiterBothWindowsAndConcurrentCallers(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		l := &RequestLimiter{}
-		if err := l.configure(3, 5); err != nil {
+		if err := l.configure(3, 5, 0); err != nil {
 			t.Fatal(err)
 		}
 		var mu sync.Mutex
@@ -107,7 +107,7 @@ func assertRollingRequestCounts(t *testing.T, sent []time.Time, window time.Dura
 func TestRequestLimiterReconfiguration(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		l := &RequestLimiter{}
-		if err := l.configure(0, 5); err != nil {
+		if err := l.configure(0, 5, 0); err != nil {
 			t.Fatal(err)
 		}
 		for i := 0; i < 5; i++ {
@@ -116,7 +116,7 @@ func TestRequestLimiterReconfiguration(t *testing.T) {
 			}
 		}
 		start := time.Now()
-		if err := l.configure(0, 2); err != nil {
+		if err := l.configure(0, 2, 0); err != nil {
 			t.Fatal(err)
 		}
 		done := make(chan error, 1)
@@ -129,7 +129,7 @@ func TestRequestLimiterReconfiguration(t *testing.T) {
 		}
 		// A change must wake waiting requests rather than leave them sleeping
 		// until the old minute window expires.
-		if err := l.configure(0, 6); err != nil {
+		if err := l.configure(0, 6, 0); err != nil {
 			t.Fatal(err)
 		}
 		if err := <-done; err != nil {
@@ -138,7 +138,7 @@ func TestRequestLimiterReconfiguration(t *testing.T) {
 		if time.Since(start) != 0 {
 			t.Fatal("waiter did not wake on limit increase")
 		}
-		if err := l.configure(0, 2); err != nil {
+		if err := l.configure(0, 2, 0); err != nil {
 			t.Fatal(err)
 		}
 		if err := l.wait(context.Background()); err != nil {
@@ -152,7 +152,7 @@ func TestRequestLimiterReconfiguration(t *testing.T) {
 
 func TestRequestLimiterDisabledAndCancelled(t *testing.T) {
 	l := &RequestLimiter{}
-	if err := l.configure(0, 0); err != nil {
+	if err := l.configure(0, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 100; i++ {
@@ -169,9 +169,42 @@ func TestRequestLimiterDisabledAndCancelled(t *testing.T) {
 		t.Fatal("cancelled request consumed quota")
 	}
 	for _, rate := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), math.SmallestNonzeroFloat64} {
-		if err := l.configure(rate, 0); err == nil {
+		if err := l.configure(rate, 0, 0); err == nil {
 			t.Errorf("accepted invalid rate %v", rate)
 		}
+	}
+}
+
+func TestRequestLimiterMaxConcurrencyWaitsForResponseClose(t *testing.T) {
+	l := &RequestLimiter{}
+	if err := l.configure(0, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	var sent atomic.Int32
+	tr := rateLimitedTransport{base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		sent.Add(1)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+	}), limiter: l}
+	first, err := tr.RoundTrip(httptest.NewRequest("GET", "https://example.com", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = tr.RoundTrip(httptest.NewRequest("GET", "https://example.com", nil).WithContext(ctx))
+	if !errors.Is(err, context.DeadlineExceeded) || sent.Load() != 1 {
+		t.Fatalf("waiting request sent upstream: err=%v sent=%d", err, sent.Load())
+	}
+	if err := first.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := tr.RoundTrip(httptest.NewRequest("GET", "https://example.com", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Body.Close()
+	if sent.Load() != 2 {
+		t.Fatalf("released slot did not admit next request: sent=%d", sent.Load())
 	}
 }
 
@@ -333,7 +366,7 @@ func TestProviderRateLimitCountsEmptyResponseRetries(t *testing.T) {
 func TestRequestLimiterUsesRollingHistory(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		l := &RequestLimiter{}
-		if err := l.configure(3, 0); err != nil {
+		if err := l.configure(3, 0, 0); err != nil {
 			t.Fatal(err)
 		}
 		start := time.Now()
@@ -365,7 +398,7 @@ func TestRequestLimiterUsesRollingHistory(t *testing.T) {
 func TestRateLimitedTransportCancellationDoesNotSend(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		l := &RequestLimiter{}
-		if err := l.configure(0, 1); err != nil {
+		if err := l.configure(0, 1, 0); err != nil {
 			t.Fatal(err)
 		}
 		calls := 0

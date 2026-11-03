@@ -1140,6 +1140,7 @@ export interface LLMProfile {
   api_key_hint?: string;
   rate_per_second: number;
   rate_per_minute: number;
+  max_concurrency: number; // 0 = 不限制在飞请求数
   context_window_k?: number;
   // 思考开关(thinking.type): ""=不发送(默认) | "disabled"=关闭 | "enabled"=开启
   thinking_type?: string;
