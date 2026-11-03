@@ -7,9 +7,18 @@ import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
 
 export function TOTPCard() {
@@ -19,6 +28,7 @@ export function TOTPCard() {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [open, setOpen] = useState(false);
 
   const load = useCallback(async () => {
     setError("");
@@ -38,6 +48,7 @@ export function TOTPCard() {
     setError("");
     try {
       setEnrollment(await api.setupTOTP());
+      setOpen(true);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -62,6 +73,8 @@ export function TOTPCard() {
       }
       setPassword("");
       setCode("");
+      setOpen(false);
+      window.dispatchEvent(new Event("artex-totp-changed"));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -69,7 +82,6 @@ export function TOTPCard() {
     }
   }
 
-  const hasForm = Boolean(enabled || enrollment);
   const actionLabel = enabled ? "关闭 TOTP" : "验证并启用";
   let statusText = "正在读取 TOTP 状态…";
   if (enabled === true) statusText = "已启用。以后登录需输入验证器显示的六位动态码。";
@@ -77,30 +89,65 @@ export function TOTPCard() {
 
   return (
     <Card className="mb-4 break-inside-avoid md:mb-6">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <ShieldCheckIcon className="size-4" />
-          TOTP 两步验证
-        </CardTitle>
-        <CardDescription>{statusText}</CardDescription>
+      <CardHeader className="flex flex-row items-center justify-between gap-4">
+        <div className="space-y-1.5">
+          <CardTitle className="flex items-center gap-2">
+            <ShieldCheckIcon className="size-4" />
+            TOTP 两步验证
+          </CardTitle>
+          <CardDescription>{statusText}</CardDescription>
+        </div>
+        <Switch
+          aria-label="启用 TOTP 两步验证"
+          checked={enabled === true}
+          disabled={enabled === null || busy}
+          onCheckedChange={(next) => {
+            if (next) void beginSetup();
+            else setOpen(true);
+          }}
+        />
       </CardHeader>
-      <CardContent>
-        {enabled === false && !enrollment ? (
-          <Button type="button" onClick={beginSetup} disabled={busy}>
-            {busy ? "生成中…" : "配置验证器"}
-          </Button>
-        ) : null}
-        {enrollment ? (
-          <div className="mb-4 space-y-3">
-            <p className="text-sm">用验证器扫描二维码，或手动输入下方密钥。验证通过后才会启用。</p>
-            <div className="w-fit rounded-lg bg-white p-3">
-              <QRCodeSVG value={enrollment.uri} size={160} aria-label="TOTP 配置二维码" />
+      {error && !open && (
+        <CardContent>
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+          {enabled === null && (
+            <Button type="button" variant="outline" onClick={load}>
+              重新加载
+            </Button>
+          )}
+        </CardContent>
+      )}
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (!busy) {
+            setOpen(next);
+            if (!next) {
+              setEnrollment(null);
+              setPassword("");
+              setCode("");
+              setError("");
+            }
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{enabled ? "关闭 TOTP 两步验证" : "配置 TOTP 两步验证"}</DialogTitle>
+            <DialogDescription>在这里完成验证后，设置才会生效。</DialogDescription>
+          </DialogHeader>
+          {enrollment ? (
+            <div className="mb-4 space-y-3">
+              <p className="text-sm">用验证器扫描二维码，或手动输入下方密钥。验证通过后才会启用。</p>
+              <div className="w-fit rounded-lg bg-white p-3">
+                <QRCodeSVG value={enrollment.uri} size={160} aria-label="TOTP 配置二维码" />
+              </div>
+              <p className="break-all rounded-md bg-muted p-2 font-mono text-sm select-all">{enrollment.secret}</p>
+              <FieldDescription>密钥只在本次配置时显示，请妥善保存。</FieldDescription>
             </div>
-            <p className="break-all rounded-md bg-muted p-2 font-mono text-sm select-all">{enrollment.secret}</p>
-            <FieldDescription>密钥只在本次配置时显示，请妥善保存。</FieldDescription>
-          </div>
-        ) : null}
-        {hasForm ? (
+          ) : null}
           <form id="totp-form" onSubmit={save}>
             <FieldGroup>
               <Field>
@@ -139,34 +186,21 @@ export function TOTPCard() {
               ) : null}
             </FieldGroup>
           </form>
-        ) : null}
-        {!hasForm && error ? (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        ) : null}
-        {enabled === null && error ? (
-          <Button type="button" variant="outline" onClick={load}>
-            重新加载
-          </Button>
-        ) : null}
-      </CardContent>
-      {hasForm ? (
-        <CardFooter className="mt-4 gap-2">
-          <Button
-            type="submit"
-            form="totp-form"
-            disabled={busy || code.length !== 6 || !password}
-            variant={enabled ? "destructive" : "default"}
-          >
-            {busy ? "保存中…" : actionLabel}
-          </Button>
-          {enrollment ? (
+          <DialogFooter className="gap-2">
+            <Button
+              type="submit"
+              form="totp-form"
+              disabled={busy || code.length !== 6 || !password}
+              variant={enabled ? "destructive" : "default"}
+            >
+              {busy ? "保存中…" : actionLabel}
+            </Button>
             <Button
               type="button"
               variant="outline"
               disabled={busy}
               onClick={() => {
+                setOpen(false);
                 setEnrollment(null);
                 setPassword("");
                 setCode("");
@@ -175,9 +209,9 @@ export function TOTPCard() {
             >
               取消
             </Button>
-          ) : null}
-        </CardFooter>
-      ) : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

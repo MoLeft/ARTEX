@@ -58,7 +58,8 @@ export function BasicAuthCard() {
 
   return (
     <Card className="mb-4 break-inside-avoid md:mb-6">
-      <CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between gap-4">
+        <div className="space-y-1.5">
         <CardTitle className="flex items-center gap-2">
           <ShieldCheckIcon className="size-4" />
           HTTP Basic Auth
@@ -66,19 +67,12 @@ export function BasicAuthCard() {
         <CardDescription>
           开启后，访客需先通过浏览器原生账号密码验证，再进入 ARTEX 登录页。默认关闭，保存后立即生效。
         </CardDescription>
+        </div>
+        <Switch aria-label="启用访问验证" checked={enabled} onCheckedChange={setEnabled} disabled={!loaded || saving} />
       </CardHeader>
       <form onSubmit={save}>
         <CardContent>
           <FieldGroup>
-            <Field orientation="horizontal">
-              <FieldLabel htmlFor="basic-auth-enabled">启用访问验证</FieldLabel>
-              <Switch
-                id="basic-auth-enabled"
-                checked={enabled}
-                onCheckedChange={setEnabled}
-                disabled={!loaded || saving}
-              />
-            </Field>
             {enabled && <Field>
               <FieldLabel htmlFor="basic-auth-username">验证用户名</FieldLabel>
               <Input
@@ -116,7 +110,7 @@ export function BasicAuthCard() {
             ) : null}
           </FieldGroup>
         </CardContent>
-        <CardFooter className="mt-4 gap-2">
+        <CardFooter className="mt-4 justify-end gap-2">
           <Button type="submit" disabled={!loaded || saving}>
             {saving ? "保存中…" : "保存访问验证"}
           </Button>

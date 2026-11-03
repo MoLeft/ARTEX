@@ -234,6 +234,35 @@ func TestPasskeyRegistrationLoginStillRequiresTOTP(t *testing.T) {
 	if err = m.pg.SetSetting(totpSettingKey, encrypted); err != nil {
 		t.Fatal(err)
 	}
+	checkSettings := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "https://example.com"+path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+adminToken)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+	goodCode := totpCode(secret, time.Now())
+	badCode := "0" + goodCode[1:]
+	if goodCode[0] == '0' {
+		badCode = "1" + goodCode[1:]
+	}
+	badWhitelist := checkSettings("PUT", "/api/settings/ip-whitelist", `{"enabled":false,"cidrs":[],"code":"`+badCode+`"}`)
+	if badWhitelist.Code != 401 {
+		t.Fatalf("whitelist accepted wrong TOTP: %d %s", badWhitelist.Code, badWhitelist.Body.String())
+	}
+	goodWhitelist := checkSettings("PUT", "/api/settings/ip-whitelist", `{"enabled":false,"cidrs":[],"code":"`+goodCode+`"}`)
+	if goodWhitelist.Code != 200 {
+		t.Fatalf("whitelist rejected valid TOTP: %d %s", goodWhitelist.Code, goodWhitelist.Body.String())
+	}
+	keyPath := "/api/settings/passkeys/" + base64.RawURLEncoding.EncodeToString(credentialID)
+	badRename := checkSettings("PUT", keyPath, `{"remark":"renamed","code":"`+badCode+`"}`)
+	if badRename.Code != 401 {
+		t.Fatalf("passkey rename accepted wrong TOTP: %d %s", badRename.Code, badRename.Body.String())
+	}
+	goodRename := checkSettings("PUT", keyPath, `{"remark":"renamed","code":"`+goodCode+`"}`)
+	if goodRename.Code != 200 {
+		t.Fatalf("passkey rename rejected valid TOTP: %d %s", goodRename.Code, goodRename.Body.String())
+	}
 	loginBegin := request("/api/auth/passkey/login/begin", `{}`, "")
 	var challenge beginResult
 	if loginBegin.Code != 200 || json.Unmarshal(loginBegin.Body.Bytes(), &challenge) != nil {
@@ -261,5 +290,13 @@ func TestPasskeyRegistrationLoginStillRequiresTOTP(t *testing.T) {
 	complete := request("/api/auth/totp", string(totpBody), "")
 	if complete.Code != 200 || !strings.Contains(complete.Body.String(), `"token"`) {
 		t.Fatalf("passkey TOTP completion: %d %s", complete.Code, complete.Body.String())
+	}
+	badDelete := checkSettings("DELETE", keyPath, `{"code":"`+badCode+`"}`)
+	if badDelete.Code != 401 {
+		t.Fatalf("passkey deletion accepted wrong TOTP: %d %s", badDelete.Code, badDelete.Body.String())
+	}
+	goodDelete := checkSettings("DELETE", keyPath, `{"code":"`+goodCode+`"}`)
+	if goodDelete.Code != 200 {
+		t.Fatalf("passkey deletion rejected valid TOTP: %d %s", goodDelete.Code, goodDelete.Body.String())
 	}
 }

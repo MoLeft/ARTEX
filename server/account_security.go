@@ -299,9 +299,15 @@ func (s *Server) saveIPWhitelist(w http.ResponseWriter, r *http.Request) {
 	if s.pg(w) == nil {
 		return
 	}
-	var req ipWhitelist
+	var req struct {
+		ipWhitelist
+		Code string `json:"code"`
+	}
 	if decode(r, &req) != nil || len(req.CIDRs) > 64 {
 		writeErr(w, 400, "IP 段格式错误或数量超过 64")
+		return
+	}
+	if !s.verifySettingsTOTP(w, r, req.Code) {
 		return
 	}
 	seen := map[string]bool{}
@@ -323,12 +329,30 @@ func (s *Server) saveIPWhitelist(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "开启白名单时必须包含当前访问 IP，避免锁定自己")
 		return
 	}
-	data, _ := json.Marshal(req)
+	data, _ := json.Marshal(req.ipWhitelist)
 	if err := s.m.pg.SetSetting(ipWhitelistKey, string(data)); err != nil {
 		writeErr(w, 503, errDataSourceUnavailable)
 		return
 	}
 	s.getIPWhitelist(w, r)
+}
+
+func (s *Server) verifySettingsTOTP(w http.ResponseWriter, r *http.Request, code string) bool {
+	required, valid, err := checkLoginTOTP(s.m.pg, s.jwtKey, code, time.Now())
+	if err != nil {
+		writeErr(w, 503, errDataSourceUnavailable)
+		return false
+	}
+	if required && !valid {
+		s.recordLoginFailure(r, "修改账号安全设置时 TOTP 验证失败")
+		if !s.totpAttempts.allow(time.Now()) {
+			writeErr(w, 429, "验证码尝试过多，请一分钟后重试")
+		} else {
+			writeErr(w, 401, "TOTP 验证码错误")
+		}
+		return false
+	}
+	return true
 }
 
 func (s *Server) getSessions(w http.ResponseWriter, r *http.Request) {

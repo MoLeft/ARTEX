@@ -53,9 +53,8 @@ func bootUpdateState() selfupdate.State {
 
 // releaseCache 缓存 GitHub 的最新版本查询结果。
 //
-// 顶栏的"有新版本"提示会在每次整页加载时查一次，而未认证的 GitHub API 是
-// 每 IP 每小时 60 次——不缓存的话，多开几个标签页或刷几次页面就把配额耗光了，
-// 之后真想更新时反而查不动。用户显式点"检查更新"时可以 force 绕过缓存。
+// 默认请求使用缓存，安装时也复用刚展示给用户的版本；网页进入和手动检查
+// 使用 force 回源，以便刚发布的版本立即可见。
 type releaseCache struct {
 	mu      sync.Mutex
 	rel     *selfupdate.Release
@@ -213,6 +212,7 @@ func (h *updateHub) subscribe() (<-chan updateProgress, func()) {
 // 的情况很常见（服务器在内网、或代理只配在浏览器上），那时点更新必然失败，
 // 不如在检查这一步就如实报错。
 func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	current := BuildVersion
 	mode := "binary"
 	if selfupdate.InDocker() {
@@ -230,7 +230,7 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 		"rolled_back": boot.RolledBack,
 	}
 
-	// 顶栏提示走缓存（默认）；用户点"检查更新"时带 force=1 强制回源。
+	// 网页进入和手动检查带 force=1，其余调用可使用缓存。
 	force := r.URL.Query().Get("force") != ""
 	client, settings, err := s.updateClient()
 	if err != nil {

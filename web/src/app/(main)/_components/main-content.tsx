@@ -54,7 +54,12 @@ function MainContentInner({ children }: { children: ReactNode }) {
   }, []);
 
   if (isFullBleed(pathname)) {
-    return <>{children}</>;
+    return (
+      <>
+        <UpdateBadge hideBadge />
+        {children}
+      </>
+    );
   }
 
   return (
@@ -89,7 +94,7 @@ function MainContentInner({ children }: { children: ReactNode }) {
           </div>
         </div>
       </header>
-      <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden p-4 has-data-[content-padding=false]:p-0 md:p-6 md:has-data-[content-padding=false]:p-0">
+      <div className="min-h-0 min-w-0 flex-1 overflow-x-clip p-4 has-data-[content-padding=false]:p-0 md:p-6 md:has-data-[content-padding=false]:p-0">
         {children}
       </div>
     </>
