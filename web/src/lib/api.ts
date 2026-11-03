@@ -162,7 +162,7 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
       throw new Error("当前 IP 不在白名单内");
     }
   }
-  if (r.status === 401 && !["/auth/login", "/auth/totp", "/auth/sessions/revoke-others", "/settings/passkeys/register/begin"].includes(path) && !path.startsWith("/auth/passkey/login/finish?") && !path.startsWith("/settings/passkeys/register/finish?") && !(path === "/settings/ip-whitelist" && init?.method === "PUT") && !(path.startsWith("/settings/passkeys/") && ["PUT", "DELETE"].includes(init?.method ?? ""))) {
+  if (r.status === 401 && !["/auth/login", "/auth/totp", "/auth/sessions/revoke-others", "/settings/passkeys/register/begin"].includes(path) && !path.startsWith("/auth/passkey/login/finish?") && !path.startsWith("/settings/passkeys/register/finish?") && !(path.startsWith("/auth/sessions/") && path.endsWith("/revoke")) && !(["/settings/ip-whitelist", "/settings/basic-auth", "/settings/login-failure-notify"].includes(path) && init?.method === "PUT") && !(path.startsWith("/settings/passkeys/") && ["PUT", "DELETE"].includes(init?.method ?? ""))) {
     if (typeof window !== "undefined") {
       localStorage.removeItem("artex_token");
       document.cookie = "artex_token=; path=/; max-age=0";
@@ -349,7 +349,7 @@ export const api = {
   passkeyLoginFinish: (challengeId: string, credential: Record<string, unknown>) =>
     post<{ token?: string; totp_required?: boolean; pending_token?: string }>(`/auth/passkey/login/finish?challenge_id=${encodeURIComponent(challengeId)}`, credential),
   sessions: () => get<{ count: number; sessions: { id: string; user_agent: string; ip: string; factor: string; created_at: string; last_seen_at: string; current: boolean }[] }>("/auth/sessions"),
-  revokeOtherSessions: (code: string) => post<{ revoked: number }>("/auth/sessions/revoke-others", { code }),
+  revokeSession: (id: string, code: string) => post<{ revoked: number }>(`/auth/sessions/${encodeURIComponent(id)}/revoke`, { code }),
   initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
   changePassword: (oldPassword: string, newPassword: string) =>
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
@@ -1058,7 +1058,7 @@ export const api = {
     ),
   settings: () => get<Settings>(`/settings`),
   basicAuthSettings: () => get<{ enabled: boolean; username: string; password_set: boolean }>("/settings/basic-auth"),
-  setBasicAuthSettings: (settings: { enabled: boolean; username: string; password: string }) =>
+  setBasicAuthSettings: (settings: { enabled: boolean; username: string; password: string; code?: string }) =>
     put<{ enabled: boolean; username: string; password_set: boolean }>("/settings/basic-auth", settings),
   totpSettings: () => get<{ enabled: boolean }>("/settings/totp"),
   setupTOTP: () => post<{ secret: string; uri: string }>("/settings/totp/setup"),
@@ -1068,7 +1068,7 @@ export const api = {
   ipWhitelist: () => get<{ enabled: boolean; cidrs: string[]; current_ip: string }>("/settings/ip-whitelist"),
   saveIPWhitelist: (enabled: boolean, cidrs: string[], code = "") => put<{ enabled: boolean; cidrs: string[]; current_ip: string }>("/settings/ip-whitelist", { enabled, cidrs, code }),
   loginFailureNotify: () => get<{ enabled: boolean }>("/settings/login-failure-notify"),
-  saveLoginFailureNotify: (enabled: boolean) => put<{ enabled: boolean }>("/settings/login-failure-notify", { enabled }),
+  saveLoginFailureNotify: (enabled: boolean, code = "") => put<{ enabled: boolean }>("/settings/login-failure-notify", { enabled, code }),
   passkeys: () => get<{ origin: string; passkeys: { id: string; remark: string; created_at: string; last_used_at: string | null }[] }>("/settings/passkeys"),
   passkeyRegisterBegin: (remark: string, password: string, code: string) => post<{ challenge_id: string; options: { publicKey: Record<string, unknown> } }>("/settings/passkeys/register/begin", { remark, password, code }),
   passkeyRegisterFinish: (challengeId: string, credential: Record<string, unknown>) => post<{ ok: boolean }>(`/settings/passkeys/register/finish?challenge_id=${encodeURIComponent(challengeId)}`, credential),

@@ -421,7 +421,7 @@ func TestBasicAuthPostgresLoginFlow(t *testing.T) {
 		t.Skipf("postgres unavailable: %v", err)
 	}
 	defer m.Close()
-	for _, key := range []string{basicAuthKey, authPassKey} {
+	for _, key := range []string{basicAuthKey, authPassKey, totpSettingKey} {
 		old, exists, err := m.pg.GetSetting(key)
 		if err != nil {
 			t.Fatal(err)
@@ -435,6 +435,9 @@ func TestBasicAuthPostgresLoginFlow(t *testing.T) {
 		}(key, old, exists)
 	}
 	if err := m.pg.SetSetting(basicAuthKey, `{"enabled":false}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.pg.SetSetting(totpSettingKey, ""); err != nil {
 		t.Fatal(err)
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte("admin-password"), bcrypt.MinCost)

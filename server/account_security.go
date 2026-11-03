@@ -433,6 +433,46 @@ func (s *Server) revokeOtherSessions(w http.ResponseWriter, r *http.Request) {
 	count, _ := result.RowsAffected()
 	writeJSON(w, 200, map[string]any{"revoked": count})
 }
+
+func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
+	if s.pg(w) == nil {
+		return
+	}
+	current, err := s.activeSession(r)
+	if err != nil {
+		writeErr(w, 401, "未授权")
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, 400, "会话 ID 无效")
+		return
+	}
+	if id.String() == current {
+		writeErr(w, 400, "不能退出当前会话")
+		return
+	}
+	var req struct {
+		Code string `json:"code"`
+	}
+	if decode(r, &req) != nil {
+		writeErr(w, 400, "请求格式错误")
+		return
+	}
+	if !s.verifySettingsTOTP(w, r, req.Code) {
+		return
+	}
+	result, err := s.m.pg.ExecContext(r.Context(), `UPDATE auth_sessions SET revoked_at=now() WHERE id=$1 AND id<>$2 AND revoked_at IS NULL AND expires_at>now()`, id.String(), current)
+	if err != nil {
+		writeErr(w, 503, errDataSourceUnavailable)
+		return
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		writeErr(w, 404, "会话不存在或已退出")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"revoked": 1})
+}
 func (s *Server) getLoginFailureNotify(w http.ResponseWriter, _ *http.Request) {
 	if s.pg(w) == nil {
 		return
@@ -449,10 +489,14 @@ func (s *Server) saveLoginFailureNotify(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		Enabled bool `json:"enabled"`
+		Enabled bool   `json:"enabled"`
+		Code    string `json:"code"`
 	}
 	if decode(r, &req) != nil {
 		writeErr(w, 400, "请求格式错误")
+		return
+	}
+	if !s.verifySettingsTOTP(w, r, req.Code) {
 		return
 	}
 	value := "false"

@@ -2604,6 +2604,18 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/settings/basic-auth" && m === "GET") return { enabled: false, username: "", password_set: false };
   if (path === "/settings/basic-auth" && m === "PUT")
     throw new Error("演示模式不支持修改 HTTP Basic Auth，请在实际部署中配置");
+  if (path === "/auth/sessions" && m === "GET") {
+    const now = new Date().toISOString();
+    return { count: 2, sessions: [
+      { id: "demo-current", user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", ip: "192.0.2.1", factor: "password", created_at: now, last_seen_at: now, current: true },
+      { id: "demo-other", user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", ip: "192.0.2.2", factor: "passkey", created_at: now, last_seen_at: now, current: false },
+    ] };
+  }
+  if (path === "/settings/ip-whitelist" && m === "GET") return { enabled: false, cidrs: [], current_ip: "192.0.2.1" };
+  if (path === "/settings/passkeys" && m === "GET") return { origin: "", passkeys: [] };
+  if (path === "/settings/login-failure-notify" && m === "GET") return { enabled: false };
+  if ((path.startsWith("/auth/sessions/") && m === "POST") || (["/settings/ip-whitelist", "/settings/login-failure-notify"].includes(path) && m === "PUT") || (path.startsWith("/settings/passkeys/") && m !== "GET"))
+    throw new Error("演示模式不支持修改账号安全设置，请在实际部署中配置");
   if (path === "/settings/totp" && m === "GET") return { enabled: false };
   if (path === "/settings/totp" || path === "/settings/totp/setup")
     throw new Error("演示模式不支持修改 TOTP，请在实际部署中配置");

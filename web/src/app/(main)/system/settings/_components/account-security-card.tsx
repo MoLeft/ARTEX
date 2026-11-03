@@ -26,7 +26,7 @@ function deviceFromUA(ua: string): string {
   return "未知设备";
 }
 
-function useTOTPStatus() {
+export function useTOTPStatus() {
   const [enabled, setEnabled] = React.useState<boolean | null>(null);
   React.useEffect(() => {
     let active = true;
@@ -50,7 +50,7 @@ function useTOTPStatus() {
 
 export function SessionsCard() {
   const [data, setData] = React.useState<Awaited<ReturnType<typeof api.sessions>> | null>(null);
-  const [open, setOpen] = React.useState(false);
+  const [target, setTarget] = React.useState<{ id: string; device: string; ip: string } | null>(null);
   const totpEnabled = useTOTPStatus();
   const load = React.useCallback(async () => {
     try {
@@ -63,8 +63,9 @@ export function SessionsCard() {
     void load();
   }, [load]);
   async function revoke(code: string) {
-    const result = await api.revokeOtherSessions(code);
-    toast.success(`已退出 ${result.revoked} 个其他会话`);
+    if (!target) return;
+    await api.revokeSession(target.id, code);
+    toast.success("该会话已退出");
     await load();
   }
   return (
@@ -83,35 +84,29 @@ export function SessionsCard() {
       <CardContent className="space-y-4">
         <div className="max-h-72 space-y-2 overflow-y-auto">
           {data?.sessions.map((item) => (
-            <div key={item.id} className="rounded-md border p-3 text-sm">
-              <div className="font-medium">
-                {deviceFromUA(item.user_agent)} {item.current && <span className="text-primary">· 当前设备</span>}
+            <div key={item.id} className="flex items-center gap-3 rounded-md border p-3 text-sm">
+              <div className="min-w-0 flex-1">
+                <div className="font-medium">
+                  {deviceFromUA(item.user_agent)} {item.current && <span className="text-primary">· 当前设备</span>}
+                </div>
+                <div className="text-muted-foreground">
+                  IP：{item.ip} · {item.factor === "passkey" ? "通行密钥" : "密码"}登录 · 最近活动{" "}
+                  {new Date(item.last_seen_at).toLocaleString()}
+                </div>
+                <div className="truncate text-xs text-muted-foreground" title={item.user_agent}>
+                  {item.user_agent}
+                </div>
               </div>
-              <div className="text-muted-foreground">
-                IP：{item.ip} · {item.factor === "passkey" ? "通行密钥" : "密码"}登录 · 最近活动{" "}
-                {new Date(item.last_seen_at).toLocaleString()}
-              </div>
-              <div className="truncate text-xs text-muted-foreground" title={item.user_agent}>
-                {item.user_agent}
-              </div>
+              {!item.current && <Button variant="destructive" size="sm" disabled={totpEnabled === null} onClick={() => setTarget({ id: item.id, device: deviceFromUA(item.user_agent), ip: item.ip })}>退出</Button>}
             </div>
           ))}
         </div>
-        <div className="flex justify-end">
-          <Button
-            variant="destructive"
-            disabled={totpEnabled === null || (data?.count ?? 0) <= 1}
-            onClick={() => setOpen(true)}
-          >
-            强制退出其他设备
-          </Button>
-        </div>
       </CardContent>
       <SecurityActionDialog
-        open={open}
-        onOpenChange={setOpen}
-        title="强制退出其他设备"
-        description="其他设备会立即失去登录状态。"
+        open={target !== null}
+        onOpenChange={(open) => { if (!open) setTarget(null); }}
+        title="退出此设备会话"
+        description={target ? `${target.device} · ${target.ip}。该设备会立即失去登录状态。` : undefined}
         confirmLabel="确认退出"
         totpEnabled={totpEnabled === true}
         onConfirm={revoke}
@@ -360,20 +355,20 @@ export function PasskeysCard() {
 export function LoginFailureNotifyCard() {
   const [enabled, setEnabled] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const [pending, setPending] = React.useState<boolean | null>(null);
+  const totpEnabled = useTOTPStatus();
   React.useEffect(() => {
     void api
       .loginFailureNotify()
       .then((v) => setEnabled(v.enabled))
       .catch((e) => toast.error((e as Error).message));
   }, []);
-  async function save(value: boolean) {
+  async function save(value: boolean, code: string) {
     setBusy(true);
     try {
-      await api.saveLoginFailureNotify(value);
+      await api.saveLoginFailureNotify(value, code);
       setEnabled(value);
       toast.success(value ? "登录失败通知已开启" : "登录失败通知已关闭");
-    } catch (e) {
-      toast.error((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -387,8 +382,9 @@ export function LoginFailureNotifyCard() {
             密码错误、TOTP 错误和通行密钥验证失败会经现有通知渠道发送安全事件；同一 IP 的同类事件一分钟内合并。
           </CardDescription>
         </div>
-        <Switch aria-label="启用登录失败通知" checked={enabled} disabled={busy} onCheckedChange={(v) => void save(v)} />
+        <Switch aria-label="启用登录失败通知" checked={enabled} disabled={busy || totpEnabled === null} onCheckedChange={setPending} />
       </CardHeader>
+      <SecurityActionDialog open={pending !== null} onOpenChange={(open) => { if (!open) setPending(null); }} title={pending ? "开启登录失败通知" : "关闭登录失败通知"} totpEnabled={totpEnabled === true} onConfirm={(code) => save(pending ?? enabled, code)} />
     </Card>
   );
 }

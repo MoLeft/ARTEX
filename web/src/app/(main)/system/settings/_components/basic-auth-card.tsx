@@ -11,6 +11,8 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
+import { useTOTPStatus } from "./account-security-card";
+import { SecurityActionDialog } from "./security-action-dialog";
 
 export function BasicAuthCard() {
   const [enabled, setEnabled] = useState(false);
@@ -20,6 +22,8 @@ export function BasicAuthCard() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const totpEnabled = useTOTPStatus();
 
   const load = useCallback(async () => {
     setError("");
@@ -38,12 +42,11 @@ export function BasicAuthCard() {
     void load();
   }, [load]);
 
-  const save = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const save = async (code: string) => {
     setSaving(true);
     setError("");
     try {
-      const settings = await api.setBasicAuthSettings({ enabled, username: username.trim(), password });
+      const settings = await api.setBasicAuthSettings({ enabled, username: username.trim(), password, code });
       setEnabled(settings.enabled);
       setUsername(settings.username);
       setPasswordSet(settings.password_set);
@@ -51,6 +54,7 @@ export function BasicAuthCard() {
       toast.success(settings.enabled ? "HTTP Basic Auth 已开启，当前浏览器保持访问" : "HTTP Basic Auth 已关闭");
     } catch (e) {
       setError(`保存失败：${(e as Error).message}`);
+      throw e;
     } finally {
       setSaving(false);
     }
@@ -70,7 +74,7 @@ export function BasicAuthCard() {
         </div>
         <Switch aria-label="启用访问验证" checked={enabled} onCheckedChange={setEnabled} disabled={!loaded || saving} />
       </CardHeader>
-      <form onSubmit={save}>
+      <form onSubmit={(event) => { event.preventDefault(); setConfirmOpen(true); }}>
         <CardContent>
           <FieldGroup>
             {enabled && <Field>
@@ -111,7 +115,7 @@ export function BasicAuthCard() {
           </FieldGroup>
         </CardContent>
         <CardFooter className="mt-4 justify-end gap-2">
-          <Button type="submit" disabled={!loaded || saving}>
+          <Button type="submit" disabled={!loaded || saving || totpEnabled === null}>
             {saving ? "保存中…" : "保存访问验证"}
           </Button>
           {!loaded && error ? (
@@ -121,6 +125,7 @@ export function BasicAuthCard() {
           ) : null}
         </CardFooter>
       </form>
+      <SecurityActionDialog open={confirmOpen} onOpenChange={setConfirmOpen} title="保存 HTTP Basic Auth" description="确认修改访问验证设置。" totpEnabled={totpEnabled === true} onConfirm={save} />
     </Card>
   );
 }

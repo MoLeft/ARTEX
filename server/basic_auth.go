@@ -168,10 +168,16 @@ func (s *Server) saveBasicAuthSettings(w http.ResponseWriter, r *http.Request) {
 		Enabled  *bool   `json:"enabled"`
 		Username *string `json:"username"`
 		Password string  `json:"password"`
+		Code     string  `json:"code"`
 	}
 	if err := decode(r, &req); err != nil {
 		writeErr(w, 400, "请求格式错误")
 		return
+	}
+	if s.m != nil {
+		if s.pg(w) == nil || !s.verifySettingsTOTP(w, r, req.Code) {
+			return
+		}
 	}
 	g := &s.basicAuth
 	g.saveMu.Lock()

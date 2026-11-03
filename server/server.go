@@ -798,6 +798,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
 	mux.HandleFunc("GET /api/auth/sessions", s.getSessions)
 	mux.HandleFunc("POST /api/auth/sessions/revoke-others", s.revokeOtherSessions)
+	mux.HandleFunc("POST /api/auth/sessions/{id}/revoke", s.revokeSession)
 	mux.HandleFunc("GET /api/settings/ip-whitelist", s.getIPWhitelist)
 	mux.HandleFunc("PUT /api/settings/ip-whitelist", s.saveIPWhitelist)
 	mux.HandleFunc("GET /api/settings/login-failure-notify", s.getLoginFailureNotify)

@@ -709,16 +709,6 @@ export default function SystemSettingsPage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">系统配置</h1>
         <p className="text-muted-foreground text-sm">全局运行时开关</p>
-        <div className="relative mt-4 max-w-xl">
-          <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
-          <Input
-            value={settingQuery}
-            onChange={(event) => setSettingQuery(event.target.value)}
-            placeholder="搜索设置，例如：截图、OPSEC、代理、流量"
-            className="pl-9"
-            aria-label="搜索系统设置"
-          />
-        </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row lg:items-start">
@@ -726,6 +716,16 @@ export default function SystemSettingsPage() {
           <div className="flex max-h-[calc(100dvh-5rem)] flex-col rounded-xl border bg-card/60 p-2 shadow-sm">
             <div className="px-3 pb-2 pt-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               配置目录
+            </div>
+            <div className="relative px-2 pb-2">
+              <SearchIcon className="pointer-events-none absolute top-2.5 left-5 size-4 text-muted-foreground" />
+              <Input
+                value={settingQuery}
+                onChange={(event) => setSettingQuery(event.target.value)}
+                placeholder="搜索配置…"
+                className="pl-9"
+                aria-label="搜索系统设置"
+              />
             </div>
             <nav
               className="flex gap-1 overflow-x-auto lg:min-h-0 lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto"
