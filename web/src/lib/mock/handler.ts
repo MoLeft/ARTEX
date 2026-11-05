@@ -1063,6 +1063,8 @@ export async function mockHandle<T>(method: string, rawPath: string, body?: Body
 function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Record<string, unknown>): unknown {
   const task = q.get("task") ?? undefined;
 
+  if (path === "/version" && m === "GET") return { version: "demo" };
+
   if (path === "/system/metrics")
     return {
       scope: "demo",
