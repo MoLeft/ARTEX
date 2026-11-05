@@ -3,6 +3,8 @@
 import * as React from "react";
 
 import Link from "next/link";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { ArrowUpCircleIcon } from "lucide-react";
 
@@ -81,13 +83,23 @@ export function UpdateBadge({ hideBadge = false }: { hideBadge?: boolean }) {
         </Link>
       ) : null}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="!h-dvh !max-h-dvh !w-screen !max-w-none grid-rows-[auto_minmax(0,1fr)_auto] !rounded-none p-6 sm:p-10">
-          <DialogHeader>
-            <DialogTitle className="text-2xl">发现新版本 {info?.latest}</DialogTitle>
+        <DialogContent className="flex h-[min(72dvh,38rem)] max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] flex-col overflow-hidden sm:max-w-md">
+          <DialogHeader className="pr-7">
+            <DialogTitle className="text-lg">发现新版本 {info?.latest}</DialogTitle>
             <DialogDescription>当前版本 {info?.current}。更新会重启程序，正在运行的任务会被中断。</DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded-lg bg-muted p-5 text-sm">
-            {info?.notes || "此版本暂无更新说明。"}
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-lg bg-muted p-4 text-sm leading-relaxed [overflow-wrap:anywhere] [&_a]:text-primary [&_a]:underline [&_h1]:text-base [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-background [&_pre]:p-2 [&_ul]:list-disc [&_ul]:pl-5">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              skipHtml
+              urlTransform={defaultUrlTransform}
+              components={{
+                a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                img: () => null,
+              }}
+            >
+              {info?.notes || "此版本暂无更新说明。"}
+            </ReactMarkdown>
           </div>
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={skip}>
