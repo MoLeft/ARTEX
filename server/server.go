@@ -40,16 +40,17 @@ var BuildVersion = "dev"
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
-	scheduleMu    sync.Mutex
-	m             *Manager
-	engine        *Engine
-	ctx           context.Context
-	dataDir       string
-	retentionWake chan struct{}
-	browserPool   *browserPool
-	metricsMu     sync.Mutex
-	lastCPUUse    uint64
-	lastCPUAt     time.Time
+	scheduleMu           sync.Mutex
+	m                    *Manager
+	engine               *Engine
+	ctx                  context.Context
+	dataDir              string
+	retentionWake        chan struct{}
+	workspaceCleanupWake chan struct{}
+	browserPool          *browserPool
+	metricsMu            sync.Mutex
+	lastCPUUse           uint64
+	lastCPUAt            time.Time
 
 	skillDir          string // root directory for skill subdirectories
 	jwtKey            []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
@@ -175,7 +176,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
-		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), credentialWake: make(chan struct{}, 1), retentionWake: make(chan struct{}, 1)}
+		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1), credentialWake: make(chan struct{}, 1), retentionWake: make(chan struct{}, 1), workspaceCleanupWake: make(chan struct{}, 1)}
 	m.SetTaskControlMutex(&s.concMu)
 	s.initSideQuestions()
 	if m.pg != nil {
@@ -284,6 +285,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		// seeded browser MCP on first run). Async so it never blocks startup.
 		go s.discoverEmptyMCPsOnStartup()
 		go s.runRecordRetentionLoop()
+		go s.runWorkspaceCleanupLoop()
 		logSink.SetDB(ctx, m.pg) // restore last 100 log rows and enable async persistence
 	}
 	// precedence: persisted DB config > env.
@@ -3773,6 +3775,7 @@ func (s *Server) settingsPayload() map[string]any {
 	on, backend, braveKey, tavilyKey, proxy := s.m.WebSearch()
 	pyStored, _, _ := s.m.pg.GetSetting(settingPythonInterp)
 	concOn, concLimit := s.m.ConcurrencyLimit()
+	workspaceCleanup, _ := s.loadWorkspaceCleanupConfig()
 	if concLimit == 0 {
 		concLimit = defaultConcurrencyLimit // 关闭时也回显一个合理默认值给 UI
 	}
@@ -3816,7 +3819,10 @@ func (s *Server) settingsPayload() map[string]any {
 		"constraints_inject_worker":  s.constraintInjectWorker(),
 		// 实验功能:noa 模型驱动上下文压缩(默认关)。开启后平台接入的四类 agent 由 noa
 		// 接管上下文压缩,取代内置 compaction;每 run 读一次,对之后启动的 run 生效。
-		"noa_compaction": s.m.NoaCompactionEnabled(),
+		"noa_compaction":                   s.m.NoaCompactionEnabled(),
+		"workspace_cleanup_enabled":        workspaceCleanup.Enabled,
+		"workspace_cleanup_interval_hours": workspaceCleanup.IntervalHours,
+		"workspace_cleanup_retention_days": workspaceCleanup.RetentionDays,
 		// 漏洞 IM 推送的全局项。渠道本身是独立资源，走 /api/notify/* 管理；
 		// 这里只放「作用于全部渠道」的三项。
 		"notify_enabled":             s.m.pg.GetBool(settingNotifyEnabled, true),
@@ -3913,7 +3919,10 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		ConstraintsInjectPlanner *bool `json:"constraints_inject_planner"`
 		ConstraintsInjectWorker  *bool `json:"constraints_inject_worker"`
 		// 实验功能:noa 上下文压缩开关(默认关);每 run 读,对之后启动的 run 生效,无需重建 agent。
-		NoaCompaction *bool `json:"noa_compaction"`
+		NoaCompaction                 *bool `json:"noa_compaction"`
+		WorkspaceCleanupEnabled       *bool `json:"workspace_cleanup_enabled"`
+		WorkspaceCleanupIntervalHours *int  `json:"workspace_cleanup_interval_hours"`
+		WorkspaceCleanupRetentionDays *int  `json:"workspace_cleanup_retention_days"`
 		// 漏洞 IM 推送的全局项。三者都由投递引擎每轮读一次，改完即时生效，
 		// 不需要重建 agent 或重启。
 		NotifyEnabled        *bool   `json:"notify_enabled"`
@@ -3926,6 +3935,28 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	var workspaceCfg *workspaceCleanupConfig
+	if req.WorkspaceCleanupEnabled != nil || req.WorkspaceCleanupIntervalHours != nil || req.WorkspaceCleanupRetentionDays != nil {
+		cfg, err := s.loadWorkspaceCleanupConfig()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if req.WorkspaceCleanupEnabled != nil {
+			cfg.Enabled = *req.WorkspaceCleanupEnabled
+		}
+		if req.WorkspaceCleanupIntervalHours != nil {
+			cfg.IntervalHours = *req.WorkspaceCleanupIntervalHours
+		}
+		if req.WorkspaceCleanupRetentionDays != nil {
+			cfg.RetentionDays = *req.WorkspaceCleanupRetentionDays
+		}
+		if err := cfg.validate(); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		workspaceCfg = &cfg
 	}
 	if req.NotifyQuietStart != nil || req.NotifyQuietEnd != nil {
 		start := notifySetting(s.m.pg, settingNotifyQuietStart)
@@ -3975,6 +4006,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if req.NoaCompaction != nil {
 		// 每 run 读的解析器,切换即时对之后启动的 run 生效,无需 applyLLM 重建。
 		if err := s.m.SetNoaCompaction(*req.NoaCompaction); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if workspaceCfg != nil {
+		if err := s.saveWorkspaceCleanupConfig(r.Context(), *workspaceCfg); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}

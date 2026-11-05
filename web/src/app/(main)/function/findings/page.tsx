@@ -13,6 +13,7 @@ import {
   InfoIcon,
   SearchIcon,
   ShieldAlertIcon,
+  Trash2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -22,6 +23,17 @@ import { FindingDateFilter, type FindingDateRange } from "@/components/finding-d
 import { FindingRetestDialog } from "@/components/finding-retest-dialog";
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -42,8 +54,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
-import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { useListState } from "@/lib/list-state";
+import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { SEVERITY_FILTER_OPTIONS, statusMeta } from "@/lib/status";
 import type {
   ActiveFindingRetest,
@@ -282,6 +294,7 @@ export default function FindingsPage() {
   const [includeOriginals, setIncludeOriginals] = React.useState(false);
   const [reviewing, setReviewing] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
+  const [selectingAll, setSelectingAll] = React.useState(false);
   const [batchMode, setBatchMode] = React.useState<"status" | "severity" | null>(null);
   const [batchStatus, setBatchStatus] = React.useState<FindingStatus | "">("");
   const [batchSeverity, setBatchSeverity] = React.useState<Severity | "">("");
@@ -357,6 +370,45 @@ export default function FindingsPage() {
 
   // 资产视图右侧列表 = 平铺列表 + 选中子树的筛选,所以两个视图共用一份列表状态。
   const activeAssetScope = view === "asset" ? assetScope : null;
+  const selectionScope = JSON.stringify([filterFingerprint, activeAssetScope]);
+  const selectionScopeRef = React.useRef(selectionScope);
+  selectionScopeRef.current = selectionScope;
+
+  async function selectAllFiltered() {
+    if (selectingAll) return;
+    const scope = selectionScope;
+    const ids = new Set<string>();
+    setSelectingAll(true);
+    try {
+      // shortcut: offset paging can skip rows during concurrent edits, use an ID snapshot endpoint if this becomes common.
+      for (let page = 1; ; page++) {
+        const result = await api.findingsPage({
+          page,
+          pageSize: 200,
+          severity,
+          status,
+          vulnclass,
+          task,
+          query,
+          sort,
+          ...dateRange,
+          assetScope: activeAssetScope ?? undefined,
+        });
+        if (selectionScopeRef.current !== scope) return;
+        if (result.items.length === 0 && (page - 1) * 200 < result.total) throw new Error("列表分页未返回数据");
+        for (const finding of result.items) {
+          if (finding.finding_id) ids.add(finding.finding_id);
+        }
+        if (page * 200 >= result.total) break;
+      }
+      setSelectedIds((current) => new Set([...current, ...ids]));
+      toast.success(`已选中当前筛选的 ${ids.size} 条发现`);
+    } catch (error) {
+      toast.error(`全选失败：${(error as Error).message}`);
+    } finally {
+      setSelectingAll(false);
+    }
+  }
 
   // loadFlat 拉取平铺视图的当前页;task 筛选交给后端,与分组视图共用同一批筛选条件。
   const loadFlat = React.useCallback(async () => {
@@ -750,6 +802,57 @@ export default function FindingsPage() {
     }
   }
 
+  async function deleteSelected() {
+    if (batchSaving || reviewing || selectedIds.size === 0) return;
+    const ids = [...selectedIds];
+    setBatchSaving(true);
+    try {
+      const succeeded = new Set<string>();
+      const failures: unknown[] = [];
+      // shortcut: serial requests can be slow for very large selections, add a bulk endpoint if needed.
+      for (const id of ids) {
+        try {
+          await api.deleteFinding(id);
+          succeeded.add(id);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      setSelectedIds((current) => new Set([...current].filter((id) => !succeeded.has(id))));
+      if (succeeded.size > 0) {
+        setFindings((current) => current.filter((finding) => !succeeded.has(finding.finding_id ?? "")));
+        setExpanded((current) => (current && succeeded.has(current.replace(/^finding:/, "")) ? null : current));
+        setBatchRefresh((current) => current + 1);
+        void api
+          .findingStats()
+          .then(setStats)
+          .catch(() => {
+            // Successful deletions remain valid if the aggregate refresh fails.
+          });
+        if (view === "flat" || view === "asset") {
+          void loadFlat();
+          if (view === "asset") void loadAssetTree();
+        } else {
+          void refreshGroups();
+          if (view === "grouped") {
+            for (const key of expandedGroupsRef.current) {
+              const group = groupFindingsRef.current[key];
+              if (group?.loaded) void loadGroup(key, group.page, group.pageSize);
+            }
+          }
+        }
+      }
+      if (succeeded.size === ids.length) {
+        toast.success(`已删除 ${succeeded.size} 条发现`);
+      } else {
+        const reason = failures.length > 0 ? `：${String(failures[0])}` : "";
+        toast.error(`成功 ${succeeded.size} 条，失败 ${ids.length - succeeded.size} 条；失败项仍保持选中${reason}`);
+      }
+    } finally {
+      setBatchSaving(false);
+    }
+  }
+
   // 行内展开的详细报告缓存按全局稳定行键存。report 是大段 Markdown,列表查询不带它,
   // 故展开时才按 finding_id 单独拉取一次;done 且文本为空 = 该漏洞暂无报告。
   const [reports, setReports] = React.useState<Record<string, FindingReport>>({});
@@ -1074,6 +1177,14 @@ export default function FindingsPage() {
           </Select>
 
           <div className="ml-auto flex shrink-0 items-center gap-3">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={filteredTotal === 0 || selectingAll || batchSaving || reviewing}
+              onClick={() => void selectAllFiltered()}
+            >
+              {selectingAll ? <Spinner /> : null}全选当前筛选
+            </Button>
             <Button size="sm" variant="outline" onClick={openExport}>
               <DownloadIcon /> 导出
             </Button>
@@ -1086,7 +1197,7 @@ export default function FindingsPage() {
             <Button
               size="sm"
               variant="ghost"
-              disabled={batchSaving || reviewing}
+              disabled={batchSaving || reviewing || selectingAll}
               onClick={() => setSelectedIds(new Set())}
             >
               清空选择
@@ -1094,7 +1205,7 @@ export default function FindingsPage() {
             <Button
               size="sm"
               variant="outline"
-              disabled={reviewing || batchSaving}
+              disabled={reviewing || batchSaving || selectingAll}
               onClick={async () => {
                 setReviewing(true);
                 try {
@@ -1112,7 +1223,7 @@ export default function FindingsPage() {
             <Button
               size="sm"
               variant="outline"
-              disabled={batchSaving || reviewing}
+              disabled={batchSaving || reviewing || selectingAll}
               onClick={() => {
                 setBatchStatus("");
                 setBatchMode("status");
@@ -1123,7 +1234,7 @@ export default function FindingsPage() {
             <Button
               size="sm"
               variant="outline"
-              disabled={batchSaving || reviewing}
+              disabled={batchSaving || reviewing || selectingAll}
               onClick={() => {
                 setBatchSeverity("");
                 setBatchMode("severity");
@@ -1131,6 +1242,30 @@ export default function FindingsPage() {
             >
               设置等级
             </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button size="sm" variant="destructive" disabled={batchSaving || reviewing || selectingAll}>
+                  <Trash2Icon /> 删除所选
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>删除选中的 {selectedIds.size} 条发现？</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    所选发现将被永久删除，同时从发现列表、任务发现 Tab 与探索图中移除，此操作不可撤销。
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>取消</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    onClick={() => void deleteSelected()}
+                  >
+                    确认删除
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         )}
 

@@ -81,7 +81,8 @@ type Worker struct {
 	// noaEnabledFn resolves whether this run uses the experimental noa context-
 	// compression mechanism. Read per run, like nonStreaming. nil = off (built-in
 	// compaction).
-	noaEnabledFn func() bool
+	noaEnabledFn              func() bool
+	workspaceCleanupEnabledFn func() bool
 	// maxTokensFn resolves the per-reply output cap in tokens, on the same
 	// per-run basis. nil or 0 = send no cap and let the endpoint decide.
 	maxTokensFn func() int
@@ -122,6 +123,8 @@ func (w *Worker) nonStreaming() bool { return w.nonStreamingFn != nil && w.nonSt
 // context-compression mechanism. nil/unset = off (built-in compaction). Read per
 // run so the settings toggle takes effect without rebuilding the agent.
 func (w *Worker) SetNoaEnabled(fn func() bool) { w.noaEnabledFn = fn }
+
+func (w *Worker) SetWorkspaceCleanupEnabled(fn func() bool) { w.workspaceCleanupEnabledFn = fn }
 
 // SetMaxTokens wires a resolver for the per-reply output cap. nil/unset or 0 =
 // send no cap and let the endpoint decide. Read per run, like nonStreaming.
@@ -268,6 +271,11 @@ func workerArtifactSpec(runDir string) string {
 	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本次意图的专属工作目录 " + runDir + "**（已自动建好，直接用相对路径写在这里即可，无需再手动建目录）——**不要写 /tmp、不要用其它绝对路径**。"
 }
 
+// shortcut: only files placed in .agent-scratch are auto-cleaned; existing files elsewhere still need manual review.
+func scratchArtifactSpec(runDir string) string {
+	return "\n\n**实验性工作目录清理**：可重新下载或生成的临时文件放在 " + filepath.Join(runDir, ".agent-scratch") + "（需要时自行创建）；报告、截图、验证证据和需要长期回看的文件放在该目录之外。任务结束且超过保留期后，系统会自动删除此临时目录中未被报告引用的内容。"
+}
+
 // ensureRunDir builds and creates an agent's working directory under base:
 // <base>/tasks/<taskID> for planner/main; <base>/tasks/<taskID>/i<intentID> for a
 // worker (intentID<=0 → task dir only). The "tasks/" segment groups per-task dirs
@@ -394,6 +402,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
 	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir)
+	if w.workspaceCleanupEnabledFn != nil && w.workspaceCleanupEnabledFn() {
+		sysBody += scratchArtifactSpec(runDir)
+	}
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}

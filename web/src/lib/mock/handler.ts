@@ -2341,8 +2341,14 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     // 列表:GET /traffic
     return mockTrafficSummary(findingID);
   }
-  // 单条 finding:GET 详情 / PATCH 改状态/严重度/名称/类别(demo 直接改内存对象)。
+  // 单条 finding:GET 详情 / PATCH 改字段 / DELETE 删除(demo 直接改内存对象)。
   if (seg[0] === "exploration" && seg[1] === "findings" && seg.length === 3 && seg[2] !== "stats") {
+    if (m === "DELETE") {
+      const index = mockFindings.findIndex((finding) => finding.id === seg[2]);
+      if (index < 0) throw new Error("finding not found");
+      const [deleted] = mockFindings.splice(index, 1);
+      return { deleted: true, id: deleted.id };
+    }
     const f = mockFindings.find((x) => x.id === seg[2]);
     if (!f) return {};
     if (m === "PATCH") {
