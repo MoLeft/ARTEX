@@ -3370,6 +3370,9 @@ export const settings: Settings = {
   llm_pool_enabled: true,
   llm_pool_bind_fallback: false,
   noa_compaction: false,
+  workspace_cleanup_enabled: false,
+  workspace_cleanup_interval_hours: 24,
+  workspace_cleanup_retention_days: 7,
 };
 
 // ── LLM 轮询（故障转移）──────────────────────────────────────────────────────

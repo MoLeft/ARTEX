@@ -114,6 +114,10 @@ export default function SystemSettingsPage() {
   const [injectWorker, setInjectWorker] = React.useState(true);
   // 实验功能:noa 上下文压缩(默认关)。
   const [noaCompaction, setNoaCompaction] = React.useState(false);
+  const [workspaceCleanupEnabled, setWorkspaceCleanupEnabled] = React.useState(false);
+  const [workspaceCleanupInterval, setWorkspaceCleanupInterval] = React.useState("24");
+  const [workspaceCleanupRetention, setWorkspaceCleanupRetention] = React.useState("7");
+  const [savingWorkspaceCleanup, setSavingWorkspaceCleanup] = React.useState(false);
   // 浏览器 MCP：两个可选 MCP 的真实状态从 MCP 列表读取（创建/启停都在 mcp_servers 表里）。
   const [mcpServers, setMcpServers] = React.useState<MCPServer[]>([]);
   const [browserMCPPriority, setBrowserMCPPriority] = React.useState<"chrome" | "lightpanda">("chrome");
@@ -158,6 +162,9 @@ export default function SystemSettingsPage() {
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
+    setWorkspaceCleanupEnabled(!!s.workspace_cleanup_enabled);
+    setWorkspaceCleanupInterval(String(s.workspace_cleanup_interval_hours ?? 24));
+    setWorkspaceCleanupRetention(String(s.workspace_cleanup_retention_days ?? 7));
     setBrowserMCPPriority(s.browser_mcp_priority === "lightpanda" ? "lightpanda" : "chrome");
     setBrowserLimits({
       chrome: String(s.browser_chrome_max_instances ?? 0),
@@ -523,6 +530,26 @@ export default function SystemSettingsPage() {
         setNoaCompaction(!v); // revert on failure
         toast.error(`保存失败：${(e as Error).message}`);
       });
+  };
+
+  const saveWorkspaceCleanup = (enabled = workspaceCleanupEnabled) => {
+    const interval = Number(workspaceCleanupInterval);
+    const retention = Number(workspaceCleanupRetention);
+    if (!Number.isInteger(interval) || interval < 1 || interval > 168 ||
+        !Number.isInteger(retention) || retention < 1 || retention > 3650) {
+      toast.error("检查间隔需为 1–168 小时，保留时间需为 1–3650 天");
+      return;
+    }
+    setSavingWorkspaceCleanup(true);
+    api.setSettings({
+      workspace_cleanup_enabled: enabled,
+      workspace_cleanup_interval_hours: interval,
+      workspace_cleanup_retention_days: retention,
+    }).then((s) => {
+      apply(s);
+      toast.success(enabled ? "工作空间自动清理设置已保存" : "工作空间自动清理已关闭");
+    }).catch((e) => toast.error(`保存失败：${(e as Error).message}`))
+      .finally(() => setSavingWorkspaceCleanup(false));
   };
 
   const toggleAutoTitle = (key: "task_auto_title_enabled" | "chat_auto_title_enabled", value: boolean) => {
@@ -1305,7 +1332,7 @@ export default function SystemSettingsPage() {
             </Card>
 
             <Card
-              className={`${isSettingVisible("agent", "实验 noa 压缩") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
+              className={`${isSettingVisible("agent", "实验 noa 压缩 自动清理 工作空间 临时文件 保留间隔") ? "" : "hidden"} mb-4 break-inside-avoid md:mb-6`}
             >
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base">
@@ -1321,16 +1348,39 @@ export default function SystemSettingsPage() {
                   关闭后立即恢复内置压缩。
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex items-center justify-between gap-4">
-                <Label htmlFor="noa-compaction" className="text-sm font-normal text-muted-foreground">
-                  noa 上下文压缩{noaCompaction ? " · 已开启" : " · 已关闭"}
-                </Label>
-                <Switch
-                  id="noa-compaction"
-                  checked={noaCompaction}
-                  disabled={!loaded}
-                  onCheckedChange={toggleNoaCompaction}
-                />
+              <CardContent className="flex flex-col gap-5">
+                <div className="flex items-center justify-between gap-4">
+                  <Label htmlFor="noa-compaction" className="text-sm font-normal text-muted-foreground">
+                    noa 上下文压缩{noaCompaction ? " · 已开启" : " · 已关闭"}
+                  </Label>
+                  <Switch
+                    id="noa-compaction"
+                    checked={noaCompaction}
+                    disabled={!loaded}
+                    onCheckedChange={toggleNoaCompaction}
+                  />
+                </div>
+                <div className="space-y-4 border-t pt-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Label htmlFor="workspace-cleanup" className="text-sm">自动清理工作空间</Label>
+                      <p className="mt-1 text-xs text-muted-foreground">仅清理已结束任务中 Agent 放入 .agent-scratch 的临时文件；报告引用的文件保留。默认关闭。</p>
+                    </div>
+                    <Switch id="workspace-cleanup" checked={workspaceCleanupEnabled} disabled={!loaded || savingWorkspaceCleanup} onCheckedChange={saveWorkspaceCleanup} />
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="workspace-cleanup-interval">检查间隔（小时）</Label>
+                      <Input id="workspace-cleanup-interval" type="number" min={1} max={168} step={1} value={workspaceCleanupInterval} onChange={(e) => setWorkspaceCleanupInterval(e.target.value)} disabled={!loaded || savingWorkspaceCleanup} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="workspace-cleanup-retention">临时工作目录保留（天）</Label>
+                      <Input id="workspace-cleanup-retention" type="number" min={1} max={3650} step={1} value={workspaceCleanupRetention} onChange={(e) => setWorkspaceCleanupRetention(e.target.value)} disabled={!loaded || savingWorkspaceCleanup} />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">从任务结束及临时文件最后修改时起计算；任务运行中、暂停中和未进入临时目录的文件不会自动清理。</p>
+                  <Button type="button" variant="outline" size="sm" disabled={!loaded || savingWorkspaceCleanup} onClick={() => saveWorkspaceCleanup()}>保存清理设置</Button>
+                </div>
               </CardContent>
             </Card>
 
