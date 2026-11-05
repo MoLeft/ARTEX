@@ -613,8 +613,8 @@ export const findings: Finding[] = [
     severity: "high",
     status: "pending",
     report:
-      '## 漏洞概述\n\n`www.acme.com/search` 的 `q` 参数存在**报错型 SQL 注入**（MSSQL），可读取数据库版本、库结构乃至敏感数据。\n\n## 影响\n\n- 可读取 `acme_prod` 库的表结构与用户/订单数据\n- 报错回显便于快速构造利用，风险高\n\n## 复现步骤\n\n1. 触发报错注入：\n\n```\nGET /search?q=1\' AND 1=CONVERT(int,@@version)--\n```\n\n2. 响应回显 MSSQL 版本报错，确认可注入\n3. 进一步枚举库：`sqlmap -u "https://www.acme.com/search?q=1" --dbs`\n\n## 修复建议\n\n- 全部改用参数化查询/预编译语句，杜绝字符串拼接\n- 关闭生产环境详细报错回显\n- 数据库账号最小权限，禁用 `xp_cmdshell` 等危险扩展\n',
-    summary: "www.acme.com/search q 参数存在报错型 SQL 注入",
+      '## 漏洞概述\n\n`www.acme.com/search` 的 `q` 参数存在**报错型 SQL 注入**（MSSQL），可读取数据库版本、库结构乃至敏感数据。\n\n## 影响\n\n- 可读取 `acme_prod` 库的表结构与用户/订单数据\n- 报错回显便于快速构造利用，风险高\n\n## 复现步骤\n\n1. 触发报错注入：\n\n```\nGET /search?q=1\' AND 1=CONVERT(int,@@version)--\n```\n\n2. 响应回显 MSSQL 版本报错，确认可注入；文件见 `i12/response.html`\n3. 进一步枚举库：`sqlmap -u "https://www.acme.com/search?q=1" --dbs`\n\n## 修复建议\n\n- 全部改用参数化查询/预编译语句，杜绝字符串拼接\n- 关闭生产环境详细报错回显\n- 数据库账号最小权限，禁用 `xp_cmdshell` 等危险扩展\n',
+    summary: "www.acme.com/search q 参数存在报错型 SQL 注入；验证脚本见 i12/exploit.py，联动任务文件见 tasks/8/linked/shared.txt。",
     evidence: "GET /search?q=1' AND 1=CONVERT(int,@@version)-- → 返回 MSSQL 版本报错，可读库结构。",
     intent_id: "i-2",
     task_id: "t-acme-web",
@@ -4048,6 +4048,9 @@ const WS_TREE: Record<string, { name: string; dir: boolean; size: number; conten
       size: 180,
       content: "<!-- (demo) 抓到的响应体片段 -->\n<html><body>MySQL error near ''1'='1'</body></html>\n",
     },
+  ],
+  "tasks/8/linked": [
+    { name: "shared.txt", dir: false, size: 42, content: "演示：来自同级任务工作区的关联文件。\n" },
   ],
   transcripts: [
     { name: "exp1-worker-i12.jsonl", dir: false, size: 512, content: "（demo）原始 LLM 对话记录示例，此处省略。" },

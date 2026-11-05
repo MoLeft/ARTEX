@@ -119,6 +119,7 @@ import type {
   UsageStats,
   WorkspaceFile,
   WorkspaceListing,
+  TaskWorkspaceTree,
 } from "@/lib/types";
 
 /**
@@ -576,6 +577,7 @@ export const api = {
 
   // ---- workspace file manager (workDir) ----
   workspaceList: (path = "") => get<WorkspaceListing>(`/workspace/list?path=${encodeURIComponent(path)}`),
+  taskWorkspaceTree: (id: string) => get<TaskWorkspaceTree>(`/tasks/${encodeURIComponent(id)}/workspace-tree`),
   workspaceRead: (path: string) => get<WorkspaceFile>(`/workspace/read?path=${encodeURIComponent(path)}`),
   workspaceWrite: (path: string, content: string) =>
     post<{ ok: boolean; path: string }>(`/workspace/write`, { path, content }),

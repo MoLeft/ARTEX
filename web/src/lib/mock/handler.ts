@@ -72,7 +72,7 @@ interface MockBindingSeed {
 // 每条漏洞预置的流量证据(finding id → 绑定的抓包)。选取与漏洞语义对应的请求,
 // 让 demo 详情页的「关联流量」区块看起来真实。
 const mockFindingTrafficSeeds: Record<string, MockBindingSeed[]> = {
-  "f-1": [{ traffic_id: "x-2", role: "proof", note: "q 参数注入 payload，响应回显 MSSQL 报错。" }],
+  "f-1": [{ traffic_id: "x-2", role: "proof", note: "q 参数注入 payload，响应回显 MSSQL 报错；响应文件 i12/response.html。" }],
   "f-2": [
     { traffic_id: "x-8", role: "baseline", note: "本人订单 id=1001，作为正常对照。" },
     { traffic_id: "x-9", role: "proof", note: "改 id=1002 越权读到他人订单。" },
@@ -1826,8 +1826,37 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     };
 
   // ── 工作空间文件管理器（demo：静态示例树；写/建/删走下方写兜底 {ok:true}）──
+  if (m === "GET" && seg[0] === "tasks" && seg[2] === "workspace-tree") {
+    const prefix = `tasks/${seg[1]}`;
+    if (seg[1] === "8") return { root: `/app/data/${prefix}`, truncated: false, entries: [
+      { name: "linked", path: `${prefix}/linked`, dir: true, size: 0, mtime: Date.now() },
+      { name: "shared.txt", path: `${prefix}/linked/shared.txt`, dir: false, size: 42, mtime: Date.now() },
+    ] };
+    return { root: `/app/data/${prefix}`, truncated: false, entries: [
+      { name: "i12", path: `${prefix}/i12`, dir: true, size: 0, mtime: Date.now() },
+      { name: "exploit.py", path: `${prefix}/i12/exploit.py`, dir: false, size: 220, mtime: Date.now() },
+      { name: "response.html", path: `${prefix}/i12/response.html`, dir: false, size: 180, mtime: Date.now() },
+    ] };
+  }
   if (path === "/workspace/list") {
     const workspacePath = q.get("path") ?? "";
+    if (workspacePath === "tasks") return { path: workspacePath, entries: [
+      { name: "t-acme-web", path: "tasks/t-acme-web", dir: true, size: 0, mtime: Date.now() },
+      { name: "8", path: "tasks/8", dir: true, size: 0, mtime: Date.now() },
+    ] };
+    if (workspacePath === "tasks/t-acme-web") return { path: workspacePath, entries: [
+      { name: "i12", path: `${workspacePath}/i12`, dir: true, size: 0, mtime: Date.now() },
+    ] };
+    if (workspacePath === "tasks/t-acme-web/i12") return { path: workspacePath, entries: [
+      { name: "exploit.py", path: `${workspacePath}/exploit.py`, dir: false, size: 220, mtime: Date.now() },
+      { name: "response.html", path: `${workspacePath}/response.html`, dir: false, size: 180, mtime: Date.now() },
+    ] };
+    if (workspacePath === "tasks/8") return { path: workspacePath, entries: [
+      { name: "linked", path: `${workspacePath}/linked`, dir: true, size: 0, mtime: Date.now() },
+    ] };
+    if (workspacePath === "tasks/8/linked") return { path: workspacePath, entries: [
+      { name: "shared.txt", path: `${workspacePath}/shared.txt`, dir: false, size: 42, mtime: Date.now() },
+    ] };
     if (workspacePath === "tasks/3/scripts") return { path: workspacePath, entries: [
       { name: "check.py", path: `${workspacePath}/check.py`, dir: false, size: 12000, mtime: Date.now() },
       { name: "downloads", path: `${workspacePath}/downloads`, dir: true, size: 0, mtime: Date.now() },
@@ -1843,7 +1872,11 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     ] };
     return D.workspaceList(workspacePath);
   }
-  if (path === "/workspace/read") return D.workspaceRead(q.get("path") ?? "");
+  if (path === "/workspace/read") {
+    const file = q.get("path") ?? "";
+    if (file.startsWith("tasks/") && file.includes("/i12/")) return D.workspaceRead(`t-001/i12/${file.split("/").pop()}`);
+    return D.workspaceRead(file);
+  }
 
   // ── stats ──
   if (path === "/stats") {

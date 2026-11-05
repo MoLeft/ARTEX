@@ -57,6 +57,61 @@ type wsEntry struct {
 	MTime int64  `json:"mtime"` // unix millis
 }
 
+// shortcut: the finding file index stops at 20,000 entries; paginate when task workspaces exceed this size.
+const maxTaskWorkspaceEntries = 20000
+
+func taskWorkspaceEntries(root, prefix string, limit int) ([]wsEntry, bool, error) {
+	out := make([]wsEntry, 0)
+	truncated := false
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root || entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if len(out) == limit {
+			truncated = true
+			return io.EOF
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		out = append(out, wsEntry{Name: entry.Name(), Path: prefix + "/" + filepath.ToSlash(rel), Dir: entry.IsDir(), Size: info.Size(), MTime: info.ModTime().UnixMilli()})
+		return nil
+	})
+	if err == io.EOF {
+		err = nil
+	}
+	return out, truncated, err
+}
+
+// GET /api/tasks/{id}/workspace-tree
+func (s *Server) taskWorkspaceTree(w http.ResponseWriter, r *http.Request) {
+	id, ok := canonicalTaskID(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 400, "非法任务 ID")
+		return
+	}
+	root := filepath.Join(s.m.dir, "tasks", id)
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() {
+		writeErr(w, 404, "任务工作空间不存在")
+		return
+	}
+	entries, truncated, err := taskWorkspaceEntries(root, "tasks/"+id, maxTaskWorkspaceEntries)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"root": filepath.ToSlash(root), "entries": entries, "truncated": truncated})
+}
+
 // GET /api/workspace/list?path=<rel>
 func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
 	abs, ok := s.wsResolve(r.URL.Query().Get("path"))
@@ -80,6 +135,9 @@ func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]wsEntry, 0, len(ents))
 	for _, e := range ents {
+		if e.Type()&os.ModeSymlink != 0 {
+			continue
+		}
 		info, err := e.Info()
 		if err != nil {
 			continue

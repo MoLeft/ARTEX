@@ -8,7 +8,7 @@ import { ChevronDownIcon, ChevronRightIcon, LoaderCircleIcon } from "lucide-reac
 import { toast } from "sonner";
 
 import { HttpCodeBlock } from "@/components/http-code-block";
-import { Markdown } from "@/components/markdown";
+import { Markdown, WorkspaceLinkedText } from "@/components/markdown";
 import { headersFromReqHead, requestFromEvidence } from "@/components/repeater/repeater-http";
 import { seedFromEvidence } from "@/components/repeater/repeater-store";
 import { Badge } from "@/components/ui/badge";
@@ -280,7 +280,7 @@ export function FindingReproductionPanel({ finding, contextTask }: { finding: Fi
                     <Badge variant="outline" className="shrink-0 font-medium">
                       步骤 {step.number}
                     </Badge>
-                    <h3 className="min-w-0 break-words font-semibold text-sm leading-5">{step.title}</h3>
+                    <h3 className="min-w-0 break-words font-semibold text-sm leading-5"><WorkspaceLinkedText text={step.title} /></h3>
                   </div>
                 </div>
                 {step.body ? <Markdown text={step.body} /> : null}
