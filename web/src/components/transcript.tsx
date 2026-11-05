@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { Markdown } from "@/components/markdown";
+import { Markdown, WorkspaceLinkedText } from "@/components/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -472,7 +472,7 @@ function ToolBlock({
       </button>
       {open && (
         <pre className="ml-7 mb-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
-          {detail ?? "加载中…"}
+          <WorkspaceLinkedText text={detail ?? "加载中…"} />
         </pre>
       )}
     </section>
@@ -541,7 +541,7 @@ function MessageBlock({
       </button>
       {open && (
         <pre className="ml-7 mb-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
-          {detail ?? "加载中…"}
+          <WorkspaceLinkedText text={detail ?? "加载中…"} />
         </pre>
       )}
     </div>
@@ -613,7 +613,7 @@ function UserRow({ step, intent, getDetail }: { step: Activity; intent?: boolean
                 title={a.path}
               >
                 <PaperclipIcon className="size-3 shrink-0 text-primary" />
-                <span className="max-w-[180px] truncate font-medium">{a.name}</span>
+                <span className="max-w-[180px] truncate font-medium"><WorkspaceLinkedText text={a.name} /></span>
                 <span className="shrink-0 text-muted-foreground">{fmtBytes(a.size)}</span>
               </div>
             ))}
@@ -621,7 +621,7 @@ function UserRow({ step, intent, getDetail }: { step: Activity; intent?: boolean
         )}
         {text && (
           <div className="min-w-0 max-w-full whitespace-pre-wrap rounded-lg rounded-tr-sm bg-primary px-3 py-1.5 text-sm text-primary-foreground [overflow-wrap:anywhere]">
-            {text}
+            <WorkspaceLinkedText text={text} />
           </div>
         )}
         <ActivityTime ts={step.ts} />
@@ -698,7 +698,7 @@ function ExecView({
         g.type === "round" ? (
           <div key={"r" + g.key} className="my-2 flex items-center gap-2 text-[10px] font-medium text-muted-foreground">
             <span className="h-px flex-1 bg-border" />
-            {g.label}
+            <WorkspaceLinkedText text={g.label} />
             <span className="h-px flex-1 bg-border" />
           </div>
         ) : g.type === "user" ? (

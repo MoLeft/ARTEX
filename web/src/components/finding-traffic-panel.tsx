@@ -7,6 +7,8 @@ import { useRouter } from "next/navigation";
 import { ArrowDownIcon, ArrowUpIcon, PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { WorkspaceLinkedText } from "@/components/markdown";
+
 import { headersFromReqHead, requestFromEvidence } from "@/components/repeater/repeater-http";
 import { seedFromEvidence } from "@/components/repeater/repeater-store";
 import { TrafficEvidenceViewer } from "@/components/traffic-evidence-viewer";
@@ -194,7 +196,7 @@ export function FindingTrafficPanel({
                 >
                   <span className="break-all font-mono text-xs">{b.snapshot.url}</span>
                 </Button>
-                {b.note ? <p className="whitespace-pre-wrap text-sm">{b.note}</p> : null}
+                {b.note ? <p className="whitespace-pre-wrap text-sm"><WorkspaceLinkedText text={b.note} /></p> : null}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-muted-foreground text-xs">
                     {new Date(b.snapshot.captured_at * 1000).toLocaleString("zh-CN")}

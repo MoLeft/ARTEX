@@ -376,6 +376,11 @@ export interface WorkspaceListing {
   path: string;
   entries: WorkspaceEntry[];
 }
+export interface TaskWorkspaceTree {
+  root: string;
+  entries: WorkspaceEntry[];
+  truncated: boolean;
+}
 export interface WorkspaceFile {
   path: string;
   size: number;

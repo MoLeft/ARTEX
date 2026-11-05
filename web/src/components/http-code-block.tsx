@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn, copyText } from "@/lib/utils";
 import { PacketCodeEditor } from "@/components/packet-code-editor";
+import { WorkspaceLinkedText } from "@/components/markdown";
 
 function statusTone(status: number) {
   if (status >= 500) return "text-red-500";
@@ -34,7 +35,7 @@ const PacketHighlightContext = React.createContext("");
 
 function HighlightedText({ text, className }: { text: string; className?: string }) {
   const query = React.useContext(PacketHighlightContext).trim();
-  if (!query || !text) return <span className={className}>{text}</span>;
+  if (!query || !text) return <span className={className}><WorkspaceLinkedText text={text} /></span>;
   const needle = query.toLowerCase();
   const haystack = text.toLowerCase();
   const parts: React.ReactNode[] = [];
@@ -54,7 +55,7 @@ function HighlightedText({ text, className }: { text: string; className?: string
     );
     cursor = match + needle.length;
   }
-  return <span className={className}>{parts}</span>;
+  return <span className={className}>{parts.map((part, index) => typeof part === "string" ? <WorkspaceLinkedText key={index} text={part} /> : part)}</span>;
 }
 
 function StartLine({ line }: { line: string }) {
@@ -158,7 +159,7 @@ export function HttpPacketSyntax({
   lineClassName?: string;
 }) {
   const value = raw || emptyFallback;
-  const lines = value.replaceAll("\r\n", "\n").split("\n");
+  const lines = React.useMemo(() => value.replaceAll("\r\n", "\n").split("\n"), [value]);
   const lineItems = React.useMemo(() => {
     const occurrences = new Map<string, number>();
     return lines.map((line) => {
@@ -166,7 +167,7 @@ export function HttpPacketSyntax({
       occurrences.set(line, occurrence + 1);
       return { key: `${line}\u0000${occurrence}`, line };
     });
-  }, [value]);
+  }, [lines]);
   const separator = lines.indexOf("");
   const body = separator >= 0 ? lines.slice(separator + 1).join("\n") : value;
   const bodyFormat = detectBodyFormat(body);

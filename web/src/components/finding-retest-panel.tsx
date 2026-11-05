@@ -7,7 +7,7 @@ import Link from "next/link";
 import { RotateCcwIcon } from "lucide-react";
 
 import { FindingRetestDialog } from "@/components/finding-retest-dialog";
-import { Markdown } from "@/components/markdown";
+import { Markdown, WorkspaceLinkedText } from "@/components/markdown";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -145,14 +145,14 @@ export function FindingRetestPanel({
                   )}
                 </div>
                 {item.status === "completed" && item.summary ? (
-                  <p className="whitespace-pre-wrap break-words text-sm">{item.summary}</p>
+                  <p className="whitespace-pre-wrap break-words text-sm"><WorkspaceLinkedText text={item.summary} /></p>
                 ) : null}
                 {item.error ? (
-                  <p className="whitespace-pre-wrap break-words text-destructive text-sm">{item.error}</p>
+                  <p className="whitespace-pre-wrap break-words text-destructive text-sm"><WorkspaceLinkedText text={item.error} /></p>
                 ) : null}
                 {item.notes ? (
                   <p className="whitespace-pre-wrap break-words text-muted-foreground text-xs">
-                    补充说明：{item.notes}
+                    补充说明：<WorkspaceLinkedText text={item.notes} />
                   </p>
                 ) : null}
                 {item.status === "completed" && item.evidence ? (

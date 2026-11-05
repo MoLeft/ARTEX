@@ -13,7 +13,7 @@ import { FindingAutoChat } from "@/components/finding-auto-chat";
 import { FindingReproductionPanel } from "@/components/finding-reproduction-panel";
 import { FindingRetestPanel } from "@/components/finding-retest-panel";
 import { FindingTrafficPanel } from "@/components/finding-traffic-panel";
-import { Markdown } from "@/components/markdown";
+import { Markdown, WorkspaceLinkedText, WorkspaceLinksProvider } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +28,7 @@ import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus, Severity } from "@/lib/types";
 
 import { FindingLineageView } from "./lineage";
+import { FindingWorkspaceCard, FindingWorkspaceSheet, useFindingWorkspace } from "./finding-workspace";
 
 const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
 const FINDING_STATUSES: FindingStatus[] = [
@@ -73,6 +74,8 @@ function FindingDetailInner() {
   const [reportGenerating, setReportGenerating] = React.useState(false);
   const [autoChatOpen, setAutoChatOpen] = React.useState(false);
   const [reportChatOpen, setReportChatOpen] = React.useState(false);
+  const workspace = useFindingWorkspace(finding?.source_task_id || finding?.task_id);
+  const workspaceLinks = React.useMemo(() => ({ resolve: workspace.resolve, open: workspace.open, ensure: workspace.ensure }), [workspace.resolve, workspace.open, workspace.ensure]);
   const title = finding?.name || finding?.vulnclass || "未分类";
 
   const load = React.useCallback(() => {
@@ -159,7 +162,7 @@ function FindingDetailInner() {
   const structuredReproduction = usesStructuredReproduction(finding.report || "");
 
   return (
-    <>
+    <WorkspaceLinksProvider links={workspaceLinks}>
       <Tabs value={tab} onValueChange={setTab} className="flex flex-1 flex-col gap-0">
       {/* Sticky header */}
       <header className="sticky top-0 z-10 flex flex-col gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur lg:px-6">
@@ -181,7 +184,7 @@ function FindingDetailInner() {
             </Button>
           ) : null}
           <h1 className="max-w-md truncate text-sm font-semibold" title={title}>
-            {title}
+            <WorkspaceLinkedText text={title} />
           </h1>
           <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">#{finding.id}</code>
           <Separator orientation="vertical" className="mx-1 h-4" />
@@ -219,7 +222,7 @@ function FindingDetailInner() {
                   <CardTitle className="text-sm">摘要</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{finding.summary || "（无摘要）"}</p>
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap"><WorkspaceLinkedText text={finding.summary || "（无摘要）"} /></p>
                 </CardContent>
               </Card>
               {structuredReproduction ? (
@@ -233,7 +236,7 @@ function FindingDetailInner() {
                     <CardContent>
                       {finding.evidence ? (
                         <pre className="max-h-[46vh] overflow-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
-                          {finding.evidence}
+                          <WorkspaceLinkedText text={finding.evidence} />
                         </pre>
                       ) : (
                         <p className="text-sm text-muted-foreground">（无证据）</p>
@@ -289,6 +292,7 @@ function FindingDetailInner() {
 
             {/* 右栏：状态区 */}
             <div className="flex min-w-0 flex-col gap-4 lg:sticky lg:top-24 lg:self-start">
+              <FindingWorkspaceCard taskId={finding.source_task_id || finding.task_id} workspace={workspace} />
               <Card className="h-fit">
                 <CardHeader>
                   <CardTitle className="text-sm">状态</CardTitle>
@@ -348,7 +352,7 @@ function FindingDetailInner() {
                   {/* 漏洞类型 */}
                   <FieldRow label="漏洞类型">
                     {finding.vulnclass ? (
-                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{finding.vulnclass}</code>
+                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs"><WorkspaceLinkedText text={finding.vulnclass} /></code>
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}
@@ -364,7 +368,7 @@ function FindingDetailInner() {
                             className="max-w-[16rem] truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs"
                             title={`${a.type} · ${a.label}`}
                           >
-                            {a.label}
+                            <WorkspaceLinkedText text={a.label} />
                           </code>
                         ))}
                       </div>
@@ -407,7 +411,10 @@ function FindingDetailInner() {
 
         {/* 链路图：从任务初始节点回溯到本漏洞节点的攻击链路 */}
         <TabsContent value="lineage" className="mt-0">
-          <FindingLineageView findingId={finding.id} />
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+            <FindingLineageView findingId={finding.id} />
+            <FindingWorkspaceCard taskId={finding.source_task_id || finding.task_id} workspace={workspace} />
+          </div>
         </TabsContent>
       </div>
       </Tabs>
@@ -417,6 +424,7 @@ function FindingDetailInner() {
         open={autoChatOpen}
         onOpenChange={setAutoChatOpen}
       />
+      <FindingWorkspaceSheet taskId={finding.source_task_id || finding.task_id} workspace={workspace} />
       <FindingAutoChat
         findingId={finding.id}
         findingTitle={title}
@@ -428,7 +436,7 @@ function FindingDetailInner() {
         open={reportChatOpen}
         onOpenChange={setReportChatOpen}
       />
-    </>
+    </WorkspaceLinksProvider>
   );
 }
 

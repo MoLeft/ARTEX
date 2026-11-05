@@ -898,6 +898,7 @@ func (s *Server) Handler() http.Handler {
 
 	// 工作空间文件管理器（针对 workDir）
 	mux.HandleFunc("GET /api/workspace/list", s.wsList)
+	mux.HandleFunc("GET /api/tasks/{id}/workspace-tree", s.taskWorkspaceTree)
 	mux.HandleFunc("GET /api/workspace/read", s.wsRead)
 	mux.HandleFunc("POST /api/workspace/write", s.wsWrite)
 	mux.HandleFunc("POST /api/workspace/mkdir", s.wsMkdir)

@@ -85,6 +85,7 @@ export function StorageCleanupDialog({ open, onOpenChange, onComplete }: { open:
     return next;
   });
   const chosenGroups = groups.filter((group) => selected.has(group.path));
+  const reviewGroups = groups.filter((group) => group.risk === "review" && group.bytes > 0);
   const chosenCategories = (Object.keys(labels) as Category[]).filter((category) => selected.has(category));
   const estimate = chosenGroups.reduce((sum, group) => sum + group.bytes, 0) + chosenCategories.reduce((sum, category) => sum + (parts.find((part) => part.key === category)?.bytes ?? 0), 0);
   const chosenCount = chosenGroups.length + chosenCategories.length;
@@ -101,7 +102,7 @@ export function StorageCleanupDialog({ open, onOpenChange, onComplete }: { open:
   };
   const renderWorkspace = () => workspaceTasks().map(([task, items]) => (
     <details key={task} className="rounded-md border">
-      <summary className="cursor-pointer p-3 font-medium">{task} <span className="text-xs font-normal text-muted-foreground">· {items.length} 项 · 可清理 {bytes(items.reduce((sum, item) => sum + item.bytes, 0))}</span></summary>
+      <summary className="cursor-pointer p-3 font-medium">{task} <span className="text-xs font-normal text-muted-foreground">· {items.length} 项 · 可选估算 {bytes(items.reduce((sum, item) => sum + item.bytes, 0))}</span></summary>
       <div className="space-y-2 border-t p-3">
         {items.map((group) => <div key={group.path} className="flex items-start gap-3 rounded-md border p-2">
           <Checkbox aria-label={`选择 ${group.path}`} className="mt-0.5" checked={selected.has(group.path)} disabled={group.risk === "locked" || group.bytes === 0} onCheckedChange={() => toggle(group.path)} />
@@ -144,7 +145,7 @@ export function StorageCleanupDialog({ open, onOpenChange, onComplete }: { open:
         {!scanning && !confirm && (
           <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
             <details open className="rounded-md border p-3">
-              <summary className="cursor-pointer font-medium">任务工作区 <span className="text-xs font-normal text-muted-foreground">· {groups.filter((group) => group.risk === "safe").length} 项自动勾选 · 任务内按安全、需审查、不可清理排序</span></summary>
+              <summary className="cursor-pointer font-medium">任务工作区 <span className="text-xs font-normal text-muted-foreground">· {groups.filter((group) => group.risk === "safe").length} 项自动勾选 · {reviewGroups.length} 项需审查（预计 {bytes(reviewGroups.reduce((sum, group) => sum + group.bytes, 0))}）</span></summary>
               <div className="mt-3 space-y-2">{renderWorkspace()}</div>
             </details>
             <details className="rounded-md border p-3">

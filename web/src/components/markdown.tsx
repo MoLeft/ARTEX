@@ -230,12 +230,78 @@ const components: Components = {
   td: ({ node, ...p }) => <td className="border border-border px-2 py-1 align-top [overflow-wrap:anywhere]" {...p} />,
 };
 
+export type WorkspaceLinks = {
+  resolve: (value: string) => string | null;
+  open: (path: string) => void;
+  ensure?: (text: string) => void;
+};
+
+const WorkspaceLinksContext = React.createContext<WorkspaceLinks | null>(null);
+
+export function WorkspaceLinksProvider({ links, children }: { links: WorkspaceLinks; children: React.ReactNode }) {
+  return <WorkspaceLinksContext.Provider value={links}>{children}</WorkspaceLinksContext.Provider>;
+}
+
+const fileToken = /[\p{L}\p{N}_.\\/-]+/gu;
+
+function linkText(text: string, links: WorkspaceLinks): React.ReactNode {
+  const nodes: React.ReactNode[] = [];
+  let last = 0;
+  for (const match of text.matchAll(fileToken)) {
+    const start = match.index;
+    const token = match[0].replace(/[.,;:]+$/, "");
+    if (!token) continue;
+    const path = links.resolve(token);
+    if (!path) continue;
+    if (start > last) nodes.push(text.slice(last, start));
+    nodes.push(<button key={`${start}:${path}`} type="button" className="break-all text-primary underline underline-offset-2 hover:text-primary/80" title={path} onClick={() => links.open(path)}>{token}</button>);
+    last = start + token.length;
+  }
+  if (last === 0) return text;
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+function linkChildren(children: React.ReactNode, links: WorkspaceLinks): React.ReactNode {
+  return React.Children.map(children, (child) => typeof child === "string" ? linkText(child, links) : child);
+}
+
+export function WorkspaceLinkedText({ text }: { text: string }) {
+  const links = React.useContext(WorkspaceLinksContext);
+  React.useEffect(() => { links?.ensure?.(text); }, [links, text]);
+  const content = React.useMemo(() => links ? linkText(text, links) : text, [text, links]);
+  return <>{content}</>;
+}
+
 export function Markdown({ text }: { text: string }) {
+  const links = React.useContext(WorkspaceLinksContext);
+  React.useEffect(() => { links?.ensure?.(text); }, [links, text]);
+  const renderedComponents: Components = links ? {
+    ...components,
+    p: ({ node, children, ...props }) => <p className="leading-relaxed" {...props}>{linkChildren(children, links)}</p>,
+    li: ({ node, children, ...props }) => <li {...props}>{linkChildren(children, links)}</li>,
+    strong: ({ node, children, ...props }) => <strong className="font-semibold" {...props}>{linkChildren(children, links)}</strong>,
+    em: ({ node, children, ...props }) => <em {...props}>{linkChildren(children, links)}</em>,
+    h1: ({ node, children, ...props }) => <div className="mt-2.5 text-base font-semibold" {...props}>{linkChildren(children, links)}</div>,
+    h2: ({ node, children, ...props }) => <div className="mt-2 text-sm font-semibold" {...props}>{linkChildren(children, links)}</div>,
+    h3: ({ node, children, ...props }) => <div className="mt-1.5 text-sm font-medium text-foreground/90" {...props}>{linkChildren(children, links)}</div>,
+    h4: ({ node, children, ...props }) => <div className="mt-1.5 text-sm font-medium text-foreground/90" {...props}>{linkChildren(children, links)}</div>,
+    td: ({ node, children, ...props }) => <td className="border border-border px-2 py-1 align-top [overflow-wrap:anywhere]" {...props}>{linkChildren(children, links)}</td>,
+    th: ({ node, children, ...props }) => <th className="border border-border bg-muted/60 px-2 py-1 text-left font-medium" {...props}>{linkChildren(children, links)}</th>,
+    code: ({ node, className, children, ...props }) => {
+      const path = typeof children === "string" ? links.resolve(children.trim()) : null;
+      return <code className={className || "break-all rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]"} {...props}>{path ? <button type="button" className="text-primary underline underline-offset-2" title={path} onClick={() => links.open(path)}>{children}</button> : linkChildren(children, links)}</code>;
+    },
+    a: ({ node, href, children, ...props }) => {
+      const path = href?.startsWith("workspace://") ? links.resolve(href) : null;
+      return path ? <button type="button" className="text-primary underline underline-offset-2" onClick={() => links.open(path)} title={path}>{children}</button> : <a className="text-primary underline underline-offset-2" target="_blank" rel="noreferrer" href={href} {...props}>{children}</a>;
+    },
+  } : components;
   return (
     <div className="min-w-0 max-w-full break-words [overflow-wrap:anywhere] space-y-1.5 text-sm [&>*:first-child]:mt-0">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={components}
+        components={renderedComponents}
         urlTransform={(url) =>
           url.startsWith("workspace://") || url.startsWith("findings/screenshots/") ? url : defaultUrlTransform(url)
         }
