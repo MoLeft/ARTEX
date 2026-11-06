@@ -28,9 +28,9 @@ import (
 // WebSearchOpts is the web-search backend selection the server pushes into each
 // agent (planner/worker/main). Enabled=false leaves the web_search tool off.
 // Backend is "ddgs" (no key), "brave-free" (BraveKey required), "tavily"
-// (TavilyKey required), "anysearch" (optional AnySearchKey), or "deepseek"
-// (DeepSeek* required, filled from the active LLM profile). AnySearch uses a
-// host-provided tool; the other backends map directly onto agentcore.Options.
+// (TavilyKey required), "anysearch" (optional AnySearchKey), "uapi"
+// (UAPIKey required), or "deepseek" (DeepSeek* from the active LLM profile).
+// AnySearch and UAPI use host-provided tools; other backends map to Norma.
 // Proxy is a dedicated egress proxy for the search request (http/https/socks5),
 // independent of the traffic-recording MITM proxy — set it when the search endpoint
 // is only reachable via a VPN/SOCKS proxy. Empty = direct.
@@ -45,6 +45,7 @@ type WebSearchOpts struct {
 	BraveKey     string
 	TavilyKey    string
 	AnySearchKey string
+	UAPIKey      string
 	Proxy        string
 	// DeepSeek* 来自当前激活的 LLM 配置(仅 anthropic 格式的 DeepSeek 官方端点)，
 	// 不单独配置，随 LLM 配置切换而变。

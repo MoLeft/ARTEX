@@ -3361,6 +3361,7 @@ export const settings: Settings = {
   brave_key_set: false,
   tavily_key_set: true,
   anysearch_key_set: false,
+  uapi_key_set: false,
   web_search_proxy: "",
   global_proxy: "",
   proxy_direct_retry_on_connect_failure: false,

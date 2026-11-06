@@ -15,6 +15,8 @@ func TestConfigureAnySearch(t *testing.T) {
 		{"anonymous", WebSearchOpts{Enabled: true, Backend: "anysearch"}, true},
 		{"keyed", WebSearchOpts{Enabled: true, Backend: "anysearch", AnySearchKey: "test-key"}, true},
 		{"disabled", WebSearchOpts{Enabled: false, Backend: "anysearch"}, false},
+		{"uapi", WebSearchOpts{Enabled: true, Backend: "uapi", UAPIKey: "test-key"}, true},
+		{"uapi disabled", WebSearchOpts{Enabled: false, Backend: "uapi"}, false},
 		{"existing provider", WebSearchOpts{Enabled: true, Backend: "ddgs"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -24,11 +26,21 @@ func TestConfigureAnySearch(t *testing.T) {
 			}
 			if tc.wantLocal {
 				if opts.EnableWebSearch || len(opts.Tools) != 1 || opts.Tools[0].Name() != "web_search" {
-					t.Fatalf("AnySearch should have exactly one local tool: %+v", opts)
+					t.Fatalf("host provider should have exactly one local tool: %+v", opts)
 				}
 			} else if opts.EnableWebSearch != tc.config.Enabled || len(opts.Tools) != 0 {
 				t.Fatalf("original backend setting changed: %+v", opts)
 			}
 		})
+	}
+}
+
+func TestConfigureUAPIRequiresKey(t *testing.T) {
+	opts := agentcore.Options{EnableWebSearch: true}
+	if err := configureWebSearch(&opts, WebSearchOpts{Enabled: true, Backend: "uapi"}); err == nil {
+		t.Fatal("expected missing UAPI key error")
+	}
+	if !opts.EnableWebSearch || len(opts.Tools) != 0 {
+		t.Fatalf("failed configuration mutated options: %+v", opts)
 	}
 }
