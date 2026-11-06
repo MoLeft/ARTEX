@@ -61,7 +61,7 @@ func run() int {
 	)
 	flag.Parse()
 
-	// hand the build version to the server package so GET /api/health can report it
+	// hand the build version to the server package for authenticated GET /api/version
 	// to the frontend top bar.
 	server.BuildVersion = version
 

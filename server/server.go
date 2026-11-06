@@ -35,7 +35,7 @@ import (
 
 // BuildVersion is the backend application version, injected from cmd/artex at
 // startup (which in turn gets it from -ldflags "-X main.version=<tag>").
-// Defaults to "dev" for local builds. Exposed to the frontend via GET /api/health.
+// Defaults to "dev" for local builds. Exposed via authenticated GET /api/version.
 var BuildVersion = "dev"
 
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
@@ -823,6 +823,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings/basic-auth", s.saveBasicAuthSettings)
 
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/version", s.version)
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /api/system/metrics", s.systemMetrics)
 	mux.HandleFunc("GET /api/system/storage", s.storageStatus)
@@ -1178,7 +1179,13 @@ func (s *Server) Handler() http.Handler {
 // --- handlers ---
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"ok": true, "service": "artex", "version": BuildVersion})
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+func (s *Server) version(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]any{"version": BuildVersion})
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
