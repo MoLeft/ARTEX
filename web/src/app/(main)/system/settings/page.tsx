@@ -78,6 +78,9 @@ export default function SystemSettingsPage() {
   const [tavilyKeySet, setTavilyKeySet] = React.useState(false);
   const [tavilyKeyInput, setTavilyKeyInput] = React.useState("");
   const [savingTavilyKey, setSavingTavilyKey] = React.useState(false);
+  const [anySearchKeySet, setAnySearchKeySet] = React.useState(false);
+  const [anySearchKeyInput, setAnySearchKeyInput] = React.useState("");
+  const [savingAnySearchKey, setSavingAnySearchKey] = React.useState(false);
   const [proxyInput, setProxyInput] = React.useState("");
   const [savingProxy, setSavingProxy] = React.useState(false);
   const [globalProxyInput, setGlobalProxyInput] = React.useState("");
@@ -152,6 +155,7 @@ export default function SystemSettingsPage() {
     setBackend(s.web_search_backend || "ddgs");
     setBraveKeySet(!!s.brave_key_set);
     setTavilyKeySet(!!s.tavily_key_set);
+    setAnySearchKeySet(!!s.anysearch_key_set);
     setProxyInput(s.web_search_proxy ?? "");
     const savedProxy = s.global_proxy ?? "";
     setGlobalProxyInput(savedProxy);
@@ -611,6 +615,19 @@ export default function SystemSettingsPage() {
       .finally(() => setSavingTavilyKey(false));
   };
 
+  const saveAnySearchKey = () => {
+    setSavingAnySearchKey(true);
+    api
+      .setSettings({ anysearch_api_key: anySearchKeyInput })
+      .then((s) => {
+        apply(s);
+        setAnySearchKeyInput("");
+        toast.success(anySearchKeyInput.trim() ? "已保存 AnySearch API Key" : "已清除 AnySearch API Key");
+      })
+      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .finally(() => setSavingAnySearchKey(false));
+  };
+
   const saveProxy = () => {
     setSavingProxy(true);
     api
@@ -705,6 +722,7 @@ export default function SystemSettingsPage() {
         web_search_proxy: proxyInput.trim(),
         brave_search_api_key: braveKeyInput,
         tavily_search_api_key: tavilyKeyInput,
+        anysearch_api_key: anySearchKeyInput,
       })
       .then((r) => {
         if (r.ok) toast.success(`搜索测试成功 · ${r.backend} 返回 ${r.count} 条结果`);
@@ -1549,6 +1567,7 @@ export default function SystemSettingsPage() {
                         <SelectItem value="ddgs">DuckDuckGo（ddgs · 免费无 Key）</SelectItem>
                         <SelectItem value="brave-free">Brave（免费版 · 需 Key）</SelectItem>
                         <SelectItem value="tavily">Tavily（需 Key）</SelectItem>
+                        <SelectItem value="anysearch">AnySearch（无需 Key）</SelectItem>
                         <SelectItem value="deepseek">DeepSeek（官方）</SelectItem>
                       </SelectContent>
                     </Select>
@@ -1640,6 +1659,36 @@ export default function SystemSettingsPage() {
                       </p>
                     )}
                     <p className="text-muted-foreground text-xs">前往 https://tavily.com 注册并获取 API Key。</p>
+                  </div>
+                )}
+
+                {webSearch && backend === "anysearch" && (
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="anysearch-key" className="text-sm font-normal text-muted-foreground">
+                      AnySearch API Key（可选）
+                      {anySearchKeySet && <span className="ml-2 text-xs text-emerald-500">已配置</span>}
+                    </Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        id="anysearch-key"
+                        type="password"
+                        autoComplete="off"
+                        placeholder={anySearchKeySet ? "已配置（留空可清除）" : "留空使用匿名搜索"}
+                        value={anySearchKeyInput}
+                        disabled={!loaded || savingAnySearchKey}
+                        onChange={(e) => setAnySearchKeyInput(e.target.value)}
+                      />
+                      <Button
+                        type="button"
+                        onClick={saveAnySearchKey}
+                        disabled={!loaded || savingAnySearchKey || (anySearchKeyInput.trim() === "" && !anySearchKeySet)}
+                      >
+                        {anySearchKeyInput.trim() === "" && anySearchKeySet ? "清除 Key" : "保存"}
+                      </Button>
+                    </div>
+                    <p className="text-muted-foreground text-xs">
+                      不配置 Key 也可使用；配置 Key 后使用账户额度。文档：https://www.anysearch.com/docs
+                    </p>
                   </div>
                 )}
 

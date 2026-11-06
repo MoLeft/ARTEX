@@ -2618,6 +2618,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/settings" && m === "GET") return D.settings;
   if (path === "/settings" && m === "PUT") {
     const next = { ...D.settings, ...b };
+    if (typeof b.anysearch_api_key === "string") next.anysearch_key_set = b.anysearch_api_key.trim() !== "";
+    delete next.anysearch_api_key;
     if (!Array.isArray(next.worker_pools)) next.worker_pools = D.settings.worker_pools;
     if (next.worker_pools.length > 0) {
       next.workers = next.worker_pools.reduce((sum, pool) => sum + Number(pool.workers), 0);

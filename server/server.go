@@ -27,6 +27,7 @@ import (
 	"github.com/Autumn-27/artex/notify"
 	"github.com/Autumn-27/artex/report"
 	"github.com/Autumn-27/artex/traffic"
+	"github.com/Autumn-27/artex/websearch"
 	"github.com/Autumn-27/norma/llm"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
@@ -3773,7 +3774,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) settingsPayload() map[string]any {
-	on, backend, braveKey, tavilyKey, proxy := s.m.WebSearch()
+	on, backend, braveKey, tavilyKey, anySearchKey, proxy := s.m.WebSearch()
 	pyStored, _, _ := s.m.pg.GetSetting(settingPythonInterp)
 	concOn, concLimit := s.m.ConcurrencyLimit()
 	workspaceCleanup, _ := s.loadWorkspaceCleanupConfig()
@@ -3800,6 +3801,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"web_search_backend":                    backend,
 		"brave_key_set":                         strings.TrimSpace(braveKey) != "",
 		"tavily_key_set":                        strings.TrimSpace(tavilyKey) != "",
+		"anysearch_key_set":                     strings.TrimSpace(anySearchKey) != "",
 		"web_search_proxy":                      proxy,             // 独立出口代理(http/https/socks5)，空=直连
 		"global_proxy":                          s.m.GlobalProxy(), // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
 		"proxy_direct_retry_on_connect_failure": s.m.ProxyDirectRetry(),
@@ -3900,6 +3902,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		WebSearchBackend       *string       `json:"web_search_backend"`
 		BraveKey               *string       `json:"brave_search_api_key"`
 		TavilyKey              *string       `json:"tavily_search_api_key"`
+		AnySearchKey           *string       `json:"anysearch_api_key"`
 		WebSearchProxy         *string       `json:"web_search_proxy"` // 独立出口代理(http/https/socks5)；null=不改，""=清空
 		GlobalProxy            *string       `json:"global_proxy"`     // 全局出口代理(http/https/socks5)；null=不改，""=清空(直连)
 		ProxyDirectRetry       *bool         `json:"proxy_direct_retry_on_connect_failure"`
@@ -4275,16 +4278,16 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.WebSearchProxy != nil {
+	if req.WebSearchEnabled != nil || req.WebSearchBackend != nil || req.BraveKey != nil || req.TavilyKey != nil || req.AnySearchKey != nil || req.WebSearchProxy != nil {
 		// Fill unspecified fields from current state so a partial PUT doesn't reset them.
-		on, backend, _, _, _ := s.m.WebSearch()
+		on, backend, _, _, _, _ := s.m.WebSearch()
 		if req.WebSearchEnabled != nil {
 			on = *req.WebSearchEnabled
 		}
 		if req.WebSearchBackend != nil {
 			backend = *req.WebSearchBackend
 		}
-		if err := s.m.SetWebSearch(on, backend, req.BraveKey, req.TavilyKey, req.WebSearchProxy); err != nil {
+		if err := s.m.SetWebSearch(on, backend, req.BraveKey, req.TavilyKey, req.AnySearchKey, req.WebSearchProxy); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
@@ -4340,17 +4343,18 @@ func (s *Server) setReporterBrowserScreenshotVisibility(enabled bool) error {
 // not retype them. Always 200 with {ok, error?, count?, backend?}.
 func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Backend   string `json:"web_search_backend"`
-		Proxy     string `json:"web_search_proxy"`
-		BraveKey  string `json:"brave_search_api_key"`
-		TavilyKey string `json:"tavily_search_api_key"`
+		Backend      string `json:"web_search_backend"`
+		Proxy        string `json:"web_search_proxy"`
+		BraveKey     string `json:"brave_search_api_key"`
+		TavilyKey    string `json:"tavily_search_api_key"`
+		AnySearchKey string `json:"anysearch_api_key"`
 	}
 	// Empty body is fine — fall back entirely to the saved config below.
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	_, backend, storedBraveKey, storedTavilyKey, _ := s.m.WebSearch()
+	_, backend, storedBraveKey, storedTavilyKey, storedAnySearchKey, _ := s.m.WebSearch()
 	if strings.TrimSpace(req.Backend) != "" {
 		backend = req.Backend
 	}
@@ -4365,6 +4369,10 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	tavilyKey := storedTavilyKey
 	if strings.TrimSpace(req.TavilyKey) != "" {
 		tavilyKey = req.TavilyKey
+	}
+	anySearchKey := storedAnySearchKey
+	if strings.TrimSpace(req.AnySearchKey) != "" {
+		anySearchKey = req.AnySearchKey
 	}
 	cfg := actool.WebSearchConfig{Backend: backend, BraveAPIKey: braveKey, TavilyAPIKey: tavilyKey, Proxy: proxy}
 	// Hard cap so a slow/blocked proxy can't hang the request.
@@ -4381,7 +4389,13 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), wall)
 	defer cancel()
-	results, err := actool.WebSearchProbe(ctx, cfg, probeQuery, 3)
+	var results []actool.SearchResult
+	var err error
+	if strings.EqualFold(strings.TrimSpace(backend), "anysearch") {
+		results, err = websearch.Probe(ctx, anySearchKey, proxy, probeQuery, 3)
+	} else {
+		results, err = actool.WebSearchProbe(ctx, cfg, probeQuery, 3)
+	}
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error(), "backend": backend})
 		return
