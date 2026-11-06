@@ -28,8 +28,9 @@ import (
 // WebSearchOpts is the web-search backend selection the server pushes into each
 // agent (planner/worker/main). Enabled=false leaves the web_search tool off.
 // Backend is "ddgs" (no key), "brave-free" (BraveKey required), "tavily"
-// (TavilyKey required), or "deepseek" (DeepSeek* required, filled from the
-// active LLM profile). It maps directly onto agentcore.Options.
+// (TavilyKey required), "anysearch" (optional AnySearchKey), "uapi"
+// (UAPIKey required), or "deepseek" (DeepSeek* from the active LLM profile).
+// AnySearch and UAPI use host-provided tools; other backends map to Norma.
 // Proxy is a dedicated egress proxy for the search request (http/https/socks5),
 // independent of the traffic-recording MITM proxy — set it when the search endpoint
 // is only reachable via a VPN/SOCKS proxy. Empty = direct.
@@ -39,11 +40,13 @@ import (
 // tool)，因此每次搜索会消耗一次模型调用，且搜索请求由 DeepSeek 服务端发出——
 // 不经过本机 Proxy，也不会进流量留痕。
 type WebSearchOpts struct {
-	Enabled   bool
-	Backend   string
-	BraveKey  string
-	TavilyKey string
-	Proxy     string
+	Enabled      bool
+	Backend      string
+	BraveKey     string
+	TavilyKey    string
+	AnySearchKey string
+	UAPIKey      string
+	Proxy        string
 	// DeepSeek* 来自当前激活的 LLM 配置(仅 anthropic 格式的 DeepSeek 官方端点)，
 	// 不单独配置，随 LLM 配置切换而变。
 	DeepSeekBaseURL string
@@ -504,6 +507,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
 	noaSession := WorkerSessionID(ts.ID(), intent.ID)
 	enableNoa(&opts, w.noaEnabledFn, w.workDir, noaSession, noaWarn(noaSession))
+	if err := configureWebSearch(&opts, w.webSearch); err != nil {
+		return "", WriteCounts{}, err
+	}
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)

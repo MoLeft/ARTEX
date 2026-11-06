@@ -304,6 +304,8 @@ type Manager struct {
 	webSearchBackend string
 	braveKey         string
 	tavilyKey        string
+	anySearchKey     string
+	uapiKey          string
 	webSearchProxy   string
 	// globalProxy is the egress proxy all target traffic routes through
 	// (http/https/socks5, optional user:pass). Empty = direct. When traffic
@@ -329,6 +331,8 @@ const (
 	settingWebSearchBackend    = "web_search_backend"
 	settingBraveKey            = "brave_search_api_key"
 	settingTavilyKey           = "tavily_search_api_key"
+	settingAnySearchKey        = "anysearch_api_key"
+	settingUAPIKey             = "uapi_search_api_key"
 	settingWebSearchProxy      = "web_search_proxy"
 	// settingGlobalProxy is the global egress proxy for all target traffic
 	// (http/https/socks5). Empty = direct. Distinct from web_search_proxy (which
@@ -663,6 +667,12 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	if v, ok, _ := pg.GetSetting(settingTavilyKey); ok {
 		m.tavilyKey = v
 	}
+	if v, ok, _ := pg.GetSetting(settingAnySearchKey); ok {
+		m.anySearchKey = v
+	}
+	if v, ok, _ := pg.GetSetting(settingUAPIKey); ok {
+		m.uapiKey = v
+	}
 	if v, ok, _ := pg.GetSetting(settingWebSearchProxy); ok {
 		m.webSearchProxy = v
 	}
@@ -785,31 +795,33 @@ func (m *Manager) SetLLMPoolBindFallback(on bool) error {
 	return m.pg.SetBool(settingLLMPoolBindFallback, on)
 }
 
-// WebSearch returns the current web-search config: whether it is enabled, the
-// backend ("ddgs" | "brave-free" | "tavily"), the Brave API key, the Tavily API
-// key (each empty unless set), and the dedicated egress proxy (empty = direct).
-func (m *Manager) WebSearch() (on bool, backend, braveKey, tavilyKey, proxy string) {
+// WebSearch returns the current web-search config, including optional provider
+// keys and the dedicated egress proxy (empty = direct).
+func (m *Manager) WebSearch() (on bool, backend, braveKey, tavilyKey, anySearchKey, uapiKey, proxy string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	backend = m.webSearchBackend
 	if backend == "" {
 		backend = defaultWebSearchBackend
 	}
-	return m.webSearchOn, backend, m.braveKey, m.tavilyKey, m.webSearchProxy
+	return m.webSearchOn, backend, m.braveKey, m.tavilyKey, m.anySearchKey, m.uapiKey, m.webSearchProxy
 }
 
 // WebSearchOpts returns the config as the agent-package struct the server pushes
 // into each agent. Disabled when off, or when a keyed backend is selected without
 // its key (so a half-configured backend never silently drops the tool at session build).
 func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
-	on, backend, braveKey, tavilyKey, proxy := m.WebSearch()
+	on, backend, braveKey, tavilyKey, anySearchKey, uapiKey, proxy := m.WebSearch()
 	if on && backend == "brave-free" && strings.TrimSpace(braveKey) == "" {
 		on = false
 	}
 	if on && backend == "tavily" && strings.TrimSpace(tavilyKey) == "" {
 		on = false
 	}
-	o := agent.WebSearchOpts{Enabled: on, Backend: backend, BraveKey: braveKey, TavilyKey: tavilyKey, Proxy: proxy}
+	if on && strings.EqualFold(strings.TrimSpace(backend), "uapi") && strings.TrimSpace(uapiKey) == "" {
+		on = false
+	}
+	o := agent.WebSearchOpts{Enabled: on, Backend: backend, BraveKey: braveKey, TavilyKey: tavilyKey, AnySearchKey: anySearchKey, UAPIKey: uapiKey, Proxy: proxy}
 	if backend == deepSeekWebSearchBackend {
 		o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel = m.deepSeekSearchCreds()
 	}
@@ -831,11 +843,10 @@ func (m *Manager) deepSeekSearchCreds() (baseURL, apiKey, model string) {
 	return p.BaseURL, p.APIKey, p.Model
 }
 
-// SetWebSearch persists and applies the web-search settings. braveKey, tavilyKey, and
-// proxy are each left untouched when nil (so toggling the switch doesn't wipe a saved
-// key/proxy; pass a pointer to "" to clear). Callers must rebuild agents (applyLLM)
-// afterwards so the settings take effect.
-func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, proxy *string) error {
+// SetWebSearch persists and applies the web-search settings. Keys and proxy are
+// left untouched when nil; pass a pointer to "" to clear. Callers must rebuild
+// agents (applyLLM) afterwards so the settings take effect.
+func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, anySearchKey, uapiKey, proxy *string) error {
 	backend = strings.TrimSpace(backend)
 	if backend == "" {
 		backend = defaultWebSearchBackend
@@ -864,6 +875,22 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, pro
 		}
 		m.mu.Lock()
 		m.tavilyKey = *tavilyKey
+		m.mu.Unlock()
+	}
+	if anySearchKey != nil {
+		if err := m.pg.SetSetting(settingAnySearchKey, *anySearchKey); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		m.anySearchKey = *anySearchKey
+		m.mu.Unlock()
+	}
+	if uapiKey != nil {
+		if err := m.pg.SetSetting(settingUAPIKey, *uapiKey); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		m.uapiKey = *uapiKey
 		m.mu.Unlock()
 	}
 	if proxy != nil {
