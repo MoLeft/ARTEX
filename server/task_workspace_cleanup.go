@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type taskCleanupGroup struct {
@@ -22,6 +23,7 @@ type taskCleanupGroup struct {
 	Reason         string   `json:"reason"`
 	ProtectedPaths []string `json:"protected_paths,omitempty"`
 	targets        []string
+	liveScratch    bool
 }
 
 var taskFileReference = regexp.MustCompile(`tasks/([1-9][0-9]*)/([^\s\)\]\}"'<>,]+)`)
@@ -157,6 +159,53 @@ func scanTaskCleanupPath(ctx context.Context, abs, rel string, locked map[string
 	return clean, protected, targets, nil
 }
 
+func scanLiveTaskScratch(ctx context.Context, base, id string, refs map[string]bool) ([]taskCleanupGroup, uint64, error) {
+	children, err := os.ReadDir(base)
+	if err != nil {
+		return nil, 0, err
+	}
+	var groups []taskCleanupGroup
+	var total uint64
+	for _, parent := range append([]string{""}, workerDirs(children)...) {
+		rel := filepath.ToSlash(filepath.Join(parent, ".agent-scratch"))
+		abs := filepath.Join(base, rel)
+		info, err := os.Lstat(abs)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		if !info.IsDir() {
+			continue
+		}
+		clean, protected, targets, err := scanTaskCleanupPath(ctx, abs, rel, refs)
+		if err != nil {
+			return nil, 0, err
+		}
+		if clean+protected == 0 {
+			continue
+		}
+		total += clean + protected
+		risk, reason := "safe", "已结束任务的临时文件，无已知引用"
+		if protected > 0 {
+			risk, reason = "review", "临时目录中有直接引用；只清理未引用文件"
+		}
+		if len(targets) == 0 {
+			risk, reason = "locked", "临时目录全部被引用"
+		}
+		var paths []string
+		for path := range refs {
+			if path == rel || strings.HasPrefix(path, rel+"/") {
+				paths = append(paths, "tasks/"+id+"/"+path)
+			}
+		}
+		sort.Strings(paths)
+		groups = append(groups, taskCleanupGroup{Path: "tasks/" + id + "/" + rel, TaskID: id, Dir: true, Bytes: clean, ProtectedBytes: protected, Risk: risk, Reason: reason, ProtectedPaths: paths, targets: targets, liveScratch: true})
+	}
+	return groups, total, nil
+}
+
 func (s *Server) scanTaskCleanup(ctx context.Context) ([]taskCleanupGroup, error) {
 	live, cases, refs, err := s.taskCleanupReferences()
 	if err != nil {
@@ -181,11 +230,28 @@ func (s *Server) scanTaskCleanup(ctx context.Context) ([]taskCleanupGroup, error
 		}
 		base := filepath.Join(root, id)
 		if live[id] {
+			taskID, _ := strconv.ParseInt(id, 10, 64)
+			eligible, err := s.workspaceTaskEligible(taskID, time.Now())
+			if err != nil {
+				return nil, err
+			}
+			var scratchBytes uint64
+			if eligible {
+				scratch, n, err := scanLiveTaskScratch(ctx, base, id, refs[id])
+				if err != nil {
+					return nil, err
+				}
+				groups = append(groups, scratch...)
+				scratchBytes = n
+			}
 			n, err := directoryBytes(base, ctx.Done())
 			if err != nil {
 				return nil, err
 			}
-			groups = append(groups, taskCleanupGroup{Path: "tasks/" + id, TaskID: id, Dir: true, ProtectedBytes: n, Risk: "locked", Reason: "任务仍存在", ProtectedPaths: []string{"tasks/" + id}})
+			if n < scratchBytes {
+				return nil, fmt.Errorf("task %s workspace changed during scan", id)
+			}
+			groups = append(groups, taskCleanupGroup{Path: "tasks/" + id, TaskID: id, Dir: true, ProtectedBytes: n - scratchBytes, Risk: "locked", Reason: "任务仍存在", ProtectedPaths: []string{"tasks/" + id}})
 			continue
 		}
 		children, err := os.ReadDir(base)
@@ -232,6 +298,62 @@ func (s *Server) taskWorkspaceCleanupPreview(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, 200, map[string]any{"groups": groups})
 }
 
+func resolveTaskCleanupPaths(ctx context.Context, dataDir string, groups []taskCleanupGroup, paths []string) ([]taskCleanupGroup, error) {
+	selected := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		if filepath.ToSlash(filepath.Clean(path)) != path || filepath.IsAbs(path) || selected[path] {
+			return nil, fmt.Errorf("invalid or duplicate cleanup path: %s", path)
+		}
+		selected[path] = true
+	}
+	for path := range selected {
+		for parent := filepath.Dir(path); parent != "."; parent = filepath.Dir(parent) {
+			if selected[parent] {
+				return nil, fmt.Errorf("overlapping cleanup paths: %s", path)
+			}
+		}
+	}
+	chosen := make([]taskCleanupGroup, 0, len(paths))
+	for _, path := range paths {
+		abs := dataDir
+		for _, part := range strings.Split(path, "/") {
+			abs = filepath.Join(abs, part)
+			info, err := os.Lstat(abs)
+			if err != nil || info.Mode()&os.ModeSymlink != 0 {
+				return nil, fmt.Errorf("selected path changed or is a symlink: %s", path)
+			}
+		}
+		var group *taskCleanupGroup
+		for i := range groups {
+			candidate := &groups[i]
+			if (path == candidate.Path || strings.HasPrefix(path, candidate.Path+"/")) && (group == nil || len(candidate.Path) > len(group.Path)) {
+				group = candidate
+			}
+		}
+		if group == nil || group.Risk == "locked" || len(group.targets) == 0 {
+			return nil, fmt.Errorf("selected path is no longer cleanable: %s", path)
+		}
+		item := *group
+		if path != group.Path {
+			if !group.Dir {
+				return nil, fmt.Errorf("selected path is not inside a directory: %s", path)
+			}
+			locked := map[string]bool{}
+			prefix := "tasks/" + group.TaskID + "/"
+			for _, protected := range group.ProtectedPaths {
+				locked[strings.TrimPrefix(protected, prefix)] = true
+			}
+			clean, protected, targets, err := scanTaskCleanupPath(ctx, abs, strings.TrimPrefix(path, prefix), locked)
+			if err != nil || len(targets) == 0 {
+				return nil, fmt.Errorf("selected path changed or is protected: %s: %v", path, err)
+			}
+			item.Path, item.Bytes, item.ProtectedBytes, item.targets = path, clean, protected, targets
+		}
+		chosen = append(chosen, item)
+	}
+	return chosen, nil
+}
+
 func (s *Server) taskWorkspaceCleanup(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Paths []string `json:"paths"`
@@ -244,33 +366,22 @@ func (s *Server) taskWorkspaceCleanup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "select 1-2000 cleanup groups")
 		return
 	}
-	selected := map[string]bool{}
+	scratchSelected := false
 	for _, path := range req.Paths {
-		if selected[path] {
-			writeErr(w, 400, "duplicate cleanup group")
-			return
-		}
-		selected[path] = true
+		scratchSelected = scratchSelected || strings.HasSuffix(path, "/.agent-scratch") || strings.Contains(path, "/.agent-scratch/")
+	}
+	if scratchSelected {
+		s.engine.deleteMu.Lock()
+		defer s.engine.deleteMu.Unlock()
 	}
 	groups, err := s.scanTaskCleanup(r.Context()) // Recheck references at the destructive boundary.
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	chosen := []taskCleanupGroup{}
-	for _, group := range groups {
-		if !selected[group.Path] {
-			continue
-		}
-		delete(selected, group.Path)
-		if group.Risk == "locked" || len(group.targets) == 0 {
-			writeErr(w, 409, "selected files are now protected")
-			return
-		}
-		chosen = append(chosen, group)
-	}
-	if len(selected) > 0 {
-		writeErr(w, 409, fmt.Sprintf("%d selected groups changed; rescan required", len(selected)))
+	chosen, err := resolveTaskCleanupPaths(r.Context(), s.dataDir, groups, req.Paths)
+	if err != nil {
+		writeErr(w, 409, err.Error())
 		return
 	}
 	var targets []string
@@ -294,7 +405,14 @@ func (s *Server) taskWorkspaceCleanup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, group := range chosen {
-		if live[group.TaskID] || (group.Risk == "safe" && cases[group.TaskID]) {
+		if group.liveScratch {
+			id, _ := strconv.ParseInt(group.TaskID, 10, 64)
+			eligible, err := s.workspaceTaskEligible(id, time.Now())
+			if err != nil || !live[group.TaskID] || !eligible {
+				rollback(fmt.Errorf("task %s is no longer idle and completed: %v", group.TaskID, err))
+				return
+			}
+		} else if live[group.TaskID] || (group.Risk == "safe" && cases[group.TaskID]) {
 			rollback(fmt.Errorf("task %s references changed; rescan required", group.TaskID))
 			return
 		}
