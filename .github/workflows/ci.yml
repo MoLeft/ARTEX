@@ -63,8 +63,10 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: node --test .github/scripts/demo-release.test.cjs web/src/lib/mock/assets-preview.test.cjs
+      - run: node --test .github/scripts/demo-release.test.cjs
       - run: npm ci
+        working-directory: web
+      - run: node --test src/lib/mock/assets-preview.test.cjs
         working-directory: web
       - run: node --no-warnings --experimental-strip-types --test tests/storage-cleanup-selection.test.mjs
         working-directory: web
