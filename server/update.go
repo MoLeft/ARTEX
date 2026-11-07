@@ -205,6 +205,19 @@ func (h *updateHub) subscribe() (<-chan updateProgress, func()) {
 	}
 }
 
+// updateDecision 统一检查与安装的版本判断：仅运行版本格式错误时视作旧版；
+// 目标 Release 标签必须有效，不能把无效目标当作“最新版”安装。
+func updateDecision(current, latest string) (hasUpdate, comparable bool, reason, errText string) {
+	if _, valid := selfupdate.CompareVersions(latest, latest); !valid {
+		return false, false, "", fmt.Sprintf("最新版本 %q 的标签格式无效，无法更新", latest)
+	}
+	cmp, comparable := selfupdate.CompareVersions(current, latest)
+	if !comparable {
+		return true, false, fmt.Sprintf("当前版本 %q 不符合版本规则，按旧版本处理；可手动更新到 %s", current, latest), ""
+	}
+	return cmp < 0, true, "", ""
+}
+
 // updateCheck 查询所选通道的最新版本并与当前版本比较。
 //
 // 前端也会直连 api.github.com（GitHub 的 CORS 是 *），但**以本接口为准**：
@@ -262,13 +275,14 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 		out["asset_available"] = false
 	}
 
-	cmp, comparable := selfupdate.CompareVersions(current, latest)
+	hasUpdate, comparable, reason, errText := updateDecision(current, latest)
 	out["comparable"] = comparable
-	out["has_update"] = comparable && cmp < 0
-	if !comparable {
-		// 开发构建（dev / git describe 带后缀）没有可比较的版本号。放行只会
-		// 用正式版覆盖掉本地正在调试的二进制，所以直接不给更新。
-		out["reason"] = fmt.Sprintf("当前版本 %q 不是可比较的发布版本，已禁用一键更新", current)
+	out["has_update"] = hasUpdate
+	if reason != "" {
+		out["reason"] = reason
+	}
+	if errText != "" {
+		out["error"] = errText
 	}
 	writeJSON(w, 200, out)
 }
@@ -292,13 +306,13 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 502, err.Error())
 		return
 	}
-	cmp, comparable := selfupdate.CompareVersions(current, rel.TagName)
-	if !comparable {
-		writeErr(w, 400, fmt.Sprintf("当前版本 %q 不是可比较的发布版本，已禁用一键更新", current))
+	hasUpdate, _, _, errText := updateDecision(current, rel.TagName)
+	if errText != "" {
+		writeErr(w, 400, errText)
 		return
 	}
-	if cmp >= 0 {
-		writeErr(w, 400, fmt.Sprintf("当前已是最新版本 %s", current))
+	if !hasUpdate {
+		writeErr(w, 400, fmt.Sprintf("当前版本 %s 已是最新版本或更新版本", current))
 		return
 	}
 	if !updHub.begin(rel.TagName) {

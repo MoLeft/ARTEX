@@ -2,11 +2,16 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"runtime"
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/selfupdate"
 )
 
@@ -16,6 +21,80 @@ import (
 
 func newTestCache(fetch func(context.Context, *http.Client) (*selfupdate.Release, error)) *releaseCache {
 	return &releaseCache{fetch: fetch}
+}
+
+func TestUpdateDecision(t *testing.T) {
+	cases := []struct {
+		name, current, latest            string
+		hasUpdate, comparable, wantError bool
+	}{
+		{"legacy dev beta", "dev", "v0.26.11.07.003-beta", true, false, false},
+		{"legacy suffix beta", "v0.26.11.06.002-beta-2-gabc", "v0.26.11.07.003-beta", true, false, false},
+		{"legacy invalid date", "v0.26.02.30.001", "v0.26.11.07.003-beta", true, false, false},
+		{"valid older", "v0.26.11.06.002-beta", "v0.26.11.07.003-beta", true, true, false},
+		{"valid equal", "v0.26.11.07.003-beta", "v0.26.11.07.003-beta", false, true, false},
+		{"valid newer", "v0.26.11.08.001", "v0.26.11.07.003-beta", false, true, false},
+		{"invalid latest", "dev", "broken-release", false, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hasUpdate, comparable, reason, errText := updateDecision(tc.current, tc.latest)
+			if hasUpdate != tc.hasUpdate || comparable != tc.comparable || (errText != "") != tc.wantError {
+				t.Fatalf("updateDecision(%q, %q) = (%v, %v, %q, %q)", tc.current, tc.latest, hasUpdate, comparable, reason, errText)
+			}
+			if !comparable && !tc.wantError && (reason == "" || !hasUpdate) {
+				t.Fatalf("旧版本应有明确提示且允许手动更新: %q", reason)
+			}
+		})
+	}
+}
+
+func TestUpdateCheckAndApplyMalformedCurrent(t *testing.T) {
+	dsn := os.Getenv("ARTEX_PG_DSN")
+	if dsn == "" {
+		t.Skip("requires isolated ARTEX_PG_DSN")
+	}
+	pg, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pg.Close()
+	oldVersion, oldCache := BuildVersion, relCache
+	defer func() { BuildVersion, relCache = oldVersion, oldCache }()
+	BuildVersion = "dev-dirty"
+	fetches := 0
+	relCache = newTestCache(func(context.Context, *http.Client) (*selfupdate.Release, error) {
+		fetches++
+		tag := "v0.26.11.07.003-beta"
+		return &selfupdate.Release{TagName: tag, Assets: []selfupdate.Asset{{Name: selfupdate.AssetName(tag, runtime.GOOS, runtime.GOARCH), Size: 123}}}, nil
+	})
+	s := &Server{m: &Manager{pg: pg}}
+	check := httptest.NewRecorder()
+	s.updateCheck(check, httptest.NewRequest(http.MethodGet, "/api/update/check?force=1", nil))
+	if check.Code != http.StatusOK {
+		t.Fatalf("check status=%d body=%s", check.Code, check.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(check.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["current"] != BuildVersion || body["latest"] != "v0.26.11.07.003-beta" || body["has_update"] != true || body["comparable"] != false || body["asset_available"] != true || body["reason"] == "" {
+		t.Fatalf("legacy check response: %s", check.Body.String())
+	}
+	// 安装接口应进入同一个版本决策，不能仍以“不可比较”为由拒绝；
+	// 通过锁住正在运行的更新阻止实际下载与重启。
+	if !updHub.begin("test-existing-update") {
+		t.Fatal("update hub already busy")
+	}
+	defer updHub.finish(nil)
+	apply := httptest.NewRecorder()
+	s.updateApply(apply, httptest.NewRequest(http.MethodPost, "/api/update/apply", nil))
+	if apply.Code != http.StatusConflict {
+		t.Fatalf("apply status=%d body=%s", apply.Code, apply.Body.String())
+	}
+	if fetches != 1 {
+		t.Fatalf("apply must reuse checked release: fetches=%d", fetches)
+	}
 }
 
 func TestReleaseCacheServesFromCache(t *testing.T) {

@@ -83,7 +83,7 @@ export function UpdateCard() {
         setInfo(r);
         if (!quiet) {
           if (r.error) toast.error("检查更新失败：" + r.error);
-          else if (r.has_update) toast.success(`发现新版本 ${r.latest}`);
+          else if (r.has_update) toast.success(r.comparable === false ? `当前版本不符合规则，可更新到 ${r.latest}` : `发现新版本 ${r.latest}`);
           else if (r.comparable) toast.success("当前已是最新版本");
         }
       })
@@ -346,12 +346,17 @@ export function UpdateCard() {
         {info?.error && (
           <p className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
-            无法连接 GitHub：{info.error}
-            {"　"}可配置更新代理或切换为直连后重试。
+            检查更新失败：{info.error}
+            {"　"}若为网络错误，可配置更新代理或切换为直连后重试。
           </p>
         )}
 
-        {info && !info.comparable && info.reason && <p className="text-xs text-muted-foreground">{info.reason}</p>}
+        {info && !info.comparable && info.reason && !info.error && (
+          <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+            <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+            {info.reason}
+          </p>
+        )}
 
         {info?.has_update && info.asset_available === false && (
           <p className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
