@@ -1801,9 +1801,9 @@ export interface UpdateCheck {
   asset_available?: boolean;
   size?: number;
   has_update?: boolean;
-  /** 双方版本号是否可比较；开发构建为 false，此时禁用一键更新。 */
+  /** 双方版本号是否可比较；运行版本不合规则为 false，此时按旧版处理。 */
   comparable?: boolean;
-  /** comparable 为 false 时的说明。 */
+  /** 运行版本号不合规则时的说明。 */
   reason?: string;
 }
 
