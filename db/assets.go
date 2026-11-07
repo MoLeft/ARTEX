@@ -1084,7 +1084,7 @@ SELECT id, type, company_id, array_to_json(task_ids)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
 FROM assets
 WHERE type = $1
-ORDER BY last_seen DESC, id DESC
+ORDER BY assets.last_seen DESC, id DESC
 LIMIT $2 OFFSET $3`, typ, limit, offset)
 	if err != nil {
 		return nil, err
@@ -1141,7 +1141,7 @@ func (s *AssetStore) CountByCompany(companyID int64, typ string) (int, error) {
 }
 
 func pageClause(args *[]any, limit, offset int) string {
-	q := ` ORDER BY last_seen DESC, id DESC`
+	q := ` ORDER BY assets.last_seen DESC, id DESC`
 	if limit > 0 {
 		*args = append(*args, limit)
 		q += fmt.Sprintf(` LIMIT $%d`, len(*args))
@@ -1201,6 +1201,15 @@ func (s *AssetStore) CountByTask(taskID int64, typ string) (int, error) {
 
 func (s *AssetStore) CountsByTypeForTask(taskID int64) (map[string]int, error) {
 	rows, err := s.db.Query(`SELECT type, COUNT(*) FROM assets WHERE $1 = ANY(task_ids) GROUP BY type`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTypeCounts(rows)
+}
+
+func (s *AssetStore) CountsByTypeForCompany(companyID int64) (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT type, COUNT(*) FROM assets WHERE company_id=$1 GROUP BY type`, companyID)
 	if err != nil {
 		return nil, err
 	}
@@ -1376,7 +1385,7 @@ func (s *AssetStore) GetByIDs(ids []int64) ([]*Asset, error) {
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
 		args[i] = id
 	}
-	sql := assetSelectCols + " WHERE id IN (" + strings.Join(placeholders, ",") + ") ORDER BY last_seen DESC"
+	sql := assetSelectCols + " WHERE id IN (" + strings.Join(placeholders, ",") + ") ORDER BY assets.last_seen DESC"
 	rows, err := s.db.Query(sql, args...)
 	if err != nil {
 		return nil, err

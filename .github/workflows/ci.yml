@@ -44,6 +44,8 @@ jobs:
         run: |
           go test ./db -run '^TestMissingSkillStatsPageCountsBeyondFirstPage$' -count=1
           go test ./db -run '^TestMCPToolsCachePreservesSchema$' -count=1
+          go test ./db -run '^(TestListCompaniesPage|TestTaskListMetricsAll|TestAssetPaginationUsesStableIDTieBreaker)$' -count=1
+          go test ./server -run '^TestAssetCompanyFilterKeepsDSLInsideCompany$' -count=1
           go test ./server -run '^(TestProxy|TestDashboardActivityUsesLatestPage|TestSummaryAndReportBeyondListLimits|TestFindingStatsBeyondLegacyListLimit|TestTaskFindingsPageIncludesAllNodesAndProtectsSources|TestMissingSkillAPIReportsWholeLedger|TestInheritedActivityDetailAndRelationDeletion|TestCleanupOrphanTaskWorkspacesKeepsLiveTasksAndEvidence|TestCleanupFinishedTaskScratchBeforeRetention)$' -count=1 -p 1
       - name: Test browser MCP controls
         env:

@@ -623,16 +623,18 @@ export const api = {
 
   // ---- assets ----
   // Server-side paginated: pass limit/offset, get back the page + full match total.
-  assets: (type = "", limit = 50, offset = 0) =>
-    get<{ count: number; total: number; assets: Asset[] }>(`/assets?type=${type}&limit=${limit}&offset=${offset}`).then(
-      (r) => ({ assets: r?.assets ?? [], total: r?.total ?? r?.count ?? 0 }),
-    ),
-  searchAssets: (dsl: string, type = "", limit = 50, offset = 0) =>
+  assets: (type = "", limit = 50, offset = 0, companyId = 0) =>
     get<{ count: number; total: number; assets: Asset[] }>(
-      `/assets?dsl=${encodeURIComponent(dsl)}${type ? `&type=${encodeURIComponent(type)}` : ""}&limit=${limit}&offset=${offset}`,
+      `/assets?type=${type}&limit=${limit}&offset=${offset}${companyId ? `&company_id=${companyId}` : ""}`,
     ).then((r) => ({ assets: r?.assets ?? [], total: r?.total ?? r?.count ?? 0 })),
-  assetCounts: (taskId = "") =>
-    get<Record<string, number>>(`/assets/counts${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""}`),
+  searchAssets: (dsl: string, type = "", limit = 50, offset = 0, companyId = 0) =>
+    get<{ count: number; total: number; assets: Asset[] }>(
+      `/assets?dsl=${encodeURIComponent(dsl)}${type ? `&type=${encodeURIComponent(type)}` : ""}&limit=${limit}&offset=${offset}${companyId ? `&company_id=${companyId}` : ""}`,
+    ).then((r) => ({ assets: r?.assets ?? [], total: r?.total ?? r?.count ?? 0 })),
+  assetCounts: (taskId = "", companyId = 0) =>
+    get<Record<string, number>>(
+      `/assets/counts${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""}${!taskId && companyId ? `?company_id=${companyId}` : ""}`,
+    ),
   deleteAssets: (ids: number[]) =>
     http<{ deleted: number }>("/assets", { method: "DELETE", body: JSON.stringify({ ids }) }),
   // task-scoped view of the same endpoint — server-side paginated like `assets`
@@ -659,6 +661,12 @@ export const api = {
 
   // ---- companies (企业 + 资产范围；归属唯一来源) ----
   companies: () => get<Company[]>("/companies").then(arr),
+  company: (id: number) => get<{ company: Company; scope: NonNullable<Company["scope"]> }>(`/companies/${id}`),
+  companyNames: () => get<Pick<Company, "id" | "name">[]>("/companies?names=1").then(arr),
+  companiesPage: (limit = 50, offset = 0, search = "") =>
+    get<{ companies: Company[]; total: number }>(
+      `/companies?limit=${limit}&offset=${offset}&search=${encodeURIComponent(search)}`,
+    ).then((r) => ({ companies: r.companies ?? [], total: r.total ?? 0 })),
   createCompany: (name: string, scope: CompanyScopeRule[]) =>
     post<{ id: number; created: boolean; scope_added?: number; scope_invalid?: number; scope_errors?: string[] }>(
       "/companies",

@@ -206,12 +206,16 @@ export default function DashboardPage() {
     let alive = true;
     let loading = false;
     let signature = "";
-    const load = async () => {
-      if (loading) return;
+    let hasActiveTask = true;
+    let lastPoll = 0;
+    const load = async (force = false) => {
+      if (document.hidden || loading || (!force && !hasActiveTask && Date.now() - lastPoll < 15_000)) return;
       loading = true;
+      lastPoll = Date.now();
       try {
         const tr = await api.tasks();
         if (!alive) return;
+        hasActiveTask = tr.tasks.some((task) => ["queued", "running", "llm_blocked"].includes(task.status));
         const nextSignature = JSON.stringify(tr.tasks);
         if (nextSignature !== signature) {
           signature = nextSignature;
@@ -224,10 +228,13 @@ export default function DashboardPage() {
       }
     };
     void load();
-    const t = setInterval(load, 5000);
+    const t = setInterval(() => void load(), 5000);
+    const onVisible = () => { if (!document.hidden) void load(true); };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       alive = false;
       clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
 
@@ -235,7 +242,7 @@ export default function DashboardPage() {
     let alive = true;
     let loading = false;
     const load = async () => {
-      if (loading) return;
+      if (document.hidden || loading) return;
       loading = true;
       try {
         const [recent, summary] = await Promise.all([api.findingsPage({ page: 1, pageSize: 8 }), api.findingStats()]);
@@ -261,7 +268,7 @@ export default function DashboardPage() {
     let alive = true;
     let loading = false;
     const load = async () => {
-      if (loading) return;
+      if (document.hidden || loading) return;
       loading = true;
       try {
         const [stats, settings, pending, activity, tokens, conversationTokens] = await Promise.all([
@@ -297,6 +304,7 @@ export default function DashboardPage() {
   React.useEffect(() => {
     let alive = true;
     const load = async () => {
+      if (document.hidden) return;
       try {
         const [traf, counts, agentList, mcpList, skillList, toolList, profileList, usage] = await Promise.all([
           api.traffic(0, 50),

@@ -28,7 +28,13 @@ type Company struct {
 type CompanyWithScope struct {
 	Company
 	Scope      []ScopeRule `json:"scope"`
+	ScopeCount int         `json:"scope_count"`
 	AssetCount int         `json:"asset_count"`
+}
+
+type CompanyName struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
 }
 
 // ScopeRule is one company_scope row.
@@ -256,41 +262,111 @@ func (s *CompanyStore) DeleteCompanyWithAssets(id int64, deleteAssets bool) (ass
 	return assetsDeleted, nil
 }
 
-// ListCompanies returns all companies with scope and asset count.
+// ListCompanies preserves the full response used by task creation.
 func (s *CompanyStore) ListCompanies() ([]*CompanyWithScope, error) {
-	rows, err := s.db.Query(`
-SELECT c.id, c.name, c.nkey, c.logo, c.created_at::text, c.updated_at::text,
-       COUNT(DISTINCT a.id) AS asset_count
-FROM companies c
-LEFT JOIN assets a ON a.company_id = c.id
-GROUP BY c.id
-ORDER BY c.name`)
+	companies, _, err := s.listCompanies("", 0, 0)
+	return companies, err
+}
+
+// ListCompaniesPage returns only the companies needed by the asset browser.
+func (s *CompanyStore) ListCompaniesPage(search string, limit, offset int) ([]*CompanyWithScope, int, error) {
+	if limit < 1 || limit > 200 || offset < 0 {
+		return nil, 0, fmt.Errorf("invalid company page")
+	}
+	return s.listCompanies(strings.TrimSpace(search), limit, offset)
+}
+
+func (s *CompanyStore) ListCompanyNames() ([]CompanyName, error) {
+	rows, err := s.db.Query(`SELECT id,name FROM companies ORDER BY name,id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	out := []CompanyName{}
+	for rows.Next() {
+		c := CompanyName{}
+		if err := rows.Scan(&c.ID, &c.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (s *CompanyStore) listCompanies(search string, limit, offset int) ([]*CompanyWithScope, int, error) {
+	total := 0
+	if limit > 0 {
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM companies WHERE $1='' OR strpos(lower(name),lower($1))>0`, search).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+	rows, err := s.db.Query(`
+WITH page AS MATERIALIZED (
+    SELECT id, name, nkey, logo, created_at, updated_at FROM companies
+    WHERE $1='' OR strpos(lower(name),lower($1))>0
+    ORDER BY name, id LIMIT NULLIF($2,0) OFFSET $3
+)
+SELECT page.id, page.name, page.nkey, page.logo, page.created_at::text, page.updated_at::text,
+       COALESCE(counts.asset_count,0)
+FROM page
+LEFT JOIN (SELECT company_id, COUNT(*) asset_count FROM assets WHERE company_id IS NOT NULL GROUP BY company_id) counts
+       ON counts.company_id=page.id
+ORDER BY page.name, page.id`, search, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	var out []*CompanyWithScope
+	byID := map[int64]*CompanyWithScope{}
+	ids := []int64{}
 	for rows.Next() {
 		cws := &CompanyWithScope{}
 		if err := rows.Scan(&cws.ID, &cws.Name, &cws.NKey, &cws.Logo,
 			&cws.CreatedAt, &cws.UpdatedAt, &cws.AssetCount); err != nil {
-			return nil, err
+			rows.Close()
+			return nil, 0, err
 		}
 		out = append(out, cws)
+		byID[cws.ID] = cws
+		ids = append(ids, cws.ID)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		rows.Close()
+		return nil, 0, err
 	}
+	rows.Close()
 
-	// fetch scope rules for each company
-	for _, cws := range out {
-		cws.Scope, err = s.GetScope(cws.ID)
+	if len(ids) > 0 {
+		scopeRows, err := s.db.Query(`WITH ranked AS (
+    SELECT id, company_id, kind, COALESCE(domain,'') domain, COALESCE(net::text,'') net,
+           COALESCE(value,'') value, raw, COALESCE(reason,'') reason,
+           row_number() OVER (PARTITION BY company_id ORDER BY id) rn,
+           count(*) OVER (PARTITION BY company_id) scope_count
+    FROM company_scope WHERE company_id=ANY($1::bigint[])
+)
+SELECT id, company_id, kind, domain, net, value, raw, reason, scope_count
+FROM ranked WHERE $2=0 OR rn<=2 ORDER BY company_id,id`, ids, limit)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
+		}
+		defer scopeRows.Close()
+		for scopeRows.Next() {
+			var rule ScopeRule
+			var scopeCount int
+			if err := scopeRows.Scan(&rule.ID, &rule.CompanyID, &rule.Kind, &rule.Domain, &rule.Net, &rule.Value, &rule.Raw, &rule.Reason, &scopeCount); err != nil {
+				return nil, 0, err
+			}
+			byID[rule.CompanyID].Scope = append(byID[rule.CompanyID].Scope, rule)
+			byID[rule.CompanyID].ScopeCount = scopeCount
+		}
+		if err := scopeRows.Err(); err != nil {
+			return nil, 0, err
 		}
 	}
-	return out, nil
+	if limit == 0 {
+		total = len(out)
+	}
+	return out, total, nil
 }
 
 // GetScope returns all scope rules for a company.

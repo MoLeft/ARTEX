@@ -458,3 +458,71 @@ func TestListCompanies(t *testing.T) {
 		t.Error("ListCompanies: created company not found")
 	}
 }
+
+func TestListCompaniesPage(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer d.Close()
+	cs := d.Companies()
+	stamp := time.Now().UnixNano()
+	base := fmt.Sprintf("Page Test %d", stamp)
+	ids := make([]int64, 0, 3)
+	for _, suffix := range []string{" A", " B", " C"} {
+		id, _, err := cs.UpsertCompany(base+suffix, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	defer func() {
+		for _, id := range ids {
+			cleanupCompany(d, id)
+		}
+	}()
+	for i := 0; i < 3; i++ {
+		if _, err := d.Exec(`INSERT INTO company_scope(company_id,kind,domain,raw) VALUES($1,'domain',$2,$2)`, ids[1], fmt.Sprintf("page-%d-%d.example", stamp, i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var assetID int64
+	if err := d.QueryRow(`INSERT INTO assets(type,domain,root_domain,company_id) VALUES('root_domain',$1,$1,$2) RETURNING id`, fmt.Sprintf("page-%d.example", stamp), ids[1]).Scan(&assetID); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = d.Exec(`DELETE FROM assets WHERE id=$1`, assetID) }()
+
+	first, total, err := cs.ListCompaniesPage(base, 2, 0)
+	if err != nil || total != 3 || len(first) != 2 || first[0].ID != ids[0] || first[1].ID != ids[1] {
+		t.Fatalf("first page=%+v total=%d err=%v", first, total, err)
+	}
+	if first[1].AssetCount != 1 || first[1].ScopeCount != 3 || len(first[1].Scope) != 2 {
+		t.Fatalf("company details missing: %+v", first[1])
+	}
+	full, err := cs.ListCompanies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, company := range full {
+		if company.ID == ids[1] && len(company.Scope) != 3 {
+			t.Fatalf("legacy full list lost scope: %+v", company)
+		}
+	}
+	second, total, err := cs.ListCompaniesPage(base, 2, 2)
+	if err != nil || total != 3 || len(second) != 1 || second[0].ID != ids[2] {
+		t.Fatalf("second page=%+v total=%d err=%v", second, total, err)
+	}
+	names, err := cs.ListCompanyNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, name := range names {
+		if name.ID == ids[1] && name.Name == base+" B" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("company names omitted inserted company")
+	}
+}
