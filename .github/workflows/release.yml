@@ -276,7 +276,7 @@ jobs:
   # 直接依赖发布 job，保证 ZIP、校验文件和镜像全部发布成功后才更新 Demo。
   demo:
     needs: [prepare, release]
-    if: ${{ needs.prepare.outputs.beta == 'false' && vars.VERCEL_ORG_ID != '' && vars.VERCEL_PROJECT_ID != '' && vars.DEMO_URL != '' }}
+    if: ${{ vars.VERCEL_ORG_ID != '' && vars.VERCEL_PROJECT_ID != '' && vars.DEMO_URL != '' }}
     uses: ./.github/workflows/demo.yml
     with:
       tag: ${{ needs.prepare.outputs.tag }}
