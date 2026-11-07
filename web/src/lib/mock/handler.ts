@@ -446,10 +446,11 @@ function mockTaskAssetID(taskID: string): number | undefined {
   return mockTaskAssetIDs.get(taskID);
 }
 
-function mockAssetCounts(taskID?: string | null): Record<string, number> {
+function mockAssetCounts(taskID?: string | null, companyID = 0): Record<string, number> {
   const numericTaskID = taskID ? mockTaskAssetID(taskID) : undefined;
   return mockAssets.reduce<Record<string, number>>((counts, asset) => {
     if (taskID && (numericTaskID === undefined || !asset.task_ids.includes(numericTaskID))) return counts;
+    if (companyID && asset.company_id !== companyID) return counts;
     counts[asset.type] = (counts[asset.type] ?? 0) + 1;
     return counts;
   }, {});
@@ -1891,14 +1892,16 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
 
   // ── assets ──
-  if (path === "/assets/counts") return mockAssetCounts(q.get("task_id"));
+  if (path === "/assets/counts") return mockAssetCounts(q.get("task_id"), Number(q.get("company_id") ?? 0));
   if (path === "/assets" && m === "GET") {
     const type = q.get("type") ?? "";
     const taskID = q.get("task_id");
+    const companyID = Number(q.get("company_id") ?? 0);
     const numericTaskID = taskID ? mockTaskAssetID(taskID) : undefined;
     const dsl = q.get("dsl") ?? "";
     const list = mockAssets.filter((asset) => {
       if (type && asset.type !== type) return false;
+      if (companyID && asset.company_id !== companyID) return false;
       if (taskID && (numericTaskID === undefined || !asset.task_ids.includes(numericTaskID))) return false;
       return !dsl || mockAssetMatchesDSL(asset, dsl);
     });
@@ -2067,7 +2070,30 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
 
   // ── companies ──
-  if (path === "/companies" && m === "GET") return structuredClone(mockCompanies);
+  if (path === "/companies" && m === "GET") {
+    if (q.has("names")) return mockCompanies.map(({ id, name }) => ({ id, name }));
+    if (q.has("limit")) {
+      const search = (q.get("search") ?? "").toLowerCase();
+      const matching = mockCompanies.filter((company) => company.name.toLowerCase().includes(search));
+      const offset = Math.max(0, Number(q.get("offset") ?? 0));
+      const limit = Math.max(1, Number(q.get("limit") ?? 50));
+      return {
+        total: matching.length,
+        companies: matching.slice(offset, offset + limit).map((company) => ({
+          ...structuredClone(company),
+          asset_count: mockAssets.filter((asset) => asset.company_id === company.id).length,
+          scope_count: company.scope?.length ?? 0,
+          scope: company.scope?.slice(0, 2) ?? [],
+        })),
+      };
+    }
+    return structuredClone(mockCompanies);
+  }
+  if (seg[0] === "companies" && seg.length === 2 && m === "GET") {
+    const company = mockCompanies.find((item) => item.id === Number(seg[1]));
+    if (!company) throw new Error("企业不存在");
+    return { company: structuredClone(company), scope: structuredClone(company.scope ?? []) };
+  }
   if (path === "/companies" && m === "POST") {
     const name = String(b.name ?? "").trim();
     if (!name) throw new Error("企业名称不能为空");
