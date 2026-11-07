@@ -300,6 +300,11 @@ func (s *CompanyStore) listCompanies(search string, limit, offset int) ([]*Compa
 			return nil, 0, err
 		}
 	}
+	countJoin := `LEFT JOIN (SELECT company_id, COUNT(*) asset_count FROM assets WHERE company_id IS NOT NULL GROUP BY company_id) counts
+       ON counts.company_id=page.id`
+	if limit > 0 {
+		countJoin = `LEFT JOIN LATERAL (SELECT COUNT(*) asset_count FROM assets WHERE company_id=page.id) counts ON true`
+	}
 	rows, err := s.db.Query(`
 WITH page AS MATERIALIZED (
     SELECT id, name, nkey, logo, created_at, updated_at FROM companies
@@ -309,8 +314,7 @@ WITH page AS MATERIALIZED (
 SELECT page.id, page.name, page.nkey, page.logo, page.created_at::text, page.updated_at::text,
        COALESCE(counts.asset_count,0)
 FROM page
-LEFT JOIN (SELECT company_id, COUNT(*) asset_count FROM assets WHERE company_id IS NOT NULL GROUP BY company_id) counts
-       ON counts.company_id=page.id
+`+countJoin+`
 ORDER BY page.name, page.id`, search, limit, offset)
 	if err != nil {
 		return nil, 0, err
