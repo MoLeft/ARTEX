@@ -80,6 +80,43 @@ func (s *Server) listCompanies(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 503, "database unavailable")
 		return
 	}
+	q := r.URL.Query()
+	if q.Get("names") == "1" {
+		names, err := cs.ListCompanyNames()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 200, names)
+		return
+	}
+	if q.Has("limit") || q.Has("offset") || q.Has("search") {
+		limit := 50
+		if q.Has("limit") {
+			var err error
+			limit, err = strconv.Atoi(q.Get("limit"))
+			if err != nil || limit < 1 || limit > 200 {
+				writeErr(w, 400, "invalid limit")
+				return
+			}
+		}
+		offset, err := strconv.Atoi(q.Get("offset"))
+		if q.Get("offset") == "" {
+			offset = 0
+			err = nil
+		}
+		if err != nil || offset < 0 || len(q.Get("search")) > 200 {
+			writeErr(w, 400, "invalid company filter")
+			return
+		}
+		companies, total, err := cs.ListCompaniesPage(q.Get("search"), limit, offset)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"companies": companies, "total": total})
+		return
+	}
 	companies, err := cs.ListCompanies()
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -323,6 +360,15 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	companyID := int64(0)
+	if raw := q.Get("company_id"); raw != "" {
+		var err error
+		companyID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || companyID <= 0 {
+			writeErr(w, 400, "invalid company_id")
+			return
+		}
+	}
 	typ := q.Get("type")
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
@@ -342,6 +388,9 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 	total := 0
 
 	if dsl := q.Get("dsl"); dsl != "" {
+		if companyID > 0 {
+			dsl = "(" + dsl + ") AND company_id==" + strconv.FormatInt(companyID, 10)
+		}
 		if err := db.ValidateDSL(dsl); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -354,7 +403,6 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 			assets, err = as.QueryDSL(dsl, typ, taskID, limit, offset)
 		}
 	} else {
-		companyID, _ := strconv.ParseInt(q.Get("company_id"), 10, 64)
 		taskID, _ := strconv.ParseInt(q.Get("task_id"), 10, 64)
 		switch {
 		case companyID > 0:
@@ -401,8 +449,17 @@ func (s *Server) assetCounts(w http.ResponseWriter, r *http.Request) {
 	}
 	var counts map[string]int
 	var err error
+	if raw := r.URL.Query().Get("company_id"); raw != "" {
+		id, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || id <= 0 {
+			writeErr(w, 400, "invalid company_id")
+			return
+		}
+	}
 	if taskID, _ := strconv.ParseInt(r.URL.Query().Get("task_id"), 10, 64); taskID > 0 {
 		counts, err = as.CountsByTypeForTask(taskID)
+	} else if companyID, _ := strconv.ParseInt(r.URL.Query().Get("company_id"), 10, 64); companyID > 0 {
+		counts, err = as.CountsByTypeForCompany(companyID)
 	} else {
 		counts, err = as.CountsByType()
 	}

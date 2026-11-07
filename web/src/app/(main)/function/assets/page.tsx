@@ -15,8 +15,10 @@ import {
   type LucideIcon,
   NetworkIcon,
   RefreshCwIcon,
+  SearchIcon,
   SmartphoneIcon,
   Trash2Icon,
+  XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -120,9 +122,20 @@ function AssetsContent() {
   const [rows, setRows] = React.useState<Asset[]>([]);
   const [total, setTotal] = React.useState(0);
   const [companies, setCompanies] = React.useState<Company[]>([]);
+  const [companyNames, setCompanyNames] = React.useState<Pick<Company, "id" | "name">[]>([]);
+  const [companyTotal, setCompanyTotal] = React.useState(0);
+  const [companyLoading, setCompanyLoading] = React.useState(false);
+  const [companyError, setCompanyError] = React.useState("");
+  const [companyDetails, setCompanyDetails] = React.useState<Company | null>(null);
+  const [companyDetailsLoading, setCompanyDetailsLoading] = React.useState(false);
+  const [companyDetailsError, setCompanyDetailsError] = React.useState("");
   const [counts, setCounts] = React.useState<Record<string, number>>({});
   const [tab, setTab] = useListState("assets:tab", "company");
   const [query, setQuery] = useListState("assets:query", "");
+  const [companyId, setCompanyId] = useListState("assets:companyId", 0);
+  const [companySearch, setCompanySearch] = useListState("assets:companySearch", "");
+  const [companyPage, setCompanyPage] = useListState("assets:companyPage", 0);
+  const [companySize, setCompanySize] = useListState("assets:companySize", 50);
   const [loaded, setLoaded] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [page, setPage] = useListState("assets:page", 0);
@@ -147,6 +160,7 @@ function AssetsContent() {
           return;
         }
         setAssetTarget({ id: asset.id, type: asset.type });
+        setCompanyId(0);
         setTab(asset.type);
         setPage(0);
         setIntelligenceAsset(null);
@@ -157,7 +171,7 @@ function AssetsContent() {
     return () => {
       alive = false;
     };
-  }, [requestedAsset, setTab, setPage]);
+  }, [requestedAsset, setTab, setPage, setCompanyId]);
 
   // asset selection & delete
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
@@ -170,28 +184,103 @@ function AssetsContent() {
   const [companyDeleteAssets, setCompanyDeleteAssets] = React.useState(false);
   const [companyDeleting, setCompanyDeleting] = React.useState(false);
 
-  // Companies + per-type counts (tab badges) — loaded on demand, no background polling.
-  const loadMeta = React.useCallback(() => {
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey manually reloads company names.
+  React.useEffect(() => {
+    let alive = true;
     api
-      .companies()
-      .then(setCompanies)
+      .companyNames()
+      .then((names) => {
+        if (alive) setCompanyNames(names);
+      })
       .catch(() => {
-        /* Keep the last successful company snapshot on a transient failure. */
+        // Keep the current page's company names if the lightweight lookup fails.
       });
+    return () => {
+      alive = false;
+    };
+  }, [refreshKey]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey manually reloads asset counters.
+  React.useEffect(() => {
+    let alive = true;
+    setCounts({});
     api
-      .assetCounts()
-      .then(setCounts)
+      .assetCounts("", companyId)
+      .then((next) => {
+        if (alive) setCounts(next);
+      })
       .catch(() => {
-        /* Keep the last successful counters on a transient failure. */
+        // The visible asset page still loads independently of tab counters.
       });
-  }, []);
+    return () => {
+      alive = false;
+    };
+  }, [companyId, refreshKey]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey manually reloads the company page.
+  React.useEffect(() => {
+    let alive = true;
+    setCompanyLoading(true);
+    setCompanyError("");
+    setCompanies([]);
+    const timer = setTimeout(
+      () => {
+        api
+          .companiesPage(companySize, companyPage * companySize, companySearch.trim())
+          .then((result) => {
+            if (!alive) return;
+            setCompanies(result.companies);
+            setCompanyTotal(result.total);
+            if (companyPage > 0 && companyPage * companySize >= result.total) {
+              setCompanyPage(Math.max(0, Math.ceil(result.total / companySize) - 1));
+            }
+          })
+          .catch((error) => {
+            if (alive) setCompanyError(String((error as Error).message));
+          })
+          .finally(() => {
+            if (alive) setCompanyLoading(false);
+          });
+      },
+      companySearch ? 250 : 0,
+    );
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [companyPage, companySearch, companySize, refreshKey, setCompanyPage]);
+
+  const companyDetailsId = companyDetails?.id;
+  React.useEffect(() => {
+    if (!companyDetailsId) return;
+    let alive = true;
+    setCompanyDetailsLoading(true);
+    setCompanyDetailsError("");
+    api
+      .company(companyDetailsId)
+      .then((result) => {
+        if (alive)
+          setCompanyDetails((current) =>
+            current?.id === companyDetailsId ? { ...current, scope: result.scope } : current,
+          );
+      })
+      .catch((error) => {
+        if (alive) setCompanyDetailsError(String((error as Error).message));
+      })
+      .finally(() => {
+        if (alive) setCompanyDetailsLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [companyDetailsId]);
 
   // Manual refresh: reload counts/companies and re-fetch the current page.
   const refresh = React.useCallback(() => {
-    loadMeta();
     setRefreshKey((k) => k + 1);
     setSelected(new Set());
-  }, [loadMeta]);
+    setCompanyDetails(null);
+  }, []);
 
   const toggleSelect = (id: number) => {
     setSelected((prev) => {
@@ -259,10 +348,6 @@ function AssetsContent() {
     }
   };
 
-  React.useEffect(() => {
-    loadMeta();
-  }, [loadMeta]);
-
   // Reset query + page + selection when switching tabs
   const tabKey = `${tab}:${assetTarget?.type ?? ""}:${assetTarget?.id ?? ""}`;
   const previousTab = React.useRef(tabKey);
@@ -279,8 +364,7 @@ function AssetsContent() {
     setLoaded(false);
   }, [tab, assetTarget]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: these controls intentionally reset server pagination.
-  const pageFilterKey = JSON.stringify([tab, size, query]);
+  const pageFilterKey = JSON.stringify([tab, size, query, companyId]);
   const previousPageFilter = React.useRef(pageFilterKey);
   React.useEffect(() => {
     if (previousPageFilter.current === pageFilterKey) return;
@@ -297,10 +381,14 @@ function AssetsContent() {
     const request = ++assetsRequestRef.current;
     const dsl = query.trim();
     setLoading(true);
+    setLoaded(false);
+    setRows([]);
     const offset = page * size;
     const run = async () => {
       try {
-        const r = dsl ? await api.searchAssets(dsl, tab, size, offset) : await api.assets(tab, size, offset);
+        const r = dsl
+          ? await api.searchAssets(dsl, tab, size, offset, companyId)
+          : await api.assets(tab, size, offset, companyId);
         if (assetsRequestRef.current !== request) return;
         setRows(r.assets);
         setRowsTab(tab);
@@ -324,7 +412,7 @@ function AssetsContent() {
       clearTimeout(tid);
       if (assetsRequestRef.current === request) assetsRequestRef.current++;
     };
-  }, [tab, page, size, query, refreshKey]);
+  }, [tab, page, size, query, companyId, refreshKey]);
 
   React.useEffect(() => {
     if (tab === "company" || !loaded || rowsTab !== tab) return;
@@ -334,19 +422,35 @@ function AssetsContent() {
 
   const companyById = React.useMemo(() => {
     const m = new Map<number, string>();
+    for (const c of companyNames) m.set(c.id, c.name);
     for (const c of companies) m.set(c.id, c.name);
     return m;
-  }, [companies]);
+  }, [companyNames, companies]);
 
   const companyName = (id?: number) => (id ? (companyById.get(id) ?? "") : "");
 
-  const tabCounts: Record<string, number> = { ...counts, company: companies.length };
+  const tabCounts: Record<string, number> = { ...counts, company: companyTotal };
   const totalAssets = Object.values(counts).reduce((a, b) => a + b, 0);
 
   // rows are already the current server-side page.
   const tabData = (type: string): Asset[] => (rowsTab === type ? rows : []);
   const currentRows = tabData(tab);
   const slice = <T,>(list: T[]) => list;
+  const companyPageCount = Math.max(1, Math.ceil(companyTotal / companySize));
+  const selectedCompanyName = companyName(companyId);
+  let companyEmptyMessage = "还没有企业。点击右上角「新增企业」添加。";
+  if (companySearch) companyEmptyMessage = "没有匹配的企业。";
+  if (companyError) companyEmptyMessage = `加载失败：${companyError}`;
+  if (companyLoading) companyEmptyMessage = "加载中…";
+
+  const jumpToCompanyTab = (company: Company, type: string) => {
+    setCompanyId(company.id);
+    setTab(type);
+    setPage(0);
+    setQuery("");
+    setSelected(new Set());
+    setCompanyDetails(null);
+  };
 
   const searchBox = (
     <AssetDslSearch
@@ -386,13 +490,71 @@ function AssetsContent() {
           ) : null}
         </DialogContent>
       </Dialog>
+      <Sheet
+        open={companyDetails !== null}
+        onOpenChange={(open) => {
+          if (!open) setCompanyDetails(null);
+        }}
+      >
+        <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-lg">
+          <SheetHeader className="border-b px-6 py-5">
+            <SheetTitle className="flex items-center gap-3 text-left">
+              {companyDetails ? <CompanyAvatar name={companyDetails.name} logo={companyDetails.logo} /> : null}
+              <span className="min-w-0 truncate">{companyDetails?.name}</span>
+            </SheetTitle>
+            <SheetDescription className="text-left">
+              {companyDetails?.asset_count ?? 0} 项归属资产 · {companyDetails?.scope_count ?? 0} 条资产范围
+            </SheetDescription>
+          </SheetHeader>
+          <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 py-5">
+            <section className="space-y-3">
+              <h3 className="text-sm font-medium">按类型查看该企业资产</h3>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {TABS.filter((item) => item.key !== "company").map((item) => (
+                  <Button
+                    key={item.key}
+                    variant="outline"
+                    className="justify-start"
+                    onClick={() => companyDetails && jumpToCompanyTab(companyDetails, item.key)}
+                  >
+                    <item.icon className="size-4" /> {item.label}
+                  </Button>
+                ))}
+              </div>
+            </section>
+            <section className="space-y-3">
+              <h3 className="text-sm font-medium">企业资产范围</h3>
+              {companyDetailsLoading ? (
+                <p className="text-sm text-muted-foreground">加载完整范围…</p>
+              ) : companyDetailsError ? (
+                <p role="alert" className="text-sm text-destructive">
+                  加载失败：{companyDetailsError}
+                </p>
+              ) : companyDetails?.scope?.length ? (
+                <div className="divide-y rounded-lg border">
+                  {companyDetails.scope.map((rule) => (
+                    <div key={rule.id} className="flex items-start gap-3 px-3 py-2 text-sm">
+                      <Badge variant="secondary" className="shrink-0 text-[10px]">
+                        {rule.kind}
+                      </Badge>
+                      <span className="min-w-0 break-all font-mono text-xs leading-5">{rule.raw}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">尚未设置资产范围。</p>
+              )}
+            </section>
+          </div>
+        </SheetContent>
+      </Sheet>
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">资产</h1>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-sm text-muted-foreground">
-            共 <span className="tabular-nums">{totalAssets}</span> 项资产
+            {companyId ? "该企业" : "共"} <span className="tabular-nums">{totalAssets}</span> 项资产
           </span>
           {tab !== "company" ? (
             <Button
@@ -417,7 +579,35 @@ function AssetsContent() {
         </div>
       </div>
 
-      <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col gap-4">
+      <Tabs
+        value={tab}
+        onValueChange={(value) => {
+          setTab(value);
+          setSelected(new Set());
+        }}
+        className="flex min-h-0 flex-1 flex-col gap-4"
+      >
+        {companyId && tab !== "company" ? (
+          <div className="flex shrink-0 items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-sm">
+            <BuildingIcon className="size-4 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate">
+              正在查看 <strong>{selectedCompanyName || `企业 #${companyId}`}</strong> 的资产
+            </span>
+            <Button variant="ghost" size="sm" onClick={() => setTab("company")}>
+              选择其他企业
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setCompanyId(0);
+                setPage(0);
+              }}
+            >
+              <XIcon className="size-3.5" /> 查看全部
+            </Button>
+          </div>
+        ) : null}
         <div className="overflow-x-auto overflow-y-hidden">
           <TabsList variant="default">
             {TABS.map((t) => (
@@ -431,7 +621,23 @@ function AssetsContent() {
         </div>
 
         {/* 企业 */}
-        <TabsContent value="company" className="mt-0 flex min-h-0 flex-1 flex-col">
+        <TabsContent value="company" className="mt-0 flex min-h-0 flex-1 flex-col gap-3">
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+            <div className="relative w-full max-w-sm">
+              <SearchIcon className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                aria-label="搜索企业名称"
+                placeholder="搜索企业名称"
+                value={companySearch}
+                onChange={(event) => {
+                  setCompanySearch(event.target.value);
+                  setCompanyPage(0);
+                }}
+                className="pl-9"
+              />
+            </div>
+            <span className="text-xs text-muted-foreground">选择企业后，可按域名、IP、应用、服务或接口查看</span>
+          </div>
           <Card className="flex min-h-0 flex-1 flex-col overflow-hidden py-0">
             <div className="min-h-0 flex-1 overflow-auto">
               <Table>
@@ -439,35 +645,66 @@ function AssetsContent() {
                   <TableRow>
                     <TableHead>企业</TableHead>
                     <TableHead className="w-24 text-right">资产数</TableHead>
-                    <TableHead>资产范围</TableHead>
-                    <TableHead className="w-36 text-right">操作</TableHead>
+                    <TableHead>资产范围摘要</TableHead>
+                    <TableHead className="w-80 text-right">查看与管理</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {companies.map((c) => (
-                    <TableRow key={c.id}>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
+                    <TableRow key={c.id} className="h-14">
+                      <TableCell className="max-w-[16rem]">
+                        <div className="flex min-w-0 items-center gap-2">
                           <CompanyAvatar name={c.name} logo={c.logo} />
-                          <span className="font-medium">{c.name}</span>
+                          <span className="truncate font-medium" title={c.name}>
+                            {c.name}
+                          </span>
                         </div>
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-sm">{c.asset_count}</TableCell>
-                      <TableCell>
+                      <TableCell className="max-w-[22rem]">
                         {c.scope?.length ? (
-                          <div className="flex flex-wrap gap-1">
-                            {c.scope.map((s, i) => (
-                              <Badge key={i} variant="secondary" className="font-mono text-[11px]">
-                                {s.raw}
+                          <div className="flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap">
+                            {c.scope.slice(0, 2).map((rule) => (
+                              <Badge
+                                key={rule.id}
+                                variant="secondary"
+                                className="max-w-36 shrink truncate font-mono text-[11px]"
+                                title={rule.raw}
+                              >
+                                {rule.raw}
                               </Badge>
                             ))}
+                            {(c.scope_count ?? c.scope.length) > 2 ? (
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                +{(c.scope_count ?? c.scope.length) - 2}
+                              </span>
+                            ) : null}
                           </div>
                         ) : (
                           <span className="text-xs text-muted-foreground">未设置范围</span>
                         )}
                       </TableCell>
                       <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1.5">
+                        <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7"
+                            onClick={() => jumpToCompanyTab(c, "root_domain")}
+                          >
+                            域名
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7"
+                            onClick={() => jumpToCompanyTab(c, "endpoint")}
+                          >
+                            接口
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-7" onClick={() => setCompanyDetails(c)}>
+                            详情
+                          </Button>
                           <EditScopeDialog company={c} onSaved={refresh} />
                           <AppendScopeDialog company={c} onSaved={refresh} />
                           <Button
@@ -489,12 +726,65 @@ function AssetsContent() {
                   {companies.length === 0 && (
                     <TableRow>
                       <TableCell colSpan={4} className="py-10 text-center text-sm text-muted-foreground">
-                        还没有企业。点击右上角「新增企业」并填写资产范围，系统会自动认领命中的资产。
+                        {companyEmptyMessage}
                       </TableCell>
                     </TableRow>
                   )}
                 </TableBody>
               </Table>
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t px-3 py-2 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <Select
+                  value={String(companySize)}
+                  onValueChange={(value) => {
+                    setCompanySize(Number(value));
+                    setCompanyPage(0);
+                  }}
+                >
+                  <SelectTrigger size="sm" className="h-7 w-24">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {PAGE_SIZES.map((n) => (
+                        <SelectItem key={n} value={String(n)}>
+                          {n} / 页
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <span className="tabular-nums">
+                  {companyTotal ? companyPage * companySize + 1 : 0}–
+                  {Math.min(companyTotal, (companyPage + 1) * companySize)} / {companyTotal}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="size-7"
+                  aria-label="上一页企业"
+                  disabled={companyPage === 0 || companyLoading}
+                  onClick={() => setCompanyPage((p) => Math.max(0, p - 1))}
+                >
+                  <ChevronLeftIcon />
+                </Button>
+                <span className="tabular-nums">
+                  {companyPage + 1} / {companyPageCount}
+                </span>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="size-7"
+                  aria-label="下一页企业"
+                  disabled={companyPage + 1 >= companyPageCount || companyLoading}
+                  onClick={() => setCompanyPage((p) => Math.min(companyPageCount - 1, p + 1))}
+                >
+                  <ChevronRightIcon />
+                </Button>
+              </div>
             </div>
           </Card>
         </TabsContent>
@@ -1140,7 +1430,9 @@ function EditScopeDialog({ company, onSaved }: { company: Company; onSaved: () =
   const [scopeText, setScopeText] = React.useState("");
   const [reason, setReason] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const preservedScopeRules = React.useMemo(() => savedScopeRules(company), [company]);
+  const [fullCompany, setFullCompany] = React.useState<Company | null>(null);
+  const [loadingScope, setLoadingScope] = React.useState(false);
+  const preservedScopeRules = React.useMemo(() => (fullCompany ? savedScopeRules(fullCompany) : []), [fullCompany]);
   const parsedScope = React.useMemo(
     () => parseCompanyScopeText(scopeText, { preservedRules: preservedScopeRules }),
     [preservedScopeRules, scopeText],
@@ -1148,8 +1440,30 @@ function EditScopeDialog({ company, onSaved }: { company: Company; onSaved: () =
 
   React.useEffect(() => {
     if (!open) return;
-    setScopeText(savedScopeText(company));
+    let alive = true;
+    setLoadingScope(true);
+    setFullCompany(null);
+    setScopeText("");
     setReason("");
+    api
+      .company(company.id)
+      .then((result) => {
+        if (!alive) return;
+        const full = { ...company, scope: result.scope };
+        setFullCompany(full);
+        setScopeText(savedScopeText(full));
+      })
+      .catch((error) => {
+        if (!alive) return;
+        toast.error(`加载企业范围失败：${String((error as Error).message)}`);
+        setOpen(false);
+      })
+      .finally(() => {
+        if (alive) setLoadingScope(false);
+      });
+    return () => {
+      alive = false;
+    };
   }, [open, company]);
 
   const submit = async () => {
@@ -1208,7 +1522,7 @@ function EditScopeDialog({ company, onSaved }: { company: Company; onSaved: () =
           <Button variant="outline" onClick={() => setOpen(false)} disabled={busy}>
             取消
           </Button>
-          <Button onClick={submit} disabled={busy || parsedScope.errors.length > 0}>
+          <Button onClick={submit} disabled={busy || loadingScope || !fullCompany || parsedScope.errors.length > 0}>
             {busy ? "保存中…" : "覆盖保存"}
           </Button>
         </DialogFooter>

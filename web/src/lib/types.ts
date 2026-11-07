@@ -439,6 +439,7 @@ export interface Company {
   name: string;
   logo?: string; // 远程图标 URL；空则前端用名称首字母
   asset_count: number;
+  scope_count?: number;
   scope?: ScopeRow[];
 }
 

@@ -33,6 +33,53 @@ func TestCompanyScopeInputsAcceptStructuredAndLegacyRules(t *testing.T) {
 	}
 }
 
+func TestAssetCompanyFilterKeepsDSLInsideCompany(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer m.Close()
+	stamp := time.Now().UnixNano()
+	companyID, _, err := m.pg.Companies().UpsertCompany(fmt.Sprintf("Asset Filter %d", stamp), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.pg.Companies().DeleteCompany(companyID) }()
+	var ownedID, otherID int64
+	for i, id := range []*int64{&ownedID, &otherID} {
+		var company any
+		if i == 0 {
+			company = companyID
+		}
+		domain := fmt.Sprintf("filter-%d-%d.invalid", stamp, i)
+		if err := m.pg.QueryRow(`INSERT INTO assets(type,domain,root_domain,company_id) VALUES('root_domain',$1,$1,$2) RETURNING id`, domain, company).Scan(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { _, _ = m.pg.Exec(`DELETE FROM assets WHERE id=ANY($1::bigint[])`, []int64{ownedID, otherID}) }()
+	s := &Server{m: m}
+	for _, path := range []string{
+		fmt.Sprintf("/api/assets?type=root_domain&company_id=%d", companyID),
+		fmt.Sprintf("/api/assets?type=root_domain&company_id=%d&dsl=id==%d%%20OR%%20id==%d", companyID, ownedID, otherID),
+	} {
+		rec := httptest.NewRecorder()
+		s.listAssets(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s", path, rec.Code, rec.Body.String())
+		}
+		var result struct {
+			Assets []db.Asset `json:"assets"`
+			Total  int        `json:"total"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Total != 1 || len(result.Assets) != 1 || result.Assets[0].ID != ownedID {
+			t.Fatalf("company filter escaped: %+v", result)
+		}
+	}
+}
+
 func TestCreateCompanyRejectsNormalizedDuplicateWithoutChangingScope(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {

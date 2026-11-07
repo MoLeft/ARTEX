@@ -623,6 +623,7 @@ export default function TasksPage() {
   const lastRef = React.useRef<string>("");
 
   const load = React.useCallback(() => {
+    if (document.hidden) return;
     api
       .tasks()
       .then((r) => {
@@ -655,7 +656,12 @@ export default function TasksPage() {
     load();
     loadCategories();
     const i = setInterval(load, POLL_MS);
-    return () => clearInterval(i);
+    const onVisible = () => { if (!document.hidden) load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(i);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [load, loadCategories]);
 
   const refreshCategoriesAndTasks = React.useCallback(() => {
