@@ -82,7 +82,7 @@ export function StorageCleanupDialog({ open, onOpenChange, onComplete }: { open:
       if (!active) return;
       setGroups(preview.groups);
       setParts(status.parts);
-      setSelected(new Set(preview.groups.filter((group) => group.risk === "safe").map((group) => group.path)));
+      setSelected(new Set(preview.groups.filter((group) => group.risk === "safe" && group.bytes > 0).map((group) => group.path)));
     }).catch((e) => { if (active) setError((e as Error).message); }).finally(() => { if (active) setScanning(false); });
     return () => { active = false; };
   }, [open]);
