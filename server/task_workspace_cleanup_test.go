@@ -54,3 +54,68 @@ func TestScanTaskCleanupPathDoesNotFollowSymlink(t *testing.T) {
 		t.Fatalf("symlink followed: targets=%v err=%v", targets, err)
 	}
 }
+
+func TestScanLiveTaskScratchSeparatesReferencedFiles(t *testing.T) {
+	base := t.TempDir()
+	for _, rel := range []string{".agent-scratch", "i1/.agent-scratch"} {
+		if err := os.MkdirAll(filepath.Join(base, rel), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for rel, body := range map[string]string{
+		".agent-scratch/temporary.txt": "temp",
+		".agent-scratch/proof.txt":     "proof",
+		"i1/.agent-scratch/worker.txt": "worker",
+	} {
+		if err := os.WriteFile(filepath.Join(base, rel), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	groups, total, err := scanLiveTaskScratch(context.Background(), base, "3", map[string]bool{".agent-scratch/proof.txt": true})
+	if err != nil || len(groups) != 2 || total != 15 {
+		t.Fatalf("groups=%+v total=%d err=%v", groups, total, err)
+	}
+	if groups[0].Path != "tasks/3/.agent-scratch" || groups[0].Risk != "review" || groups[0].Bytes != 4 || groups[0].ProtectedBytes != 5 || len(groups[0].targets) != 1 {
+		t.Fatalf("root scratch=%+v", groups[0])
+	}
+	if groups[1].Path != "tasks/3/i1/.agent-scratch" || groups[1].Risk != "safe" || groups[1].Bytes != 6 || len(groups[1].targets) != 1 {
+		t.Fatalf("worker scratch=%+v", groups[1])
+	}
+}
+
+func TestResolveTaskCleanupPathsAllowsIndividualFilesOnlyWithinGroup(t *testing.T) {
+	dataDir := t.TempDir()
+	root := filepath.Join(dataDir, "tasks", "3", "worker")
+	if err := os.MkdirAll(filepath.Join(root, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"nested/temporary.txt", "nested/proof.txt"} {
+		if err := os.WriteFile(filepath.Join(root, rel), []byte("data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	group := taskCleanupGroup{Path: "tasks/3/worker", TaskID: "3", Dir: true, Risk: "review", Bytes: 4, ProtectedPaths: []string{"tasks/3/worker/nested/proof.txt"}, targets: []string{filepath.Join(root, "nested", "temporary.txt")}}
+	chosen, err := resolveTaskCleanupPaths(context.Background(), dataDir, []taskCleanupGroup{group}, []string{"tasks/3/worker/nested/temporary.txt"})
+	if err != nil || len(chosen) != 1 || chosen[0].Bytes != 4 || len(chosen[0].targets) != 1 || chosen[0].targets[0] != filepath.Join(root, "nested", "temporary.txt") {
+		t.Fatalf("chosen=%+v err=%v", chosen, err)
+	}
+	for _, paths := range [][]string{
+		{"tasks/3/worker/nested/proof.txt"},
+		{"tasks/3/worker", "tasks/3/worker/nested/temporary.txt"},
+		{"tasks/3/worker/../findings"},
+	} {
+		if _, err := resolveTaskCleanupPaths(context.Background(), dataDir, []taskCleanupGroup{group}, paths); err == nil {
+			t.Fatalf("accepted unsafe paths %v", paths)
+		}
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "outside.txt"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveTaskCleanupPaths(context.Background(), dataDir, []taskCleanupGroup{group}, []string{"tasks/3/worker/link/outside.txt"}); err == nil {
+		t.Fatal("followed symlink outside task workspace")
+	}
+}

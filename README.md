@@ -128,6 +128,8 @@ docker compose up -d          # 拉取 ARTEX 与 PostgreSQL
 
 镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills` 与 `./data` 以绑定挂载持久化。
 
+macOS Docker 部署要在「运行和空间」显示宿主机磁盘容量，可在宿主机运行 `./scripts/install-mac-host-storage.sh ./data "$(docker compose ps -q artex)"`。脚本测量 `./data` 所在磁盘，并通过容器写入容量快照；适用于 `./data` 指向外接盘、LaunchAgent 无法直接写入该盘的情况。容器须将该目录挂载到 `/app/data`。
+
 `.env` 中默认 `ARTEX_IMAGE=moleftcn/artex`，`ARTEX_TAG=latest` 使用最新正式版镜像，也可固定为 `v0.26.10.31.001` 或 `v0.26.10.31.001-beta1`。测试版不会覆盖 `latest`。镜像支持 `linux/amd64` 和 `linux/arm64`，Docker 会自动选择与宿主机匹配的架构。初次部署请修改 `POSTGRES_PASSWORD`；运行服务无需配置 Docker Hub 发布 Token。
 
 远程 MCP 可在系统设置中选择 `http`（Streamable HTTP）或 `sse`（旧版 SSE）。
