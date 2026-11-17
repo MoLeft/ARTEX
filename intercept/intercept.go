@@ -547,8 +547,9 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 	if err != nil || len(rules) == 0 {
 		return Decision{}, false
 	}
+	values := inputStrings(input)
 	for _, r := range rules {
-		if ruleMatches(r, toolName, input) {
+		if ruleMatches(r, toolName, input, values) {
 			msg := r.Message
 			if msg == "" {
 				msg = defaultMessage(r.Action, r.Name)
@@ -568,20 +569,57 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool) {
 	return Decision{}, false
 }
 
-func ruleMatches(r compiledRule, toolName string, input []byte) bool {
-	var subject string
+// ruleMatches reports whether r applies to the call. tool_input rules are tried
+// against the raw JSON first, then against each decoded string value in values.
+func ruleMatches(r compiledRule, toolName string, input []byte, values []string) bool {
 	switch r.MatchTarget {
 	case "tool_name":
-		subject = toolName
+		return r.matchString(toolName)
 	case "tool_input":
-		subject = string(input)
-	default:
-		return false
+		if r.matchString(string(input)) {
+			return true
+		}
+		for _, value := range values {
+			if r.matchString(value) {
+				return true
+			}
+		}
 	}
+	return false
+}
+
+func (r compiledRule) matchString(subject string) bool {
 	if r.MatchType == "regex" {
 		return r.re != nil && r.re.MatchString(subject)
 	}
 	return strings.Contains(subject, r.Pattern)
+}
+
+// inputStrings returns every string value in a JSON tool input, at any depth.
+// Object keys are skipped. Invalid JSON falls back to raw matching only.
+func inputStrings(input []byte) []string {
+	var document any
+	if json.Unmarshal(input, &document) != nil {
+		return nil
+	}
+	var values []string
+	var walk func(any)
+	walk = func(value any) {
+		switch value := value.(type) {
+		case string:
+			values = append(values, value)
+		case []any:
+			for _, item := range value {
+				walk(item)
+			}
+		case map[string]any:
+			for _, item := range value {
+				walk(item)
+			}
+		}
+	}
+	walk(document)
+	return values
 }
 
 func defaultMessage(action, name string) string {
