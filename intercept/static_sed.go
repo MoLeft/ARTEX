@@ -144,11 +144,12 @@ func generatedSedSnapshot(stmt *syntax.Stmt, args []*syntax.Word, dir, target st
 		return "", "", false
 	}
 	executable, err := exec.LookPath(name)
-	if err != nil {
+	if err != nil || (executable != "/bin/sed" && executable != "/usr/bin/sed") {
 		return "", "", false
 	}
+	// Trust the standard entry path; Ubuntu may symlink it to a native uutils binary.
 	executable, err = filepath.EvalSymlinks(executable)
-	if err != nil || (executable != "/bin/sed" && executable != "/usr/bin/sed") || !nativeInterpreterFile(executable) {
+	if err != nil || !nativeInterpreterFile(executable) {
 		return "", "", false
 	}
 	program, known := staticWord(args[1])
@@ -307,12 +308,12 @@ func staticSedPrefixKnown(tree *syntax.File, target *syntax.Stmt, remaining *int
 				}
 			case "cat", "mkdir", "chmod", "sed":
 				executable, err := exec.LookPath(name)
-				if err != nil {
+				if err != nil || (executable != "/bin/"+base && executable != "/usr/bin/"+base) {
 					safe = false
 					break
 				}
 				executable, err = filepath.EvalSymlinks(executable)
-				if err != nil || (executable != "/bin/"+base && executable != "/usr/bin/"+base) || !nativeInterpreterFile(executable) {
+				if err != nil || !nativeInterpreterFile(executable) {
 					safe = false
 					break
 				}
